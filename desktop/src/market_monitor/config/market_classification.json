@@ -1,0 +1,115 @@
+{
+  "schemaVersion": 1,
+  "priority": ["explicit_fields", "ordered_code_rules", "allowlists"],
+  "categories": [
+    {"id": "all", "label": "全部市场"},
+    {"id": "a-index", "label": "A股-指数"},
+    {"id": "tdx-industry-index", "label": "通达信-行业板块指数"},
+    {"id": "tdx-board-index", "label": "通达信-综合板块指数"},
+    {"id": "a-sh", "label": "A股-沪市"},
+    {"id": "a-sz", "label": "A股-深市"},
+    {"id": "a-bse", "label": "A股-北证"},
+    {"id": "a-chinext", "label": "A股-创业板"},
+    {"id": "a-star", "label": "A股-科创板"},
+    {"id": "a-etf", "label": "A股-ETF基金"},
+    {"id": "a-convertible", "label": "A股-可转债"},
+    {"id": "a-exchangeable", "label": "A股-可交债"},
+    {"id": "a-pledged-repo", "label": "A股-债券通用质押式回购"},
+    {"id": "a-repo", "label": "A股-债券回购"},
+    {"id": "a-lof", "label": "A股-LOF基金"},
+    {"id": "a-reit", "label": "A股-REITs"},
+    {"id": "hk-index", "label": "港股-指数"},
+    {"id": "hk-stock", "label": "港股-个股"},
+    {"id": "cn-future-index", "label": "国内期货-指数"},
+    {"id": "cn-future-cffex", "label": "国内期货-中金所"},
+    {"id": "cn-future-commodity", "label": "国内期货-商品期货"},
+    {"id": "cn-future-night", "label": "国内期货-商品期货夜盘"},
+    {"id": "other", "label": "其它"}
+  ],
+  "exchangeAliases": {
+    "SSE": ["SSE", "SH", "XSHG"],
+    "SZSE": ["SZSE", "SZ", "XSHE"],
+    "BSE": ["BSE", "BJ"],
+    "HKEX": ["HKEX", "HK", "XHKG"],
+    "CFFEX": ["CFFEX", "CFX"],
+    "SHFE": ["SHFE", "SHF"],
+    "INE": ["INE"],
+    "DCE": ["DCE", "DCECOM"],
+    "CZCE": ["CZCE", "CZC", "ZCE"],
+    "GFEX": ["GFEX", "GFE"]
+  },
+  "aShare": {
+    "etfPrefixes": {
+      "SSE": ["510", "511", "512", "513", "514", "515", "516", "517", "518", "519", "520", "526", "530", "551", "560", "561", "562", "563", "581", "587", "588", "589"],
+      "SZSE": ["158", "159"]
+    },
+    "convertibleBondPrefixes": {
+      "SSE": ["110", "111", "113", "118", "126"],
+      "SZSE": ["121", "123", "124", "127", "128"]
+    },
+    "exchangeableBondPrefixes": {
+      "SSE": ["132"],
+      "SZSE": ["120"]
+    },
+    "pledgedRepoPrefixes": {
+      "SSE": ["204"],
+      "SZSE": ["1318"]
+    },
+    "repoPrefixes": {
+      "SSE": ["201", "202", "203", "204", "205", "206", "207"],
+      "SZSE": ["131"]
+    },
+    "lofPrefixes": {
+      "SSE": ["500", "501", "502", "505", "506"],
+      "SZSE": ["16"]
+    },
+    "reitPrefixes": {
+      "SSE": ["508"],
+      "SZSE": ["180", "181"]
+    },
+    "tdxBoardPrefixes": {
+      "880": "tdx-board-index",
+      "881": "tdx-industry-index"
+    },
+    "indexPrefixes": {
+      "SSE": ["000", "930", "931", "932"],
+      "SZSE": ["399"],
+      "BSE": ["899"]
+    },
+    "indexAllowlist": ["000001", "000300", "000688", "399001", "399006", "899050"],
+    "mainBoardPrefixes": {
+      "SSE": ["600", "601", "603", "605", "900"],
+      "SZSE": ["000", "001", "002", "003", "200"],
+      "BSE": ["43", "83", "87", "88", "920"]
+    },
+    "chinextPrefixes": ["300", "301", "302"],
+    "starPrefixes": ["688", "689"]
+  },
+  "hongKong": {
+    "indexAllowlist": ["HSI", "HSTECH", "HSCEI"]
+  },
+  "futures": {
+    "cffexProducts": ["IF", "IH", "IC", "IM", "TS", "TF", "T", "TL"],
+    "commodityProducts": {
+      "SHFE": ["CU", "AL", "ZN", "PB", "NI", "SN", "AU", "AG", "RB", "HC", "BU", "FU", "RU", "SP", "SS", "AO", "BR", "AD"],
+      "INE": ["SC", "NR", "LU", "BC", "EC"],
+      "DCE": ["A", "B", "M", "Y", "P", "C", "CS", "RR", "I", "J", "JM", "L", "V", "PP", "EG", "EB", "PG", "BE", "JD", "LH", "LG"],
+      "CZCE": ["CF", "SR", "TA", "OI", "MA", "FG", "RM", "ZC", "CY", "AP", "UR", "SA", "PF", "PK", "SF", "SM", "PX", "SH", "PR"],
+      "GFEX": ["SI", "LC", "PS"]
+    },
+    "indexSuffixes": ["000", "888", "999"],
+    "indexAllowlist": ["RB000"],
+    "nightSessions": {
+      "21:00-23:00": ["RB", "HC", "BU", "FU", "RU", "SP", "BR", "NR", "LU", "A", "B", "M", "Y", "P", "C", "CS", "RR", "I", "J", "JM", "L", "V", "PP", "EG", "EB", "PG", "BE", "CF", "SR", "CY", "RM", "OI", "MA", "TA", "FG", "ZC", "SA", "PF", "SH", "PX", "PR"],
+      "21:00-01:00": ["CU", "AL", "ZN", "PB", "NI", "SN", "SS", "AO", "AD", "BC"],
+      "21:00-02:30": ["AU", "AG", "SC"]
+    }
+  },
+  "tradingSessions": {
+    "aShare": ["09:15-09:25 集合竞价", "09:30-11:30", "13:00-15:00"],
+    "hongKong": ["09:30-12:00", "13:00-16:00"],
+    "cffexEquity": ["09:30-11:30", "13:00-15:00"],
+    "cffexBond": ["09:15-11:30", "13:00-15:15"],
+    "commodityDay": ["09:00-10:15", "10:30-11:30", "13:30-15:00"]
+  }
+}

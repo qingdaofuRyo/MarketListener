@@ -189,7 +189,21 @@ class TdxProvider(Provider):
         rows = api.get_security_bars(category, market, code, 0, count)
         if not rows:
             raise ProviderError(ErrorCategory.NO_COVERAGE, f"TDX returned zero {period} bars for {code}")
-        return [_normalise_bar(row, market, code) for row in rows]
+        records: list[Mapping[str, Any]] = []
+        for row in rows:
+            try:
+                records.append(_normalise_bar(row, market, code))
+            except (KeyError, TypeError, ValueError):
+                # Individual public TDX nodes occasionally mix a corrupt
+                # calendar tuple into otherwise valid index pages.  One bad
+                # record must not make the entire chart window unavailable.
+                continue
+        if not records:
+            raise ProviderError(
+                ErrorCategory.FIELD_CHANGE,
+                f"TDX returned no valid {period} bars for {code}",
+            )
+        return records
 
     def _probe_health(self, api: Any, host: str) -> Capability:
         try:
@@ -331,7 +345,8 @@ class TdxProvider(Provider):
 
 
 def _normalise_bar(row: Mapping[str, Any], market: int, code: str) -> Mapping[str, Any]:
-    bar_date = f"{int(row['year']):04d}-{int(row['month']):02d}-{int(row['day']):02d}"
+    calendar_date = date(int(row["year"]), int(row["month"]), int(row["day"]))
+    bar_date = calendar_date.isoformat()
     normalised: dict[str, Any] = {
         "date": bar_date,
         "datetime": row.get("datetime"),

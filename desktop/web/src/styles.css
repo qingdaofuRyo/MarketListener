@@ -167,6 +167,7 @@ body {
   background: var(--ml-background);
   color: var(--ml-text-primary);
 }
+.el-main.market-main { padding-inline: 0; }
 
 /* ---- Common page pieces ---- */
 .page-heading {
@@ -293,6 +294,8 @@ code {
   min-height: 680px;
   display: flex;
   flex-direction: column;
+  width: calc(100% - 10vw);
+  margin-inline: 5vw;
 }
 .industry-heading { margin-bottom: 12px; }
 .atlas-frame {
@@ -450,7 +453,7 @@ code {
   .nav-label, .mode { display: none; }
   .el-main { padding: 14px 12px 24px; }
   .company-search { grid-template-columns: 1fr; }
-  .industry-page { height: calc(100vh - 84px); }
+  .industry-page { height: calc(100vh - 84px); width: 100%; margin-inline: 0; }
   .home-stats { grid-template-columns: repeat(2, 1fr); }
   .overview-strip .wide { grid-column: auto; }
   .data-controls { align-items: stretch; flex-direction: column; }

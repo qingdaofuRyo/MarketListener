@@ -218,6 +218,41 @@ def _coverage_summary(data_root: Path) -> dict[str, Any]:
         import duckdb
     except Exception:
         return {"available": False, "error": "duckdb unavailable", "groups": [], "total_instruments": 0, "total_rows": 0}
+    # The market query manifest already stores exact per-file coverage.  Use
+    # its 50MB metadata table when available instead of rescanning hundreds of
+    # millions of Silver rows on every /api/health request.
+    manifest = Path(data_root) / "state" / "kline_query.duckdb"
+    if manifest.is_file():
+        try:
+            con = duckdb.connect(str(manifest), read_only=True)
+            try:
+                groups = [
+                    {
+                        "market": row[0],
+                        "asset_type": row[1],
+                        "instruments": int(row[2]),
+                        "rows": int(row[3]),
+                        "periods": int(row[4]),
+                    }
+                    for row in con.execute(
+                        "SELECT market, asset_type, count(DISTINCT instrument_id), "
+                        "sum(row_count)::BIGINT, count(DISTINCT period) "
+                        "FROM instrument_file GROUP BY market, asset_type ORDER BY market, asset_type"
+                    ).fetchall()
+                ]
+            finally:
+                con.close()
+            return {
+                "available": True,
+                "groups": groups,
+                "total_instruments": sum(item["instruments"] for item in groups),
+                "total_rows": sum(item["rows"] for item in groups),
+                "source": "kline-query-manifest",
+            }
+        except Exception:
+            # A missing/old/corrupt optional manifest must not make health
+            # unavailable; retain the legacy Silver fallback for small stores.
+            pass
     files = sorted(Path(data_root).joinpath("silver").rglob("*.parquet"))
     if not files:
         return {"available": True, "groups": [], "total_instruments": 0, "total_rows": 0}

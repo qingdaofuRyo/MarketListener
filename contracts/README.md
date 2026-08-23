@@ -32,7 +32,7 @@ migrated by the desktop contract code to this v2 shape while preserving legacy
 run status in explicit migration metadata; unknown legacy capability names are
 mapped to an explicit `other` operation rather than dropped. Other version 1
 contracts remain historical baselines. Any future incompatible change requires
-the ADR process described in `../ADR.md`, not a rewrite of historical D0 evidence.
+the ADR process described in `../docs/ADR.md`, not a rewrite of historical D0 evidence.
 
 For v1 migration only, `source.legacy_name` preserves the provider name exactly
 as received. Each migrated capability registration similarly carries

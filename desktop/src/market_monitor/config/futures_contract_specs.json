@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "formulaVersion": "2026-01-v1",
+  "description": "国内期货沉淀资金计算所需的按生效日合约参数。保证金率发生调整时追加记录，不覆盖历史记录。",
+  "products": {
+    "DCE.JM": {
+      "name": "焦煤",
+      "records": [
+        {
+          "effectiveFrom": "2025-01-01",
+          "contractMultiplier": 60,
+          "marginRate": 0.2,
+          "source": "项目维护的交易所合约参数快照；使用前应按大商所最新通知复核"
+        }
+      ]
+    },
+    "CZCE.AP": {
+      "name": "苹果",
+      "records": [
+        {
+          "effectiveFrom": "2025-01-01",
+          "contractMultiplier": 10,
+          "marginRate": 0.1,
+          "source": "项目维护的交易所合约参数快照；使用前应按郑商所最新通知复核"
+        }
+      ]
+    },
+    "GFEX.PS": {
+      "name": "多晶硅",
+      "records": [
+        {
+          "effectiveFrom": "2025-01-01",
+          "contractMultiplier": 3,
+          "marginRate": 0.09,
+          "source": "项目维护的交易所合约参数快照；使用前应按广期所最新通知复核"
+        }
+      ]
+    }
+  }
+}

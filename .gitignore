@@ -7,6 +7,7 @@ __pycache__/
 artifacts/
 reports/
 /data/
+/exports/
 
 # Local environment and secrets
 .env
@@ -48,6 +49,23 @@ Thumbs.db
 # Runtime data stores / local backups (never uploaded to git).
 data_control/
 data_control_old_20260808/
+*.duckdb
+*.duckdb.wal
+*.sqlite
+*.sqlite3
+*.sqlite-wal
+*.sqlite-shm
+*.db
+*.db-wal
+*.db-shm
+*.parquet
+*.arrow
+*.feather
+*.orc
+*.day
+*.lc1
+*.lc5
+*.tnf
 desktop/*.log
 desktop-backend*.log
 # Resumable full-market / F10 collection state and local diagnostic exports.
@@ -83,6 +101,15 @@ desktop/src/market_monitor/web_dist/
 # Local temporary files
 .agents/
 .agent/
+.secrets/
+.credentials/
+credentials*.json
+secrets*.json
+*.token
+*.bak
+*.tmp
+*.temp
+_patch_*.py
 _ba_test.bin
 _hkex_list.xlsx
 _final_docs_update.py

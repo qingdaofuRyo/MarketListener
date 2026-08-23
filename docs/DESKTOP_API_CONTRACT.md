@@ -1,7 +1,9 @@
 # MarketListener 桌面终端 API 契约
 
+更新日期：2026-08-24。R3 新增端点和行为以本节及 FastAPI 生成的 `/openapi.json` 为准；下方早期示例继续说明基础响应结构。
+
 本文档定义 `desktop/src/market_monitor/web_api/` 下各受控路由的稳定契约。
-所有 mutation 路由（POST/DELETE）由 `web_app.py` 的 loopback 中间件保护，
+所有 mutation 路由（POST/PUT/PATCH/DELETE）由 `web_app.py` 的 loopback 中间件保护，
 只允许 `127.0.0.1/::1` 调用；服务端不得执行任意 SQL、shell 或 Python 代码。
 
 ## 通用规则
@@ -11,6 +13,38 @@
 - 所有数据都来自本地 `data_control`（silver parquet、catalog.duckdb、JSON/JSONL），
   不访问第三方行情/F10 网站。
 - 事件写入 `data_control/logs/events-YYYY-MM-DD.jsonl`（`event_log.EventLog`）。
+- 响应可带 `dataVersion`；浏览器持久缓存必须按版本失效，不能把导入过程中的临时名称长期缓存。
+- 本地查询优先使用 `state/kline_query.duckdb` 文件清单和有界窗口；权威行情仍是 Silver Parquet。
+
+## R3 路由总览
+
+| 前缀 | 主要端点 | 边界 |
+| --- | --- | --- |
+| `/api/market` | `overview`、`cache-status`、`groups`、`categories`、`instruments`、bars meta/history/batch、`chart`、`indicator-series`、drawings index/batch/read/write/delete | 只读行情来自本地；画线写入个人目录且仅 loopback。 |
+| `/api/data-sources` | `providers`、`inventory`、根路径 GET/PUT | 清单、字段和路由配置；不在页面请求中探测外网 Provider。 |
+| `/api/personal` | `watchlist`、`dashboard` | 本机个人配置；写操作仅 loopback。 |
+| `/api/stats` | accounts/trash/analysis、snapshots/cashflows/fills/strategy-uses、CSV、summary、trades/positions、strategy-ledger/performance | 个人交易和账户数据，不写入 Silver。 |
+| `/api/strategy` | definitions CRUD/mark、indicators/conditions/functions、formula/condition validate、matches、validate/run/history | 只允许白名单 DSL/公式；禁止任意 Python、文件和网络访问。 |
+| `/api/dashboard`、`/api/metrics` | 可配置面板及本地指标 | 只读取本地标准化/派生数据。 |
+
+### 行情分页与游标
+
+- 标的列表使用 `page/pageSize`；服务端限制最大页面大小。
+- K 线历史优先使用 `before + limit` 的稳定时间游标；结果按时间升序，`before` 指向当前窗口最早 K 线，`hasMore` 表示是否仍有更早数据。
+- 可见卡片使用 `/api/market/instruments/bars/batch`，避免每张卡片独立扫描全库。
+- `chart` 同时返回 bars、可用周期、指标序列、画线和数据版本，供详情页首屏启动。
+
+### 画线文档
+
+- 图形类型为 `horizontal/vertical/rectangle/text`；点包含时间和价格，样式包含颜色、宽度、线型、填充、文字和锁定等受控字段。
+- 后端保存图形实例；浏览器保存“下次新建图形”的默认样式与吸附/跨周期/连续画线偏好。
+- 批量读取用于列表/卡片只读显示；批量删除必须显式提供受约束的标的或图形范围。
+
+### 数据源清单
+
+- `/providers` 仅表示代码中注册的能力与配置状态，不等于真实可用或已入库。
+- `/inventory` 基于 catalog/Parquet/查询清单返回本地物理表、数据集、字段样本、来源、质量和时间范围。
+- TickDB 原始文件存在但 Silver 来源为 0 时必须显示为未入库，不能提升为可用数据库来源。
 
 ## /api/market
 

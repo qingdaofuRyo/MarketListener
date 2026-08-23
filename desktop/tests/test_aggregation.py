@@ -49,6 +49,17 @@ def test_future_night_session_belongs_to_next_trading_day():
     assert [item["trading_day"] for item in result] == ["2026-08-04", "2026-08-04"]
 
 
+def test_future_extended_night_profiles_accept_0100_and_0230_without_crossing_breaks():
+    one_am = [minute("2026-08-03T23:45:00+08:00", "2026-08-04T00:00:00+08:00", trading_day="2026-08-03"), minute("2026-08-04T00:45:00+08:00", "2026-08-04T01:00:00+08:00", trading_day="2026-08-04")]
+    result = aggregate_bars(one_am, 60, "CN_FUTURE_0100")
+    assert len(result) == 2
+    assert all(item["trading_day"] == "2026-08-04" for item in result)
+
+    two_thirty = [minute("2026-08-04T02:15:00+08:00", "2026-08-04T02:30:00+08:00", trading_day="2026-08-04")]
+    result = aggregate_bars(two_thirty, 60, "CN_FUTURE_0230")
+    assert len(result) == 1 and result[0]["is_partial"] is False
+
+
 def test_daily_bars_aggregate_to_weekly():
     days = ["2026-08-03", "2026-08-04", "2026-08-05", "2026-08-06", "2026-08-07"]
     rows = [daily(day, "600519") for day in days]

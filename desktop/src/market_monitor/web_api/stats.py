@@ -9,15 +9,41 @@ exists the summary reports ``available: false`` with null numeric fields.
 
 from __future__ import annotations
 
+import csv
+import io
 import math
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from market_monitor.account_analysis import (
+    AccountError,
+    analyze_account,
+    create_account,
+    delete_record,
+    list_accounts,
+    list_records,
+    purge_deleted,
+    restore_account,
+    soft_delete_account,
+    update_account,
+    upsert_cashflow,
+    upsert_fill,
+    upsert_snapshot,
+    upsert_strategy_use,
+)
+from market_monitor.strategy_performance import (
+    PerformanceError,
+    build_strategy_performance,
+    delete_strategy_trade,
+    load_performance_store,
+    set_strategy_capital,
+    upsert_strategy_trade,
+)
 from market_monitor.web_api.common import (
     append_jsonl,
     bars_by_instrument,
@@ -39,11 +65,240 @@ _CASH_KINDS = frozenset({"DEPOSIT", "WITHDRAWAL", "DIVIDEND", "TAX_REFUND", "OTH
 _MILLIS_PER_DAY = 86_400_000
 
 
+def _account_error(error: AccountError) -> HTTPException:
+    return HTTPException(status_code=400, detail=str(error))
+
+
 def _data_root(request: Request) -> Path:
     configured = getattr(request.app.state, "data_root", None)
     if configured:
         return Path(configured)
     return _DEFAULT_DATA_ROOT
+
+
+class AccountCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=80)
+    startDate: str
+    initialEquity: float = Field(gt=0)
+    riskFreeRate: float = Field(default=0.02, gt=-1, lt=1)
+    benchmarkInstrumentId: str | None = Field(default=None, max_length=256)
+
+
+class AccountUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str | None = Field(default=None, min_length=1, max_length=80)
+    startDate: str | None = None
+    initialEquity: float | None = Field(default=None, gt=0)
+    riskFreeRate: float | None = Field(default=None, gt=-1, lt=1)
+    benchmarkInstrumentId: str | None = Field(default=None, max_length=256)
+
+
+class SnapshotRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str | None = Field(default=None, max_length=64)
+    day: str
+    equity: float = Field(gt=0)
+    cash: float | None = None
+    marketValue: float | None = None
+    marginUsed: float | None = Field(default=None, ge=0)
+    note: str | None = Field(default=None, max_length=1000)
+
+
+class CashflowRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str | None = Field(default=None, max_length=64)
+    occurredAt: str
+    kind: Literal["DEPOSIT", "WITHDRAWAL"]
+    amount: float = Field(gt=0)
+    note: str | None = Field(default=None, max_length=1000)
+
+
+class FillRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str | None = Field(default=None, max_length=64)
+    instrumentId: str = Field(min_length=1, max_length=256)
+    instrumentName: str | None = Field(default=None, max_length=160)
+    direction: Literal["LONG", "SHORT"]
+    positionEffect: Literal["OPEN", "CLOSE"]
+    occurredAt: str
+    quantity: float = Field(gt=0)
+    price: float = Field(gt=0)
+    contractMultiplier: float = Field(default=1, gt=0)
+    fee: float = Field(default=0, ge=0)
+    strategyId: str | None = Field(default=None, max_length=128)
+    note: str | None = Field(default=None, max_length=1000)
+
+
+class StrategyUseRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str | None = Field(default=None, max_length=64)
+    strategyId: str = Field(min_length=1, max_length=128)
+    strategyName: str | None = Field(default=None, max_length=160)
+    startDate: str
+    endDate: str | None = None
+
+
+class AccountCsvImportRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["snapshots", "cashflows", "fills", "strategyUses"]
+    csvText: str = Field(min_length=1, max_length=2_000_000)
+
+
+@router.get("/accounts")
+def accounts(request: Request) -> dict[str, Any]:
+    data_root = _data_root(request)
+    purge_deleted(data_root)
+    return clean({"items": list_accounts(data_root), "total": len(list_accounts(data_root))})
+
+
+@router.get("/accounts/trash")
+def account_trash(request: Request) -> dict[str, Any]:
+    rows = [item for item in list_accounts(_data_root(request), include_deleted=True) if item.get("deletedAt")]
+    return clean({"items": rows, "total": len(rows)})
+
+
+@router.post("/accounts", status_code=201)
+def account_create(request: Request, body: AccountCreateRequest) -> dict[str, Any]:
+    try:
+        return create_account(_data_root(request), body.model_dump())
+    except AccountError as error:
+        raise _account_error(error) from error
+
+
+@router.get("/accounts/{account_id}")
+def account_get(request: Request, account_id: str) -> dict[str, Any]:
+    try:
+        from market_monitor.account_analysis import get_account
+        return get_account(_data_root(request), account_id)
+    except AccountError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+
+@router.put("/accounts/{account_id}")
+def account_update(request: Request, account_id: str, body: AccountUpdateRequest) -> dict[str, Any]:
+    try:
+        return update_account(_data_root(request), account_id, body.model_dump(exclude_unset=True))
+    except AccountError as error:
+        raise _account_error(error) from error
+
+
+@router.delete("/accounts/{account_id}")
+def account_delete(request: Request, account_id: str) -> dict[str, Any]:
+    try:
+        soft_delete_account(_data_root(request), account_id)
+    except AccountError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    return {"deleted": True, "accountId": account_id, "recoverableDays": 30}
+
+
+@router.post("/accounts/{account_id}/restore")
+def account_restore(request: Request, account_id: str) -> dict[str, Any]:
+    try:
+        return restore_account(_data_root(request), account_id)
+    except AccountError as error:
+        raise _account_error(error) from error
+
+
+@router.get("/accounts/{account_id}/analysis")
+def account_analysis(
+    request: Request, account_id: str, start: str | None = None, end: str | None = None,
+) -> dict[str, Any]:
+    try:
+        return analyze_account(_data_root(request), account_id, start=start, end=end)
+    except AccountError as error:
+        raise _account_error(error) from error
+
+
+_ACCOUNT_RECORDS: dict[str, tuple[str, Any]] = {
+    "snapshots": ("account_snapshots", upsert_snapshot),
+    "cashflows": ("account_cashflows", upsert_cashflow),
+    "fills": ("account_fills", upsert_fill),
+    "strategy-uses": ("account_strategy_uses", upsert_strategy_use),
+}
+
+
+@router.get("/accounts/{account_id}/{kind}")
+def account_records(request: Request, account_id: str, kind: str) -> dict[str, Any]:
+    selected = _ACCOUNT_RECORDS.get(kind)
+    if selected is None:
+        raise HTTPException(status_code=404, detail="未知账户记录类型")
+    try:
+        rows = list_records(_data_root(request), account_id, selected[0])
+        return clean({"items": rows, "total": len(rows)})
+    except AccountError as error:
+        raise _account_error(error) from error
+
+
+def _save_account_record(request: Request, account_id: str, kind: str, payload: dict[str, Any]) -> dict[str, Any]:
+    selected = _ACCOUNT_RECORDS.get(kind)
+    if selected is None:
+        raise HTTPException(status_code=404, detail="未知账户记录类型")
+    try:
+        return selected[1](_data_root(request), account_id, payload)
+    except AccountError as error:
+        raise _account_error(error) from error
+
+
+@router.post("/accounts/{account_id}/snapshots")
+def account_snapshot_save(request: Request, account_id: str, body: SnapshotRequest) -> dict[str, Any]:
+    return _save_account_record(request, account_id, "snapshots", body.model_dump())
+
+
+@router.post("/accounts/{account_id}/cashflows")
+def account_cashflow_save(request: Request, account_id: str, body: CashflowRequest) -> dict[str, Any]:
+    return _save_account_record(request, account_id, "cashflows", body.model_dump())
+
+
+@router.post("/accounts/{account_id}/fills")
+def account_fill_save(request: Request, account_id: str, body: FillRequest) -> dict[str, Any]:
+    return _save_account_record(request, account_id, "fills", body.model_dump())
+
+
+@router.post("/accounts/{account_id}/strategy-uses")
+def account_strategy_use_save(request: Request, account_id: str, body: StrategyUseRequest) -> dict[str, Any]:
+    return _save_account_record(request, account_id, "strategy-uses", body.model_dump())
+
+
+@router.delete("/accounts/{account_id}/{kind}/{record_id}")
+def account_record_delete(request: Request, account_id: str, kind: str, record_id: str) -> dict[str, Any]:
+    selected = _ACCOUNT_RECORDS.get(kind)
+    if selected is None:
+        raise HTTPException(status_code=404, detail="未知账户记录类型")
+    try:
+        delete_record(_data_root(request), account_id, selected[0], record_id)
+    except AccountError as error:
+        raise _account_error(error) from error
+    return {"deleted": True, "id": record_id}
+
+
+@router.post("/accounts/{account_id}/csv-import")
+def account_csv_import(request: Request, account_id: str, body: AccountCsvImportRequest) -> dict[str, Any]:
+    """Import one account record kind from a UTF-8 CSV header row atomically per row."""
+    kind_map = {"snapshots": "snapshots", "cashflows": "cashflows", "fills": "fills", "strategyUses": "strategy-uses"}
+    kind = kind_map[body.kind]
+    reader = csv.DictReader(io.StringIO(body.csvText))
+    imported = 0
+    errors: list[dict[str, Any]] = []
+    for line, row in enumerate(reader, start=2):
+        if line > 10_001:
+            raise HTTPException(status_code=422, detail="单次 CSV 最多导入 10000 行")
+        try:
+            # CSV leaves everything as text.  Let Pydantic coerce numeric values
+            # and surface the same validation messages as the manual form.
+            if kind == "snapshots":
+                payload = SnapshotRequest.model_validate(row).model_dump()
+            elif kind == "cashflows":
+                payload = CashflowRequest.model_validate(row).model_dump()
+            elif kind == "fills":
+                payload = FillRequest.model_validate(row).model_dump()
+            else:
+                payload = StrategyUseRequest.model_validate(row).model_dump()
+            _save_account_record(request, account_id, kind, payload)
+            imported += 1
+        except (AccountError, ValueError) as error:
+            errors.append({"line": line, "message": str(error)})
+    return clean({"imported": imported, "failed": len(errors), "errors": errors[:100]})
 
 
 def _ledger_path(data_root: Path) -> Path:
@@ -396,6 +651,118 @@ def _summary_payload(data_root: Path) -> dict[str, Any]:
 @router.get("/summary")
 def stats_summary(request: Request) -> dict[str, Any]:
     return clean(_summary_payload(_data_root(request)))
+
+
+class StrategyCapitalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    initialCapital: float = Field(gt=0)
+
+
+class StrategyTradeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    strategyId: str = Field(min_length=1, max_length=128)
+    instrumentId: str = Field(min_length=1, max_length=256)
+    direction: Literal["LONG", "SHORT"]
+    entryAt: datetime
+    entryPrice: float = Field(gt=0)
+    exitAt: datetime | None = None
+    exitPrice: float | None = Field(default=None, gt=0)
+    quantity: float = Field(gt=0)
+    contractMultiplier: float = Field(default=1, gt=0)
+    entryFees: float = Field(default=0, ge=0)
+    exitFees: float = Field(default=0, ge=0)
+    note: str | None = Field(default=None, max_length=1000)
+
+    def as_record(self) -> dict[str, Any]:
+        if (self.exitAt is None) != (self.exitPrice is None):
+            raise ValueError("平仓时间和价格必须同时填写")
+        entry_at = self.entryAt if self.entryAt.tzinfo else self.entryAt.replace(tzinfo=timezone.utc)
+        exit_at = self.exitAt if self.exitAt is None or self.exitAt.tzinfo else self.exitAt.replace(tzinfo=timezone.utc)
+        if exit_at is not None and exit_at < entry_at:
+            raise ValueError("平仓时间不能早于开仓时间")
+        return {
+            "strategyId": self.strategyId, "instrumentId": self.instrumentId, "direction": self.direction,
+            "entryAt": entry_at.isoformat(), "entryPrice": self.entryPrice,
+            "exitAt": exit_at.isoformat() if exit_at else None, "exitPrice": self.exitPrice,
+            "quantity": self.quantity, "contractMultiplier": self.contractMultiplier,
+            "entryFees": self.entryFees, "exitFees": self.exitFees, "note": self.note,
+        }
+
+
+class StrategyPerformanceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    strategyId: str = Field(min_length=1, max_length=128)
+    period: str = Field(min_length=1, max_length=16)
+    lookback: int | None = Field(default=None, ge=3, le=100_000)
+    riskFreeRate: float = Field(default=0.02, ge=-1, le=1)
+
+
+@router.get("/strategy-ledger")
+def stats_strategy_ledger(request: Request) -> dict[str, Any]:
+    data_root = _data_root(request)
+    store = load_performance_store(data_root)
+    legacy, _cash = _ledger_events(data_root)
+    legacy_items = [
+        {
+            "id": f"legacy:{trade['line_index']}", "strategyId": trade["strategy_id"],
+            "instrumentId": trade["instrument_id"], "direction": "LONG", "side": trade["side"],
+            "executedAt": trade["executed_at_text"], "price": trade["price"], "quantity": trade["quantity"],
+            "contractMultiplier": 1, "fees": trade["fees"], "editable": False, "source": "legacy",
+        }
+        for trade in legacy if trade["strategy_id"]
+    ]
+    return clean({"capitalByStrategy": store["capitalByStrategy"], "items": store["trades"],
+                  "legacyItems": legacy_items, "total": len(store["trades"]) + len(legacy_items)})
+
+
+@router.put("/strategy-capital/{strategy_id}")
+def stats_strategy_capital(request: Request, strategy_id: str, body: StrategyCapitalRequest) -> dict[str, Any]:
+    try:
+        store = set_strategy_capital(_data_root(request), strategy_id, body.initialCapital)
+    except PerformanceError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return clean({"strategyId": strategy_id, "initialCapital": store["capitalByStrategy"][strategy_id]})
+
+
+def _trade_record(body: StrategyTradeRequest) -> dict[str, Any]:
+    try:
+        return body.as_record()
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.post("/strategy-trades", status_code=201)
+def stats_strategy_trade_create(request: Request, body: StrategyTradeRequest) -> dict[str, Any]:
+    return clean(upsert_strategy_trade(_data_root(request), _trade_record(body)))
+
+
+@router.put("/strategy-trades/{trade_id}")
+def stats_strategy_trade_update(request: Request, trade_id: str, body: StrategyTradeRequest) -> dict[str, Any]:
+    try:
+        return clean(upsert_strategy_trade(_data_root(request), _trade_record(body), trade_id))
+    except PerformanceError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+
+@router.delete("/strategy-trades/{trade_id}")
+def stats_strategy_trade_delete(request: Request, trade_id: str) -> dict[str, Any]:
+    try:
+        delete_strategy_trade(_data_root(request), trade_id)
+    except PerformanceError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    return clean({"deleted": True, "id": trade_id})
+
+
+@router.post("/strategy-performance")
+def stats_strategy_performance(request: Request, body: StrategyPerformanceRequest) -> dict[str, Any]:
+    try:
+        result = build_strategy_performance(
+            _data_root(request), body.strategyId, body.period,
+            lookback=body.lookback, risk_free_rate=body.riskFreeRate,
+        )
+    except (PerformanceError, ValueError) as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return clean(result)
 
 
 @router.get("/trades")

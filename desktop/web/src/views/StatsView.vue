@@ -1,209 +1,63 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
-import { apiGet, formatMoney, formatNumber, formatPct, formatTime } from "../domain/api";
+import { computed, onMounted, reactive, ref } from "vue";
 import SeriesChart, { type NamedSeries } from "../components/charts/SeriesChart.vue";
+import { apiDelete, apiGet, apiPost, apiPut, formatNumber, formatPct } from "../domain/api";
 
-interface NavPoint {
-  t: string;
-  nav: number;
-  cash: number;
-  positionValue: number;
-  exposurePct: number;
-  markedWithFallback?: boolean;
-}
+interface Account { id: string; name: string; startDate: string; initialEquity: number; riskFreeRate: number; benchmarkInstrumentId?: string | null; deletedAt?: string | null; }
+interface Metric { value: number | null; reason?: string | null; }
+interface Point { t: string; [key: string]: number | string | null | undefined; }
+interface Analysis { available: boolean; reason?: string; account: Account; startDate?: string; endDate?: string; metrics: Record<string, Metric>; series: Point[]; snapshots: Record<string, unknown>[]; fills: Record<string, unknown>[]; cashflows: Record<string, unknown>[]; strategyUses: Record<string, unknown>[]; reconciliation?: { maxDrawdownMode?: string }; }
+interface Instrument { instrumentId: string; symbol?: string; name?: string; }
 
-interface StatsSummary {
-  available: boolean;
-  navCurve?: NavPoint[];
-  totalReturnPct?: number | null;
-  maxDrawdownPct?: number | null;
-  winRatePct?: number | null;
-  profitFactor?: number | null;
-  grossProfit?: number | null;
-  grossLoss?: number | null;
-  feesTotal?: number | null;
-  realizedTotal?: number | null;
-  averageExposurePct?: number | null;
-  maxExposurePct?: number | null;
-  realizedByStrategy?: Record<string, number>;
-  realizedByInstrument?: Record<string, number>;
-  unrealizedByStrategy?: Record<string, number>;
-  unrealizedByInstrument?: Record<string, number>;
-  unrealizedTotal?: number | null;
-  generatedAt?: string;
-}
+const accounts = ref<Account[]>([]); const trash = ref<Account[]>([]); const benchmarks = ref<Instrument[]>([]); const accountId = ref(""); const analysis = ref<Analysis>(); const loading = ref(false); const error = ref(""); const createOpen = ref(false); const trashOpen = ref(false); const expanded = ref(""); const importKind = ref<"snapshots" | "cashflows" | "fills" | "strategyUses">("snapshots");
+const range = reactive({ start: "", end: "" });
+const accountForm = reactive({ name: "", startDate: new Date().toISOString().slice(0, 10), initialEquity: 100000, riskFreeRate: 0.02, benchmarkInstrumentId: "" });
+const snapshotForm = reactive({ id: "", day: "", equity: 0, cash: undefined as number | undefined, marketValue: undefined as number | undefined, marginUsed: undefined as number | undefined, note: "" });
+const cashForm = reactive({ id: "", occurredAt: "", kind: "DEPOSIT" as "DEPOSIT" | "WITHDRAWAL", amount: 0, note: "" });
+const fillForm = reactive({ id: "", instrumentId: "", instrumentName: "", direction: "LONG" as "LONG" | "SHORT", positionEffect: "OPEN" as "OPEN" | "CLOSE", occurredAt: "", quantity: 1, price: 0, contractMultiplier: 1, fee: 0, strategyId: "", note: "" });
+const strategyForm = reactive({ id: "", strategyId: "", strategyName: "", startDate: "", endDate: "" });
+const metricCards = [
+  ["initialFunds", "期初资金", false], ["endingFunds", "期末资金", false], ["maxDrawdown", "最大回撤", true], ["cumulativePnl", "累计盈亏", false], ["cumulativeDeposits", "累计入金", false], ["cumulativeWithdrawals", "累计出金", false], ["cumulativeFees", "累计手续费", false], ["cumulativeReturn", "累计收益率", true], ["benchmarkReturn", "基准收益率", true], ["excessReturn", "超额收益率", true], ["annualReturn", "年化收益率", true], ["annualVolatility", "年化波动率", true], ["winRate", "胜率", true], ["profitLossRatio", "盈亏比", false], ["alpha", "Alpha", false], ["beta", "Beta", false], ["sharpe", "夏普比率", false], ["calmar", "卡玛比率", false], ["sortino", "索提诺比率", false], ["information", "信息比率", false], ["treynor", "特雷诺比率", false], ["riskFreeRate", "无风险利率", true], ["tradingDays", "交易天数", false], ["tradingFrequency", "交易频率", false], ["capitalUtilization", "资金使用率", true], ["cumulativeNav", "累计净值", false], ["profitDays", "盈利天数", false],
+] as const;
+const seriesField: Record<string, string> = { initialFunds: "equity", endingFunds: "equity", cumulativePnl: "cumulativePnl", cumulativeDeposits: "deposits", cumulativeWithdrawals: "withdrawals", cumulativeFees: "fees", cumulativeReturn: "return", benchmarkReturn: "benchmarkReturn", excessReturn: "excessReturn", maxDrawdown: "drawdown", capitalUtilization: "capitalUtilization", cumulativeNav: "nav", riskFreeRate: "riskFreeRate" };
+const activeMetric = computed(() => metricCards.find(([key]) => key === expanded.value));
+const chartSeries = computed<NamedSeries[]>(() => { const key = seriesField[expanded.value]; if (!key || !analysis.value) return []; return [{ name: activeMetric.value?.[1] || expanded.value, points: analysis.value.series.filter((row) => typeof row[key] === "number").map((row) => ({ t: String(row.t), value: Number(row[key]) })) }]; });
 
-interface TradeRow {
-  instrumentId: string;
-  side: string;
-  quantity: number;
-  price: number;
-  executedAt: string;
-  fees?: Array<{ kind?: string; amount?: number }>;
-  strategyId?: string | null;
-  orderGroupId?: string | null;
-  note?: string | null;
-}
-
-interface PositionRow {
-  instrumentId: string;
-  quantity: number;
-  averageCost: number;
-  marketValue: number;
-  unrealizedPnl: number;
-  updatedAt: string;
-}
-
-const summary = ref<StatsSummary>({ available: false });
-const trades = ref<TradeRow[]>([]);
-const positions = ref<PositionRow[]>([]);
-const loading = ref(false);
-const error = ref("");
-
-const navSeries = ref<NamedSeries[]>([]);
-
-function buildNavSeries(curve: NavPoint[]): NamedSeries[] {
-  const points = (key: "nav" | "cash" | "positionValue") =>
-    curve.map((point) => ({ t: point.t, value: Number(point[key]) }));
-  return [
-    { name: "净值", points: points("nav") },
-    { name: "现金", points: points("cash") },
-    { name: "持仓市值", points: points("positionValue") },
-  ];
-}
-
-async function load(): Promise<void> {
-  loading.value = true;
-  error.value = "";
-  try {
-    summary.value = await apiGet<StatsSummary>("/api/stats/summary");
-    if (!summary.value.available) {
-      trades.value = [];
-      positions.value = [];
-      navSeries.value = [];
-      return;
-    }
-    navSeries.value = buildNavSeries(summary.value.navCurve ?? []);
-    const [tradeData, positionData] = await Promise.all([
-      apiGet<{ items: TradeRow[]; total: number }>("/api/stats/trades", { page: 1, pageSize: 200 }),
-      apiGet<{ items: PositionRow[]; total: number }>("/api/stats/positions"),
-    ]);
-    trades.value = tradeData.items;
-    positions.value = positionData.items;
-  } catch (reason) {
-    error.value = reason instanceof Error ? reason.message : "交易统计加载失败";
-  } finally {
-    loading.value = false;
-  }
-}
-
-function sideType(side: string): "danger" | "success" {
-  return side === "BUY" ? "danger" : "success";
-}
-
-onMounted(() => void load());
+function metricText(key: string, percent: boolean): string { const metric = analysis.value?.metrics?.[key]; if (!metric || metric.value == null) return metric?.reason || "不可计算"; return percent ? formatPct(metric.value * 100) : formatNumber(metric.value, key.includes("Days") ? 0 : 4); }
+function resetForms(): void { Object.assign(snapshotForm, { id: "", day: "", equity: 0, cash: undefined, marketValue: undefined, marginUsed: undefined, note: "" }); Object.assign(cashForm, { id: "", occurredAt: "", kind: "DEPOSIT", amount: 0, note: "" }); Object.assign(fillForm, { id: "", instrumentId: "", instrumentName: "", direction: "LONG", positionEffect: "OPEN", occurredAt: "", quantity: 1, price: 0, contractMultiplier: 1, fee: 0, strategyId: "", note: "" }); Object.assign(strategyForm, { id: "", strategyId: "", strategyName: "", startDate: "", endDate: "" }); }
+async function loadAccounts(): Promise<void> { const [accountData, trashData, instrumentData] = await Promise.all([apiGet<{ items: Account[] }>("/api/stats/accounts", undefined, { force: true }), apiGet<{ items: Account[] }>("/api/stats/accounts/trash", undefined, { force: true }), apiGet<{ items: Instrument[] }>("/api/market/instruments", { page: 1, pageSize: 500 }, { force: true })]); accounts.value = accountData.items; trash.value = trashData.items; benchmarks.value = instrumentData.items; if (!accountId.value && accounts.value.length) accountId.value = accounts.value[0].id; }
+async function loadAnalysis(): Promise<void> { if (!accountId.value) { analysis.value = undefined; return; } loading.value = true; error.value = ""; try { analysis.value = await apiGet<Analysis>(`/api/stats/accounts/${encodeURIComponent(accountId.value)}/analysis`, { start: range.start || undefined, end: range.end || undefined }, { force: true }); range.start ||= analysis.value.startDate || ""; range.end ||= analysis.value.endDate || ""; } catch (reason) { error.value = reason instanceof Error ? reason.message : "账户分析加载失败"; } finally { loading.value = false; } }
+async function initialize(): Promise<void> { try { await loadAccounts(); await loadAnalysis(); } catch (reason) { error.value = reason instanceof Error ? reason.message : "账户列表加载失败"; } }
+async function createAccount(): Promise<void> { try { const account = await apiPost<Account>("/api/stats/accounts", accountForm); createOpen.value = false; accountId.value = account.id; await initialize(); } catch (reason) { error.value = reason instanceof Error ? reason.message : "账户创建失败"; } }
+async function deleteAccount(): Promise<void> { const account = accounts.value.find((item) => item.id === accountId.value); if (!account || !window.confirm(`将“${account.name}”移入回收区？`)) return; try { await apiDelete(`/api/stats/accounts/${encodeURIComponent(account.id)}`); accountId.value = ""; analysis.value = undefined; await initialize(); } catch (reason) { error.value = reason instanceof Error ? reason.message : "账户删除失败"; } }
+async function restore(id: string): Promise<void> { try { await apiPost(`/api/stats/accounts/${encodeURIComponent(id)}/restore`); await loadAccounts(); } catch (reason) { error.value = reason instanceof Error ? reason.message : "账户恢复失败"; } }
+async function saveRecord(kind: "snapshots" | "cashflows" | "fills" | "strategy-uses", payload: object): Promise<void> { if (!accountId.value) return; try { await apiPost(`/api/stats/accounts/${encodeURIComponent(accountId.value)}/${kind}`, payload); resetForms(); await loadAnalysis(); } catch (reason) { error.value = reason instanceof Error ? reason.message : "记录保存失败"; } }
+async function deleteRecord(kind: string, id: unknown): Promise<void> { if (!accountId.value || typeof id !== "string") return; try { await apiDelete(`/api/stats/accounts/${encodeURIComponent(accountId.value)}/${kind}/${encodeURIComponent(id)}`); await loadAnalysis(); } catch (reason) { error.value = reason instanceof Error ? reason.message : "记录删除失败"; } }
+async function importCsv(event: Event): Promise<void> { const input = event.target as HTMLInputElement; const file = input.files?.[0]; if (!file || !accountId.value) return; try { const result = await apiPost<{ imported: number; failed: number }>(`/api/stats/accounts/${encodeURIComponent(accountId.value)}/csv-import`, { kind: importKind.value, csvText: await file.text() }); error.value = result.failed ? `已导入 ${result.imported} 行；${result.failed} 行失败，请检查 CSV。` : `已导入 ${result.imported} 行。`; await loadAnalysis(); } catch (reason) { error.value = reason instanceof Error ? reason.message : "CSV 导入失败"; } finally { input.value = ""; } }
+function editSnapshot(row: Record<string, unknown>): void { Object.assign(snapshotForm, { id: String(row.id), day: String(row.day), equity: Number(row.equity), cash: row.cash as number | undefined, marketValue: row.marketValue as number | undefined, marginUsed: row.marginUsed as number | undefined, note: String(row.note || "") }); }
+function editFill(row: Record<string, unknown>): void { Object.assign(fillForm, { id: String(row.id), instrumentId: String(row.instrumentId), instrumentName: String(row.instrumentName || ""), direction: String(row.direction) as "LONG" | "SHORT", positionEffect: String(row.positionEffect) as "OPEN" | "CLOSE", occurredAt: String(row.occurredAt).slice(0,16), quantity: Number(row.quantity), price: Number(row.price), contractMultiplier: Number(row.contractMultiplier), fee: Number(row.fee), strategyId: String(row.strategyId || ""), note: String(row.note || "") }); }
+function editCash(row: Record<string, unknown>): void { Object.assign(cashForm, { id: String(row.id), occurredAt: String(row.occurredAt).slice(0,16), kind: String(row.kind) as "DEPOSIT" | "WITHDRAWAL", amount: Number(row.amount), note: String(row.note || "") }); }
+onMounted(() => void initialize());
 </script>
 
 <template>
-  <section>
-    <div class="page-heading">
-      <div>
-        <h1 class="page-title">统计</h1>
-        <p class="page-note">本地交易台账（ledger.jsonl）的资产曲线、回撤、胜率与盈亏分布；无台账时显示空态。</p>
-      </div>
-      <el-button :loading="loading" data-test="stats-refresh" @click="void load()">刷新</el-button>
-    </div>
+  <main class="accounts-page">
+    <header class="page-heading"><div><h1 class="page-title">账户分析</h1><p>每日账户快照为权威；成交和本地行情用于归因、FIFO 平仓与对账。</p></div><div class="account-tools"><el-select v-model="accountId" placeholder="选择账户" @change="range.start = ''; range.end = ''; void loadAnalysis()"><el-option v-for="item in accounts" :key="item.id" :label="item.name" :value="item.id"/></el-select><el-button type="primary" @click="createOpen = true">新建账户</el-button><el-button :disabled="!accountId" type="danger" plain @click="void deleteAccount()">删除账户</el-button><el-button plain @click="trashOpen = true">回收区</el-button><el-select v-model="importKind" :disabled="!accountId" class="import-kind"><el-option label="导入：每日快照" value="snapshots"/><el-option label="导入：资金流水" value="cashflows"/><el-option label="导入：成交" value="fills"/><el-option label="导入：策略使用" value="strategyUses"/></el-select><input class="csv-file" type="file" accept=".csv,text/csv" :disabled="!accountId" @change="void importCsv($event)"><el-button :loading="loading" @click="void loadAnalysis()">刷新</el-button></div></header>
     <el-alert v-if="error" :title="error" type="warning" :closable="false" class="page-alert" />
-
-    <section v-if="!summary.available && !loading" class="panel empty-state" data-test="stats-empty">
-      <h2>暂无交易统计数据</h2>
-      <p class="muted">本机 <code>data_control/personal/ledger.jsonl</code> 暂无有效交易或资金记录；工作台不会用零值伪造收益曲线。</p>
-    </section>
-
-    <template v-else-if="summary.available">
-      <section class="overview-strip">
-        <div class="metric compact"><span>总收益</span><strong>{{ formatPct(summary.totalReturnPct) }}</strong></div>
-        <div class="metric compact"><span>最大回撤</span><strong>{{ formatPct(summary.maxDrawdownPct) }}</strong></div>
-        <div class="metric compact"><span>胜率</span><strong>{{ formatPct(summary.winRatePct) }}</strong></div>
-        <div class="metric compact"><span>盈亏比</span><strong>{{ formatNumber(summary.profitFactor) }}</strong></div>
-        <div class="metric compact"><span>已实现</span><strong>{{ formatMoney(summary.realizedTotal) }}</strong></div>
-        <div class="metric compact"><span>未实现</span><strong>{{ formatMoney(summary.unrealizedTotal) }}</strong></div>
-        <div class="metric compact"><span>总费用</span><strong>{{ formatMoney(summary.feesTotal) }}</strong></div>
-        <div class="metric compact"><span>平均/最大敞口</span><strong class="small">{{ formatPct(summary.averageExposurePct) }} / {{ formatPct(summary.maxExposurePct) }}</strong></div>
-      </section>
-
-      <section class="panel">
-        <div class="panel-title">
-          <h2>资产曲线</h2>
-          <span class="muted">{{ formatTime(summary.generatedAt) }}</span>
-        </div>
-        <SeriesChart :series="navSeries" unit="金额" :height="300" data-test="nav-curve" />
-      </section>
-
-      <div class="stats-grid">
-        <section class="panel">
-          <h2>按策略已实现</h2>
-          <el-table :data="Object.entries(summary.realizedByStrategy ?? {}).map(([name, value]) => ({ name, value }))" size="small" max-height="260" empty-text="暂无数据">
-            <el-table-column prop="name" label="策略" min-width="140" />
-            <el-table-column label="已实现" width="140" align="right">
-              <template #default="scope">{{ formatMoney(scope.row.value) }}</template>
-            </el-table-column>
-          </el-table>
-        </section>
-        <section class="panel">
-          <h2>按标的已实现</h2>
-          <el-table :data="Object.entries(summary.realizedByInstrument ?? {}).map(([name, value]) => ({ name, value }))" size="small" max-height="260" empty-text="暂无数据">
-            <el-table-column prop="name" label="标的" min-width="140" />
-            <el-table-column label="已实现" width="140" align="right">
-              <template #default="scope">{{ formatMoney(scope.row.value) }}</template>
-            </el-table-column>
-          </el-table>
-        </section>
-      </div>
-
-      <section class="panel">
-        <div class="panel-title">
-          <h2>当前持仓</h2>
-          <span class="muted">{{ positions.length }} 个</span>
-        </div>
-        <el-table :data="positions" size="small" empty-text="暂无持仓" max-height="320">
-          <el-table-column prop="instrumentId" label="标的" min-width="150" />
-          <el-table-column prop="quantity" label="数量" width="100" align="right" />
-          <el-table-column label="平均成本" width="130" align="right">
-            <template #default="scope">{{ formatNumber(scope.row.averageCost, 4) }}</template>
-          </el-table-column>
-          <el-table-column label="市值" width="130" align="right">
-            <template #default="scope">{{ formatMoney(scope.row.marketValue) }}</template>
-          </el-table-column>
-          <el-table-column label="未实现盈亏" width="130" align="right">
-            <template #default="scope">{{ formatMoney(scope.row.unrealizedPnl) }}</template>
-          </el-table-column>
-        </el-table>
-      </section>
-
-      <section class="panel">
-        <div class="panel-title">
-          <h2>交易记录</h2>
-          <span class="muted">{{ trades.length }} 条（预览 200）</span>
-        </div>
-        <el-table :data="trades" size="small" empty-text="暂无交易" max-height="420">
-          <el-table-column prop="instrumentId" label="标的" min-width="150" />
-          <el-table-column prop="side" label="方向" width="80">
-            <template #default="scope"><el-tag size="small" :type="sideType(scope.row.side)">{{ scope.row.side }}</el-tag></template>
-          </el-table-column>
-          <el-table-column prop="quantity" label="数量" width="100" align="right" />
-          <el-table-column label="价格" width="120" align="right">
-            <template #default="scope">{{ formatNumber(scope.row.price, 4) }}</template>
-          </el-table-column>
-          <el-table-column label="费用" width="110" align="right">
-            <template #default="scope">{{ formatMoney((scope.row.fees ?? []).reduce((sum: number, fee: { amount?: number }) => sum + Number(fee.amount || 0), 0)) }}</template>
-          </el-table-column>
-          <el-table-column prop="strategyId" label="策略" min-width="130" />
-          <el-table-column label="成交时间" min-width="170">
-            <template #default="scope">{{ formatTime(scope.row.executedAt) }}</template>
-          </el-table-column>
-        </el-table>
-      </section>
+    <section v-if="!accounts.length && !loading" class="panel empty"><h2>还没有账户</h2><p>新建账户后录入每日快照、成交和资金流水，即可计算完整的账户分析指标。</p></section>
+    <template v-else-if="analysis"><section class="panel range"><el-date-picker v-model="range.start" type="date" value-format="YYYY-MM-DD" placeholder="开始日期" @change="void loadAnalysis()"/><span>至</span><el-date-picker v-model="range.end" type="date" value-format="YYYY-MM-DD" placeholder="截止日期" @change="void loadAnalysis()"/><el-select v-model="analysis.account.benchmarkInstrumentId" filterable placeholder="选择基准标的" @change="void apiPut(`/api/stats/accounts/${accountId}`, { benchmarkInstrumentId: analysis?.account.benchmarkInstrumentId || null }).then(loadAnalysis)"><el-option v-for="item in benchmarks" :key="item.instrumentId" :label="`${item.symbol || item.instrumentId} ${item.name || ''}`" :value="item.instrumentId"/></el-select><span class="muted">最大回撤：{{ analysis.reconciliation?.maxDrawdownMode }}</span></section>
+      <section class="metric-grid"><button v-for="[key,text,percent] in metricCards" :key="key" type="button" class="metric" :class="{ expanded: expanded === key }" @click="expanded = expanded === key ? '' : key"><span>{{ text }}</span><strong>{{ metricText(key, percent) }}</strong></button></section>
+      <section v-if="expanded" class="panel"><div class="panel-title"><h2>{{ activeMetric?.[1] }}趋势</h2><span class="muted">点击指标卡可收起</span></div><SeriesChart :series="chartSeries" :unit="activeMetric?.[2] ? '%' : ''" :height="280"/></section>
+      <section class="record-grid"><section class="panel"><h2>每日账户快照</h2><div class="form-grid"><el-input v-model="snapshotForm.day" type="date" placeholder="日期"/><el-input-number v-model="snapshotForm.equity" :controls="false" placeholder="总资产"/><el-input-number v-model="snapshotForm.cash" :controls="false" placeholder="现金"/><el-input-number v-model="snapshotForm.marketValue" :controls="false" placeholder="持仓市值"/><el-input-number v-model="snapshotForm.marginUsed" :controls="false" placeholder="占用保证金"/><el-input v-model="snapshotForm.note" placeholder="备注"/><el-button type="primary" @click="void saveRecord('snapshots', snapshotForm)">{{ snapshotForm.id ? '更新快照' : '保存快照' }}</el-button></div><el-table :data="analysis.snapshots" size="small" max-height="260"><el-table-column prop="day" label="日期"/><el-table-column prop="equity" label="总资产"/><el-table-column prop="cash" label="现金"/><el-table-column prop="marketValue" label="持仓市值"/><el-table-column prop="marginUsed" label="保证金"/><el-table-column width="100" label="操作"><template #default="scope"><el-button text @click="editSnapshot(scope.row)">编辑</el-button><el-button text type="danger" @click="void deleteRecord('snapshots', scope.row.id)">删除</el-button></template></el-table-column></el-table></section>
+        <section class="panel"><h2>资金流水</h2><div class="form-grid"><el-input v-model="cashForm.occurredAt" type="datetime-local"/><el-select v-model="cashForm.kind"><el-option label="入金" value="DEPOSIT"/><el-option label="出金" value="WITHDRAWAL"/></el-select><el-input-number v-model="cashForm.amount" :controls="false" placeholder="金额"/><el-input v-model="cashForm.note" placeholder="备注"/><el-button type="primary" @click="void saveRecord('cashflows', cashForm)">{{ cashForm.id ? '更新流水' : '保存流水' }}</el-button></div><el-table :data="analysis.cashflows" size="small" max-height="260"><el-table-column prop="occurredAt" label="时间" min-width="160"/><el-table-column prop="kind" label="类型"/><el-table-column prop="amount" label="金额"/><el-table-column width="100" label="操作"><template #default="scope"><el-button text @click="editCash(scope.row)">编辑</el-button><el-button text type="danger" @click="void deleteRecord('cashflows', scope.row.id)">删除</el-button></template></el-table-column></el-table></section></section>
+      <section class="panel"><h2>交易标的</h2><div class="form-grid fills"><el-input v-model="fillForm.instrumentId" placeholder="标的代码"/><el-input v-model="fillForm.instrumentName" placeholder="标的名称"/><el-select v-model="fillForm.direction"><el-option label="多头" value="LONG"/><el-option label="空头" value="SHORT"/></el-select><el-select v-model="fillForm.positionEffect"><el-option label="开仓" value="OPEN"/><el-option label="平仓" value="CLOSE"/></el-select><el-input v-model="fillForm.occurredAt" type="datetime-local"/><el-input-number v-model="fillForm.quantity" :controls="false" placeholder="手数"/><el-input-number v-model="fillForm.price" :controls="false" placeholder="成交价"/><el-input-number v-model="fillForm.contractMultiplier" :controls="false" placeholder="合约乘数"/><el-input-number v-model="fillForm.fee" :controls="false" placeholder="手续费"/><el-input v-model="fillForm.strategyId" placeholder="使用策略"/><el-button type="primary" @click="void saveRecord('fills', fillForm)">{{ fillForm.id ? '更新成交' : '保存成交' }}</el-button></div><el-table :data="analysis.fills" size="small" max-height="360"><el-table-column prop="instrumentName" label="标的" min-width="130"><template #default="scope">{{ scope.row.instrumentName || scope.row.instrumentId }}</template></el-table-column><el-table-column prop="direction" label="方向"/><el-table-column prop="positionEffect" label="开平"/><el-table-column prop="quantity" label="手数"/><el-table-column prop="price" label="成交价"/><el-table-column prop="fee" label="手续费"/><el-table-column prop="strategyId" label="策略"/><el-table-column prop="occurredAt" label="时间" min-width="170"/><el-table-column width="100" label="操作"><template #default="scope"><el-button text @click="editFill(scope.row)">编辑</el-button><el-button text type="danger" @click="void deleteRecord('fills', scope.row.id)">删除</el-button></template></el-table-column></el-table></section>
+      <section class="panel"><h2>使用策略</h2><div class="form-grid"><el-input v-model="strategyForm.strategyId" placeholder="策略 ID"/><el-input v-model="strategyForm.strategyName" placeholder="策略名称"/><el-input v-model="strategyForm.startDate" type="date"/><el-input v-model="strategyForm.endDate" type="date"/><el-button type="primary" @click="void saveRecord('strategy-uses', strategyForm)">保存策略区间</el-button></div><el-table :data="analysis.strategyUses" size="small" max-height="240"><el-table-column prop="strategyName" label="策略名称"><template #default="scope">{{ scope.row.strategyName || scope.row.strategyId }}</template></el-table-column><el-table-column prop="startDate" label="开始日期"/><el-table-column prop="endDate" label="结束日期"/><el-table-column width="80" label="操作"><template #default="scope"><el-button text type="danger" @click="void deleteRecord('strategy-uses', scope.row.id)">删除</el-button></template></el-table-column></el-table></section>
     </template>
-  </section>
+<el-dialog v-model="createOpen" title="新建账户" width="min(560px, calc(100vw - 24px))"><el-form label-position="top"><el-form-item label="账户名称"><el-input v-model="accountForm.name"/></el-form-item><el-form-item label="开始日期"><el-input v-model="accountForm.startDate" type="date"/></el-form-item><el-form-item label="期初资金"><el-input-number v-model="accountForm.initialEquity" :controls="false" :min="0.01"/></el-form-item><el-form-item label="无风险利率"><el-input-number v-model="accountForm.riskFreeRate" :controls="false" :step="0.005"/></el-form-item><el-form-item label="基准标的（可选）"><el-select v-model="accountForm.benchmarkInstrumentId" clearable filterable><el-option v-for="item in benchmarks" :key="item.instrumentId" :label="`${item.symbol || item.instrumentId} ${item.name || ''}`" :value="item.instrumentId"/></el-select></el-form-item></el-form><template #footer><el-button @click="createOpen = false">取消</el-button><el-button type="primary" @click="void createAccount()">创建</el-button></template></el-dialog>
+    <el-dialog v-model="trashOpen" title="账户回收区" width="min(620px, calc(100vw - 24px))"><el-table :data="trash" empty-text="回收区为空"><el-table-column prop="name" label="账户"/><el-table-column prop="deletedAt" label="删除时间"/><el-table-column width="100" label="操作"><template #default="scope"><el-button text type="primary" @click="void restore(scope.row.id)">恢复</el-button></template></el-table-column></el-table></el-dialog>
+  </main>
 </template>
+
+<style scoped>
+.accounts-page{max-width:1500px;margin:0 auto}.page-heading{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin-bottom:18px}.page-heading h1,.page-heading p{margin:0}.page-heading p{margin-top:6px;color:var(--ml-text-secondary);font-size:13px}.account-tools{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:8px}.account-tools .el-select{min-width:180px}.account-tools .import-kind{min-width:145px}.csv-file{max-width:180px;padding:5px 0;color:var(--ml-text-secondary);font-size:12px}.empty{padding:40px;text-align:center}.range{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:14px}.range .el-select{min-width:220px}.metric-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(155px,1fr));gap:9px;margin-bottom:14px}.metric{min-height:82px;display:flex;flex-direction:column;justify-content:space-between;padding:12px;border:1px solid var(--ml-divider);border-radius:8px;background:var(--ml-surface);color:var(--ml-text-primary);cursor:pointer;text-align:left}.metric:hover,.metric.expanded{border-color:var(--ml-accent);background:var(--ml-surface-selected)}.metric span{color:var(--ml-text-secondary);font-size:12px}.metric strong{font:700 17px/1.3 ui-monospace,Consolas,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.record-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.form-grid{display:grid;grid-template-columns:repeat(3,minmax(100px,1fr));gap:8px;margin:12px 0}.fills{grid-template-columns:repeat(5,minmax(110px,1fr))}@media(max-width:900px){.page-heading{flex-direction:column}.account-tools{justify-content:flex-start}.record-grid{grid-template-columns:1fr}.fills{grid-template-columns:repeat(2,minmax(100px,1fr))}}@media(max-width:560px){.form-grid{grid-template-columns:1fr}.metric-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+</style>

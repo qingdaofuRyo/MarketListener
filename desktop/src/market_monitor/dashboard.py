@@ -40,38 +40,41 @@ def build_health_report(
     """Read the local store and surface failures, staleness and storage use."""
 
     current = now or datetime.now(timezone.utc)
-    store = MarketStore(data_root)
+    runs: list[dict[str, Any]] = []
+    partitions: list[dict[str, Any]] = []
     try:
-        runs = [
-            {
-                "run_id": row[0],
-                "provider": row[1],
-                "status": row[2],
-                "started_at": row[3],
-                "completed_at": row[4],
-                "detail": row[5],
-            }
-            for row in store.connection.execute(
-                "SELECT run_id, provider, status, started_at, completed_at, detail FROM runs ORDER BY started_at DESC"
-            ).fetchall()
-        ]
-        partitions = [
-            {
-                "partition_id": row[0],
-                "file_path": row[1],
-                "row_count": row[2],
-                "data_cutoff": row[3],
-                "status": row[4],
-                "updated_at": row[5],
-                "stale": _is_stale(row[5], current, stale_after_seconds),
-            }
-            for row in store.connection.execute(
-                """SELECT partition_id, file_path, row_count, data_cutoff, status, updated_at
-                FROM partitions ORDER BY updated_at DESC"""
-            ).fetchall()
-        ]
-    finally:
-        store.close()
+        store = MarketStore(data_root)
+        try:
+            runs = [
+                {
+                    "run_id": row[0], "provider": row[1], "status": row[2], "started_at": row[3],
+                    "completed_at": row[4], "detail": row[5],
+                }
+                for row in store.connection.execute(
+                    "SELECT run_id, provider, status, started_at, completed_at, detail FROM runs ORDER BY started_at DESC"
+                ).fetchall()
+            ]
+            partitions = [
+                {
+                    "partition_id": row[0], "file_path": row[1], "row_count": row[2], "data_cutoff": row[3],
+                    "status": row[4], "updated_at": row[5], "stale": _is_stale(row[5], current, stale_after_seconds),
+                }
+                for row in store.connection.execute(
+                    """SELECT partition_id, file_path, row_count, data_cutoff, status, updated_at
+                    FROM partitions ORDER BY updated_at DESC"""
+                ).fetchall()
+            ]
+        finally:
+            store.close()
+    except Exception as error:
+        # DuckDB takes an exclusive Windows file lock while a bulk writer is
+        # active.  The web terminal stays usable from Silver in that window;
+        # health simply reports that catalog-only detail will refresh later.
+        runs = [{
+            "run_id": "catalog-busy", "provider": "本地数据目录", "status": "RUNNING",
+            "started_at": current.isoformat(timespec="seconds"), "completed_at": None,
+            "detail": f"数据正在写入，运行台账将在任务完成后刷新：{type(error).__name__}",
+        }]
     quarantine = _list_quarantine(data_root)
     return HealthReport(
         generated_at=current.isoformat(timespec="seconds"),

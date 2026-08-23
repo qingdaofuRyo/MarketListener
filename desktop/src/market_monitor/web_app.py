@@ -34,7 +34,7 @@ from .web_api import strategy as strategy_api
 from .web_api import watchlist as watchlist_api
 
 
-_WEB_ROUTES = {"/", "/market/", "/data/", "/strategy/", "/stats/", "/f10/", "/industry/", "/logs/", "/data-sources/"}
+_WEB_ROUTES = {"/", "/market/", "/settings/", "/data/", "/strategy/", "/stats/", "/f10/", "/industry/", "/logs/", "/data-sources/"}
 _LOOPBACK_HOSTS = {"127.0.0.1", "::1"}
 
 

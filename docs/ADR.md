@@ -2,7 +2,7 @@
 
 本文件是所有开发 Agent 的强制入口。除非用户明确批准新的 ADR，否则实现不得偏离这些约束。`docs/adr/` 记录难以逆转的架构决策及原因，本文件负责把它们转化为执行规则。
 
-**执行状态**：Day 0 已于 2026-08-04 停止且未封板。正式开发以 `Plan_full.md`、`STATUS.md` 和 `START_HERE.md` 为入口；`Plan.md` 中的 `D0-*` 仅保留为历史计划和验收证据。
+**执行状态**：Day 0 已于 2026-08-04 停止且未封板。当前开发以根目录 `Plan_R3.md` 和 `START_HERE.md` 为入口；`Plan_R1.md`、`Plan_R2.md`、`Plan_full.md`、`STATUS.md` 与 `Plan.md` 仅保留历史计划和验收证据。当前整体结构见 `ARCHITECTURE.md`。
 
 ## 一、不可绕过的项目约束
 
@@ -31,12 +31,13 @@
 - [ADR-0006：原始价格、复权因子与交易时段聚合分离](adr/0006-raw-price-and-session-aggregation.md)
 - [ADR-0007：按能力注册和路由数据源](adr/0007-capability-based-provider-routing.md)
 - [ADR-0008：Android 使用声明式策略 DSL](adr/0008-android-declarative-strategy-dsl.md)
+- [ADR-0009：Canonical 周期与本地派生 K 线](adr/0009-canonical-timeframe-and-derived-bars.md)
 
 ## 三、Agent 修改权限
 
 低成本执行 Agent 可以：
 
-- 按 `STATUS.md` 中第一项 `READY` 任务实现代码、测试、脚本和普通说明文档；历史 `Plan.md` 的 D0 任务仅在用户明确重新授权时执行。
+- 按当前 `Plan_R3.md` 中已授权任务实现代码、测试、脚本和普通说明文档；历史计划仅在用户明确重新授权时执行。
 - 修复不改变公开契约的缺陷。
 - 在质量报告中记录数据源失败、缺口和建议。
 
@@ -64,7 +65,7 @@
 
 一个任务只有同时满足以下条件才可标记完成：
 
-- 实现内容与 `FULL-*` 任务编号一致，没有夹带架构改动。
+- 实现内容与当前 `R3-Txxx` 任务一致，没有夹带未批准的架构改动；历史 `FULL-*` 任务维持其原验收结论。
 - 自动化测试通过，并记录实际执行命令和结果摘要。
 - 涉及数据源时输出真实的 `PASS`、`FAILED` 或 `UNSUPPORTED`。
 - 涉及数据结构时提供迁移或明确说明“无迁移”。

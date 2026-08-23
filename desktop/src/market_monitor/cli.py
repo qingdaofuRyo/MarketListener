@@ -10,6 +10,8 @@ from pathlib import Path
 from market_monitor import __version__
 from market_monitor.collector import run_fetch_session
 from market_monitor.full_market import run_full_etf_backfill, run_full_stock_backfill
+from market_monitor.futures_bulk import run_bulk_futures
+from market_monitor.tdx_local import run_tdx_local_import
 from market_monitor.ths_market import run_ths_market_snapshot
 from market_monitor.configuration import ConfigurationError, load_local_configuration
 from market_monitor.f10 import f10_status, run_f10_fetch, run_revenue_fetch
@@ -17,6 +19,7 @@ from market_monitor.industry_graph.f10.enrichment import enrich_batch
 from market_monitor.industry_graph.f10.providers import get_governance, list_providers, validate_max_rps
 from market_monitor.industry_atlas import build_atlas
 from market_monitor.package_builder import build_android_package
+from market_monitor.market_query_cache import rebuild_kline_query_cache
 from market_monitor.report_pipeline import (
     build_chain_index,
     process_report_batch,
@@ -60,6 +63,8 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--port", type=int, default=8765, help="bind port (0 picks a free port)")
     serve.add_argument("--timeout-seconds", type=float, default=None, help="stop after N seconds (tests/CI)")
     serve.add_argument("--quiet", action="store_true", help="suppress per-request HTTP logs")
+    kline_cache = subcommands.add_parser("kline-cache", help="build or refresh the local low-latency K-line query cache")
+    kline_cache.add_argument("--data-root", type=Path, default=Path("data_control"))
     fetch = subcommands.add_parser("fetch", help="run a real data-fetch session and persist results")
     fetch.add_argument("--data-root", type=Path, default=Path("data_control"))
     fetch.add_argument("--limit-futures", type=int, default=15, help="number of domestic futures main contracts to fetch")
@@ -78,6 +83,21 @@ def build_parser() -> argparse.ArgumentParser:
     bulk_etfs.add_argument("--workers", type=int, default=4)
     bulk_etfs.add_argument("--batch-size", type=int, default=20)
     bulk_etfs.add_argument("--pause-seconds", type=float, default=0.2)
+    bulk_futures = subcommands.add_parser("bulk-futures", help="增量导入通达信期货通与 AKShare 期货行情")
+    bulk_futures.add_argument("--data-root", type=Path, default=Path("data_control"))
+    bulk_futures.add_argument("--tdx-futures-root", type=Path, default=None, help="通达信期货通安装目录")
+    bulk_futures.add_argument("--domestic-only", action="store_true", help="仅导入国内期货与商品指数")
+    bulk_futures.add_argument("--global-only", action="store_true", help="仅导入国外重点期货与参考指数")
+    bulk_futures.add_argument("--local-only", action="store_true", help="仅导入通达信期货通本地文件，不请求 AKShare")
+    bulk_futures.add_argument("--full-rescan", action="store_true", help="忽略本地文件检查点并全量重扫")
+    tdx_local = subcommands.add_parser("import-tdx-local", help="增量导入通达信金融终端本地 A 股、港股日线与 5 分钟线")
+    tdx_local.add_argument("--data-root", type=Path, default=Path("data_control"))
+    tdx_local.add_argument("--tdx-root", type=Path, default=None, help="通达信金融终端安装目录")
+    tdx_local.add_argument("--full-rescan", action="store_true", help="忽略本地文件检查点并全量重扫")
+    tdx_local.add_argument("--batch-rows", type=int, default=250_000, help="每个 Silver 写入批次的最大 K 线数")
+    tdx_local.add_argument("--skip-cache-rebuild", action="store_true", help="导入后不重建低延迟 K 线查询缓存")
+    tdx_local.add_argument("--start-date", help="仅导入该日期（含）之后的本地K线，格式 YYYY-MM-DD")
+    tdx_local.add_argument("--end-date", help="仅导入该日期（含）之前的本地K线，格式 YYYY-MM-DD")
     ths = subcommands.add_parser("ths-market", help="collect THS market breadth and CSI index snapshots")
     ths.add_argument("--data-root", type=Path, default=Path("data_control"))
     f10 = subcommands.add_parser("f10", help="fetch A/H share F10 basics (throttled, resumable)")
@@ -151,12 +171,18 @@ def main(argv: list[str] | None = None) -> int:
             return EXIT_SUCCESS
         if args.command == "serve":
             return _serve(args)
+        if args.command == "kline-cache":
+            return _kline_cache(args)
         if args.command == "fetch":
             return _fetch(args)
         if args.command == "bulk-stocks":
             return _bulk_stocks(args)
         if args.command == "bulk-etfs":
             return _bulk_etfs(args)
+        if args.command == "bulk-futures":
+            return _bulk_futures(args)
+        if args.command == "import-tdx-local":
+            return _import_tdx_local(args)
         if args.command == "ths-market":
             return _ths_market(args)
         if args.command == "f10":
@@ -214,6 +240,20 @@ def _serve(args: argparse.Namespace) -> int:
     return EXIT_SUCCESS
 
 
+def _kline_cache(args: argparse.Namespace) -> int:
+    summary = rebuild_kline_query_cache(args.data_root)
+    _emit(
+        "SUCCESS",
+        EXIT_SUCCESS,
+        message=(
+            f"K线查询缓存已建立：{summary['rows']} 根，"
+            f"耗时 {summary.get('buildSeconds') or 0:.2f} 秒"
+        ),
+    )
+    print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
+    return EXIT_SUCCESS
+
+
 def _fetch(args: argparse.Namespace) -> int:
     if args.limit_futures <= 0:
         raise ValueError("--limit-futures must be positive")
@@ -260,6 +300,45 @@ def _bulk_etfs(args: argparse.Namespace) -> int:
     success = summary["状态"] == "完成"
     print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
     _emit("SUCCESS" if success else "PARTIAL_FAILURE", EXIT_SUCCESS if success else EXIT_PARTIAL_FAILURE, message="全量ETF日线抓取结束")
+    return EXIT_SUCCESS if success else EXIT_PARTIAL_FAILURE
+
+
+def _bulk_futures(args: argparse.Namespace) -> int:
+    if args.domestic_only and args.global_only:
+        raise ValueError("--domestic-only 与 --global-only 不能同时使用")
+    if args.local_only and args.global_only:
+        raise ValueError("--local-only 不能与 --global-only 同时使用")
+    summary = run_bulk_futures(
+        args.data_root,
+        tdx_futures_root=args.tdx_futures_root,
+        include_domestic=not args.global_only,
+        include_global=not args.domestic_only and not args.local_only,
+        include_akshare=not args.local_only,
+        full_rescan=args.full_rescan,
+    )
+    success = summary["状态"] == "完成"
+    print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
+    _emit("SUCCESS" if success else "PARTIAL_FAILURE", EXIT_SUCCESS if success else EXIT_PARTIAL_FAILURE, message="国内外期货增量任务结束")
+    return EXIT_SUCCESS if success else EXIT_PARTIAL_FAILURE
+
+
+def _import_tdx_local(args: argparse.Namespace) -> int:
+    summary = run_tdx_local_import(
+        args.data_root,
+        tdx_root=args.tdx_root,
+        full_rescan=args.full_rescan,
+        batch_rows=args.batch_rows,
+        rebuild_cache=not args.skip_cache_rebuild,
+        start_date=args.start_date,
+        end_date=args.end_date,
+    )
+    success = summary["状态"] == "完成"
+    print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
+    _emit(
+        "SUCCESS" if success else "PARTIAL_FAILURE",
+        EXIT_SUCCESS if success else EXIT_PARTIAL_FAILURE,
+        message="通达信本地 A 股、港股行情导入结束",
+    )
     return EXIT_SUCCESS if success else EXIT_PARTIAL_FAILURE
 
 

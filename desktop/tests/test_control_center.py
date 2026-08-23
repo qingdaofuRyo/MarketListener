@@ -22,6 +22,7 @@ from market_monitor.control_center import (
     serve_control_center,
 )
 from market_monitor.dataset_catalog import dataset_index
+from market_monitor.market_query_cache import KLineQueryStore
 from market_monitor.package_builder import build_android_package
 from market_monitor.signing import generate_development_key
 from market_monitor.storage import MarketStore, PartitionKey
@@ -152,6 +153,18 @@ def _write_coverage_store(data_root: Path) -> None:
         store.finish_run(run_ok, "COMPLETE", "coverage fixture")
     finally:
         store.close()
+
+
+def test_health_coverage_uses_compact_kline_manifest_when_ready(tmp_path: Path) -> None:
+    data_root = tmp_path / "data"
+    _write_coverage_store(data_root)
+    KLineQueryStore(data_root).rebuild()
+
+    coverage = build_control_center_report(data_root)["coverage"]
+
+    assert coverage["source"] == "kline-query-manifest"
+    assert coverage["total_instruments"] == 2
+    assert coverage["total_rows"] == 2
 
 
 def test_parse_sync_filter_defaults() -> None:

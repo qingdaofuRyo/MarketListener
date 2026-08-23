@@ -1,6 +1,6 @@
 # android（Android 13+ 消费端）
 
-Android 消费端基于 Kotlin + Jetpack Compose，`minSdk=33`。当前基线包含签名行情包导入、中文导入状态、已激活 `payload.sqlite` 的只读查询和本地 Lightweight Charts K 线转换代码；Day 0 已停止且未完成真实数据验收。正式任务从 `../START_HERE.md` 和 `../STATUS.md` 启动，历史事实见 `../docs/正式开发交接.md`。
+Android 消费端基于 Kotlin + Jetpack Compose，`minSdk=33`。当前基线包含签名行情包导入、中文导入状态、已激活 `payload.sqlite` 的只读查询和本地 Lightweight Charts K 线转换代码。当前任务从 `../Plan_R3.md` 启动，整体边界见 `../docs/ARCHITECTURE.md` 与 `../docs/ADR.md`；Day 0 与 `FULL-*` 结论保留为历史证据。
 
 ## 环境
 
@@ -21,4 +21,4 @@ android\gradlew.bat -p android assembleDebug
 
 完整基线请从仓库根目录运行 `powershell -ExecutionPolicy Bypass -File scripts\verify.ps1`。该脚本显式验证并使用 `C:\Users\qingd\.jdks\jbr-21.0.11`，自动选择空闲临时盘符，且在失败时仍清理该映射。
 
-后续开发不自动继续 `Plan.md` 的 D0 任务；架构和数据边界仍以 `../ADR.md` 为准。
+后续开发不自动继续历史 D0/`FULL-*` 任务；架构和数据边界仍以 `../docs/ADR.md` 为准。Android 不保存 Provider API Key、Token 或桌面本地数据库，也不直接访问第三方行情服务。

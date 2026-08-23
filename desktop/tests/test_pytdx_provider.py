@@ -158,3 +158,15 @@ def test_configure_overrides_servers() -> None:
 def test_corrupted_tdx_calendar_date_is_rejected_before_capability_persistence() -> None:
     with pytest.raises(ValueError):
         _iso_datetime("6427-90-45")
+
+
+def test_corrupted_tdx_bar_is_skipped_without_losing_valid_index_window() -> None:
+    valid = FakeTdxApi().bars[0]
+    corrupt = {**valid, "month": 90, "day": 45}
+    provider = TdxProvider(api_factory=lambda: FakeTdxApi(bars=[corrupt, valid]))
+
+    capabilities = provider.probe_capabilities()
+
+    index = next(item for item in capabilities if item.name == "tdx-index-sh000001-1d")
+    assert index.status is CapabilityStatus.PASS
+    assert index.row_count == 1

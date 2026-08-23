@@ -176,8 +176,22 @@ export async function apiPut<T>(path: string, body?: unknown): Promise<T> {
   return (await response.json()) as T;
 }
 
-export async function apiDelete<T>(path: string): Promise<T> {
-  const response = await fetch(path, { method: "DELETE" });
+export async function apiPatch<T>(path: string, body?: unknown): Promise<T> {
+  const response = await fetch(path, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (!response.ok) throw new Error(await errorMessage(response));
+  return (await response.json()) as T;
+}
+
+export async function apiDelete<T>(path: string, body?: unknown): Promise<T> {
+  const response = await fetch(path, {
+    method: "DELETE",
+    headers: body === undefined ? undefined : { "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
   if (!response.ok) throw new Error(await errorMessage(response));
   return (await response.json()) as T;
 }
@@ -274,6 +288,12 @@ const ASSET_TYPE_LABELS: Record<string, string> = {
   ETF: "交易型开放式指数基金（ETF）",
   INDEX: "指数",
   FUTURE: "期货",
+  CONVERTIBLE_BOND: "可转债",
+  EXCHANGEABLE_BOND: "可交债",
+  PLEDGED_REPO: "债券通用质押式回购",
+  REPO: "债券回购",
+  LOF: "LOF基金",
+  REIT: "公募REITs",
   CRYPTO: "加密资产",
   MACRO: "宏观指标",
 };
@@ -289,16 +309,22 @@ const PERIOD_LABELS: Record<string, string> = {
   "1w": "周线",
   "1mo": "月线",
   "1q": "季线",
+  "3mo": "季线",
   "1y": "年线",
 };
 const FIELD_LABELS: Record<string, string> = {
   open: "开盘价",
   high: "最高价",
+  highest: "最高价",
   low: "最低价",
+  lowest: "最低价",
   close: "收盘价",
   volume: "成交量",
   amount: "成交额",
   open_interest: "持仓量",
+  settlement: "结算价",
+  money: "成交额",
+  vol: "成交量",
   pct_change: "涨跌幅",
   amplitude: "振幅",
   code: "证券代码",

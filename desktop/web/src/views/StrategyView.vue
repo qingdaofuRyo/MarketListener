@@ -1,225 +1,46 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
-import { apiGet, apiPost, formatNumber, formatStatus, formatTime } from "../domain/api";
+import { computed, onMounted, reactive, ref } from "vue";
+import { apiDelete, apiGet, apiPost, apiPut, formatTime } from "../domain/api";
 
-interface StrategyDefinition {
-  strategyId: string;
-  strategyVersion: string;
-  inputs: string[];
-  parameters: Record<string, number | boolean | string>;
-  description: string;
-  updatedAt: string;
-}
+interface CatalogItem { id: string; name: string; definition?: string; mathFormula?: string; parameters?: unknown[]; requiredFields?: string[]; returnType?: string; }
+interface Strategy { strategyId: string; displayName: string; scriptKind: string; updatedAt: string; inputs: string[]; script?: Record<string, unknown>; }
+interface Condition { functionId: string; period: string; args: number[]; operator?: string; value?: number; }
+interface Group { operator: "and" | "or"; conditions: Condition[]; }
 
-interface StrategyHistoryItem {
-  runId: string;
-  strategyId: string;
-  strategyVersion: string;
-  dataVersion: string;
-  parameterVersion: string;
-  startedAt: string;
-  finishedAt: string;
-  status: string;
-  error?: unknown;
-  instrumentCount: number;
-  signalCount: number;
-}
+const indicators = ref<CatalogItem[]>([]); const functions = ref<CatalogItem[]>([]); const definitions = ref<Strategy[]>([]); const loading = ref(false); const error = ref("");
+const dialog = ref(false); const mode = ref<"create" | "edit">("create"); const editingId = ref(""); const submitting = ref(false);
+const scriptKind = ref<"builder_v1" | "python_safe_v1">("builder_v1"); const name = ref(""); const period = ref("1d"); const rootOperator = ref<"and" | "or">("and"); const marketTypes = ref<string[]>(["a_share"]); const excludeSt = ref(false); const capField = ref<"" | "total_market_cap_yi" | "float_market_cap_yi">(""); const capOperator = ref<"gt" | "lt">("gt"); const capValue = ref<number | undefined>(); const source = ref("value = 1\nsignal = close > ma(close, 20)");
+const groups = ref<Group[]>([{ operator: "and", conditions: [{ functionId: "period_return", period: "1d", args: [20], operator: "gt", value: 0.05 }] }]);
+const marketOptions = [["a_share", "A 股"], ["hk_stock", "港股"], ["main_board", "沪深主板"], ["chinext", "创业板"], ["star", "科创板"], ["etf", "ETF"], ["bse", "北证"], ["cn_future", "国内期货"], ["cn_commodity_index", "国内商品指数"], ["global_future", "国外期货"]] as const;
+const arity: Record<string, number> = { period_return: 1, no_limit_up: 1, no_limit_down: 1, limit_up_count: 1, limit_down_count: 1, close_new_high: 1, close_new_low: 1, up_count: 1, down_count: 1, up_down_ratio: 1, down_up_ratio: 1, range_high_low_ratio: 1, range_low_high_ratio: 1, volume_slope: 2, gann_rising_rate: 1, gann_falling_rate: 1, hsar_resistance: 2, hsar_support: 2 };
+const booleanFunctions = new Set(["no_limit_up", "no_limit_down", "close_new_high", "close_new_low"]);
+const functionChoices = computed(() => functions.value.filter((item) => item.id in arity));
 
-interface StrategySignalRow {
-  instrumentId: string;
-  barCount: number;
-  signalCount: number;
-  signals: unknown[];
-}
-
-interface StrategyRunResponse {
-  report?: {
-    runId?: string;
-    strategyId?: string;
-    status?: string;
-    startedAt?: string;
-    finishedAt?: string;
-    instrumentCount?: number;
-    totalSignals?: number;
-  };
-  signals?: StrategySignalRow[];
-}
-
-const definitions = ref<StrategyDefinition[]>([]);
-const history = ref<StrategyHistoryItem[]>([]);
-const selected = ref<StrategyDefinition | null>(null);
-const parameterValues = ref<Record<string, number | boolean | string>>({});
-const loading = ref(false);
-const running = ref(false);
-const error = ref("");
-const runResult = ref<StrategyRunResponse | null>(null);
-
-const selectedInputs = computed(() => selected.value?.inputs ?? []);
-const parameterKeys = computed(() => Object.keys(parameterValues.value));
-
-function pick(definition: StrategyDefinition): void {
-  selected.value = definition;
-  parameterValues.value = { ...definition.parameters };
-  runResult.value = null;
-  error.value = "";
-}
-
-async function load(): Promise<void> {
-  loading.value = true;
-  error.value = "";
-  try {
-    const [definitionData, historyData] = await Promise.all([
-      apiGet<{ items: StrategyDefinition[]; total: number }>("/api/strategy/definitions"),
-      apiGet<{ items: StrategyHistoryItem[]; total: number; limit: number }>("/api/strategy/history", { limit: 100 }),
-    ]);
-    definitions.value = definitionData.items;
-    history.value = historyData.items;
-    if (definitions.value.length > 0 && !selected.value) pick(definitions.value[0]);
-  } catch (reason) {
-    error.value = reason instanceof Error ? reason.message : "策略数据加载失败";
-  } finally {
-    loading.value = false;
-  }
-}
-
-async function runSelected(): Promise<void> {
-  if (!selected.value) return;
-  running.value = true;
-  error.value = "";
-  runResult.value = null;
-  try {
-    runResult.value = await apiPost<StrategyRunResponse>("/api/strategy/run", {
-      strategyId: selected.value.strategyId,
-      parameters: parameterValues.value,
-    });
-    const refreshed = await apiGet<{ items: StrategyHistoryItem[] }>("/api/strategy/history", { limit: 100 });
-    history.value = refreshed.items;
-  } catch (reason) {
-    error.value = reason instanceof Error ? reason.message : "策略运行失败";
-  } finally {
-    running.value = false;
-  }
-}
-
-function statusType(status: string): "success" | "danger" | "warning" | "info" {
-  const value = (status || "").toUpperCase();
-  if (value === "PASS" || value === "DONE" || value === "SUCCESS") return "success";
-  if (value === "FAILED" || value === "ERROR") return "danger";
-  return value ? "warning" : "info";
-}
-
+function reset(): void { name.value = ""; period.value = "1d"; scriptKind.value = "builder_v1"; rootOperator.value = "and"; marketTypes.value = ["a_share"]; excludeSt.value = false; capField.value = ""; capOperator.value = "gt"; capValue.value = undefined; source.value = "value = 1\nsignal = close > ma(close, 20)"; groups.value = [{ operator: "and", conditions: [{ functionId: "period_return", period: "1d", args: [20], operator: "gt", value: 0.05 }] }]; editingId.value = ""; }
+function condition(functionId = "period_return"): Condition { return { functionId, period: "1d", args: Array.from({ length: arity[functionId] ?? 1 }, () => functionId.includes("hsar") ? 20 : 10), operator: booleanFunctions.has(functionId) ? undefined : "gt", value: 0 }; }
+function updateFunction(row: Condition): void { row.args = Array.from({ length: arity[row.functionId] ?? 1 }, (_item, index) => index === 1 && row.functionId.includes("hsar") ? 20 : 10); row.operator = booleanFunctions.has(row.functionId) ? undefined : "gt"; row.value = booleanFunctions.has(row.functionId) ? undefined : 0; }
+function addGroup(): void { groups.value.push({ operator: "and", conditions: [condition()] }); }
+function openCreate(): void { mode.value = "create"; reset(); dialog.value = true; }
+async function openEdit(item: Strategy): Promise<void> { mode.value = "edit"; reset(); editingId.value = item.strategyId; name.value = item.displayName; try { const data = await apiGet<Strategy>(`/api/strategy/definitions/${encodeURIComponent(item.strategyId)}`, undefined, { force: true }); const script = data.script ?? {}; if (data.scriptKind === "builder_v1") { scriptKind.value = "builder_v1"; period.value = String(script.period || "1d"); const universe = script.universe as { market_types?: string[]; exclude_st?: boolean; total_market_cap_yi?: { operator?: string; value?: number }; float_market_cap_yi?: { operator?: string; value?: number } } | undefined; marketTypes.value = universe?.market_types ?? []; excludeSt.value = Boolean(universe?.exclude_st); const cap = universe?.total_market_cap_yi ?? universe?.float_market_cap_yi; capField.value = universe?.total_market_cap_yi ? "total_market_cap_yi" : universe?.float_market_cap_yi ? "float_market_cap_yi" : ""; capOperator.value = cap?.operator === "lt" ? "lt" : "gt"; capValue.value = typeof cap?.value === "number" ? cap.value : undefined; const tree = script.condition_tree as { operator?: "and" | "or"; children?: Array<{ operator?: "and" | "or"; children?: Condition[] }> } | undefined; rootOperator.value = tree?.operator ?? "and"; groups.value = (tree?.children ?? []).filter((group) => group.children).map((group) => ({ operator: group.operator ?? "and", conditions: (group.children ?? []).map((row) => ({ ...row, period: row.period || String(script.period || "1d") })) })); if (!groups.value.length) addGroup(); } else { scriptKind.value = "python_safe_v1"; period.value = String(script.period || "1d"); source.value = String(script.source || script.expression || source.value); } } catch (reason) { error.value = reason instanceof Error ? reason.message : "策略加载失败"; } dialog.value = true; }
+function tree(): object { const children: object[] = []; if (marketTypes.value.length) children.push({ functionId: "market_scope", marketTypes: marketTypes.value }); for (const group of groups.value) children.push({ operator: group.operator, children: group.conditions.map((row) => ({ functionId: row.functionId, period: row.period, args: row.args, ...(row.operator ? { operator: row.operator, value: row.value } : {}) })) }); return { operator: rootOperator.value, children }; }
+function script(): Record<string, unknown> { const universe = { market_types: marketTypes.value, ...(excludeSt.value ? { exclude_st: true } : {}), ...(capField.value && capValue.value != null ? { [capField.value]: { operator: capOperator.value, value: capValue.value } } : {}) }; return scriptKind.value === "builder_v1" ? { period: "1d", universe, conditionTree: tree() } : { period: period.value, universe, source: source.value }; }
+async function save(): Promise<void> { if (!name.value.trim()) { error.value = "请填写策略名"; return; } submitting.value = true; error.value = ""; try { const payload = { displayName: name.value.trim(), description: "", scriptKind: scriptKind.value, script: script() }; await apiPost("/api/strategy/condition/validate", { conditionKind: scriptKind.value, script: script() }); if (mode.value === "create") await apiPost("/api/strategy/definitions", payload); else await apiPut(`/api/strategy/definitions/${encodeURIComponent(editingId.value)}`, payload); dialog.value = false; await load(); } catch (reason) { error.value = reason instanceof Error ? reason.message : "策略保存失败"; } finally { submitting.value = false; } }
+async function remove(item: Strategy): Promise<void> { if (!window.confirm(`删除策略“${item.displayName}”？`)) return; try { await apiDelete(`/api/strategy/definitions/${encodeURIComponent(item.strategyId)}`, { confirmDisplayName: item.displayName }); await load(); } catch (reason) { error.value = reason instanceof Error ? reason.message : "策略删除失败"; } }
+async function load(): Promise<void> { loading.value = true; try { const [indicatorData, functionData, definitionData] = await Promise.all([apiGet<{ items: CatalogItem[] }>("/api/strategy/indicators", undefined, { force: true }), apiGet<{ items: CatalogItem[] }>("/api/strategy/functions", undefined, { force: true }), apiGet<{ items: Strategy[] }>("/api/strategy/definitions", undefined, { force: true })]); indicators.value = indicatorData.items; functions.value = functionData.items; definitions.value = definitionData.items; } catch (reason) { error.value = reason instanceof Error ? reason.message : "策略目录加载失败"; } finally { loading.value = false; } }
 onMounted(() => void load());
 </script>
 
 <template>
-  <section>
-    <div class="page-heading">
-      <div>
-        <h1 class="page-title">策略</h1>
-        <p class="page-note">本地 Strategy DSL 定义、扫描运行与历史记录；只执行仓库内持久化的策略定义，不接受任意代码。</p>
-      </div>
-      <el-button :loading="loading" data-test="strategy-refresh" @click="void load()">刷新</el-button>
-    </div>
+  <main class="strategy-page">
+    <header class="page-heading"><div><h1 class="page-title">策略</h1><p>指标用于图表显示；策略函数由后端 Python 执行并组合为筛选条件。</p></div><el-button type="primary" @click="openCreate">新建策略</el-button></header>
     <el-alert v-if="error" :title="error" type="warning" :closable="false" class="page-alert" />
-
-    <section v-if="definitions.length === 0 && !loading" class="panel empty-state" data-test="strategy-empty">
-      <h2>暂无策略定义</h2>
-      <p class="muted">本地 <code>data_control/strategies/definitions/*.json</code> 为空时，工作台显示空态而不是伪造策略。</p>
-    </section>
-
-    <div v-else class="strategy-layout">
-      <section class="panel strategy-list-panel">
-        <h2>策略定义</h2>
-        <el-table :data="definitions" v-loading="loading" height="380" highlight-current-row empty-text="暂无策略定义" data-test="strategy-table" @row-click="pick">
-          <el-table-column prop="strategyId" label="ID" min-width="150" />
-          <el-table-column prop="strategyVersion" label="版本" width="90" />
-          <el-table-column prop="description" label="说明" min-width="180" show-overflow-tooltip />
-        </el-table>
-      </section>
-
-      <section v-if="selected" class="panel strategy-detail-panel">
-        <div class="panel-title">
-          <h2>{{ selected.strategyId }}</h2>
-          <el-tag size="small">v{{ selected.strategyVersion || "暂无数据" }}</el-tag>
-        </div>
-        <p class="muted">{{ selected.description || "暂无数据" }}</p>
-        <p class="muted">更新于 {{ formatTime(selected.updatedAt) }}</p>
-
-        <div v-if="selectedInputs.length" class="strategy-section">
-          <h3>输入</h3>
-          <el-tag v-for="input in selectedInputs" :key="input" size="small" class="product-tag">{{ input }}</el-tag>
-        </div>
-
-        <div v-if="parameterKeys.length" class="strategy-section">
-          <h3>参数</h3>
-          <div class="parameter-grid">
-            <div v-for="key in parameterKeys" :key="key" class="parameter-row">
-              <label :for="`param-${key}`">{{ key }}</label>
-              <el-input-number
-                v-if="typeof parameterValues[key] === 'number'"
-                :id="`param-${key}`"
-                v-model="parameterValues[key] as number"
-                :controls="false"
-                size="small"
-                data-test="strategy-parameter"
-              />
-              <el-switch
-                v-else-if="typeof parameterValues[key] === 'boolean'"
-                :id="`param-${key}`"
-                v-model="parameterValues[key] as boolean"
-                size="small"
-                data-test="strategy-parameter"
-              />
-              <el-input
-                v-else
-                :id="`param-${key}`"
-                v-model="parameterValues[key] as string"
-                size="small"
-                data-test="strategy-parameter"
-              />
-            </div>
-          </div>
-        </div>
-
-        <el-button type="primary" :loading="running" data-test="strategy-run" @click="void runSelected()">运行策略</el-button>
-
-        <div v-if="runResult" class="strategy-section run-result" data-test="strategy-result">
-          <h3>运行结果</h3>
-          <el-descriptions :column="2" size="small" border>
-            <el-descriptions-item label="Run ID">{{ runResult.report?.runId || "暂无数据" }}</el-descriptions-item>
-            <el-descriptions-item label="状态">{{ formatStatus(runResult.report?.status) }}</el-descriptions-item>
-            <el-descriptions-item label="标的数">{{ formatNumber(runResult.report?.instrumentCount, 0) }}</el-descriptions-item>
-            <el-descriptions-item label="信号数">{{ formatNumber(runResult.report?.totalSignals, 0) }}</el-descriptions-item>
-          </el-descriptions>
-          <el-table v-if="runResult.signals?.length" :data="runResult.signals" size="small" max-height="240">
-            <el-table-column prop="instrumentId" label="标的" min-width="150" />
-            <el-table-column prop="barCount" label="K线数" width="90" align="right" />
-            <el-table-column prop="signalCount" label="信号数" width="90" align="right" />
-          </el-table>
-        </div>
-      </section>
-    </div>
-
-    <section class="panel">
-      <div class="panel-title">
-        <h2>运行历史</h2>
-        <span class="muted">{{ history.length }} 条</span>
-      </div>
-      <el-table :data="history" empty-text="暂无运行记录" max-height="420" data-test="strategy-history">
-        <el-table-column prop="runId" label="Run ID" min-width="150" />
-        <el-table-column prop="strategyId" label="策略" min-width="140" />
-        <el-table-column prop="status" label="状态" width="110">
-          <template #default="scope"><el-tag size="small" :type="statusType(scope.row.status)">{{ formatStatus(scope.row.status) }}</el-tag></template>
-        </el-table-column>
-        <el-table-column prop="instrumentCount" label="标的数" width="90" align="right" />
-        <el-table-column prop="signalCount" label="信号数" width="90" align="right" />
-        <el-table-column label="开始时间" min-width="170">
-          <template #default="scope">{{ formatTime(scope.row.startedAt) }}</template>
-        </el-table-column>
-        <el-table-column label="结束时间" min-width="170">
-          <template #default="scope">{{ formatTime(scope.row.finishedAt) }}</template>
-        </el-table-column>
-      </el-table>
-    </section>
-  </section>
+    <section class="panel"><div class="panel-title"><div><h2>指标</h2><p class="muted">可添加到行情 K 线图或副图。</p></div></div><div class="catalog-grid"><article v-for="item in indicators" :key="item.id"><h3>{{ item.name }}</h3><p>{{ item.definition }}</p><code>{{ item.mathFormula }}</code><small>参数：{{ Array.isArray(item.parameters) ? item.parameters.join('、') || '无' : '无' }}</small></article></div></section>
+    <section class="panel functions"><div class="panel-title"><div><h2>策略函数</h2><p class="muted">选择函数、填写参数后，用嵌套 AND/OR 组合条件。</p></div></div><div class="catalog-grid"><article v-for="item in functions" :key="item.id"><h3>{{ item.name }}</h3><p>{{ item.definition }}</p><small>输入：{{ item.requiredFields?.join('、') || '市场目录' }} · 返回：{{ item.returnType || '布尔/数值' }}</small></article></div></section>
+    <section class="panel"><div class="panel-title"><h2>已保存策略</h2><span class="muted">{{ definitions.length }} 条</span></div><el-table :data="definitions" v-loading="loading" empty-text="暂无策略"><el-table-column prop="displayName" label="策略名" min-width="180"/><el-table-column prop="scriptKind" label="策略条件" width="150"><template #default="scope">{{ scope.row.scriptKind === 'builder_v1' ? '可视化函数组合' : scope.row.scriptKind === 'python_safe_v1' ? '安全 Python' : '兼容策略' }}</template></el-table-column><el-table-column label="输入数据" min-width="160"><template #default="scope">{{ scope.row.inputs.join('、') || '—' }}</template></el-table-column><el-table-column label="更新时间" min-width="170"><template #default="scope">{{ formatTime(scope.row.updatedAt) }}</template></el-table-column><el-table-column label="操作" width="130" fixed="right"><template #default="scope"><el-button text @click="void openEdit(scope.row)">编辑</el-button><el-button text type="danger" @click="void remove(scope.row)">删除</el-button></template></el-table-column></el-table></section>
+    <el-dialog v-model="dialog" :title="mode === 'create' ? '新建策略' : '编辑策略'" width="min(880px, calc(100vw - 24px))" destroy-on-close><el-form label-position="top"><el-form-item label="策略名" required><el-input v-model="name" maxlength="64" /></el-form-item><el-form-item label="策略条件" required><el-radio-group v-model="scriptKind"><el-radio-button value="builder_v1">可视化函数组合</el-radio-button><el-radio-button value="python_safe_v1">安全 Python</el-radio-button></el-radio-group></el-form-item><template v-if="scriptKind === 'builder_v1'"><section class="condition-builder"><div class="scope-row"><b>市场范围函数</b><el-checkbox-group v-model="marketTypes"><el-checkbox v-for="[id,text] in marketOptions" :key="id" :value="id">{{ text }}</el-checkbox></el-checkbox-group><el-checkbox v-model="excludeSt">不包括 ST 与 *ST</el-checkbox><el-select v-model="capField" clearable placeholder="市值条件"><el-option label="总市值（亿元）" value="total_market_cap_yi"/><el-option label="流通市值（亿元）" value="float_market_cap_yi"/></el-select><el-select v-if="capField" v-model="capOperator"><el-option label=">" value="gt"/><el-option label="&lt;" value="lt"/></el-select><el-input-number v-if="capField" v-model="capValue" :min="0.01" :controls="false" placeholder="亿元"/></div><div class="root-row"><span>根条件组</span><el-select v-model="rootOperator"><el-option label="AND（同时满足）" value="and"/><el-option label="OR（满足任一）" value="or"/></el-select></div><section v-for="(group,g) in groups" :key="g" class="condition-group"><header><b>条件组 {{ g + 1 }}</b><el-select v-model="group.operator" size="small"><el-option label="AND" value="and"/><el-option label="OR" value="or"/></el-select><el-button text type="danger" @click="groups.splice(g,1)">删除组</el-button></header><div v-for="(row,r) in group.conditions" :key="r" class="condition-row"><el-select v-model="row.functionId" filterable @change="updateFunction(row)"><el-option v-for="item in functionChoices" :key="item.id" :label="item.name" :value="item.id"/></el-select><el-select v-model="row.period"><el-option v-for="[id,text] in [['5m','5M'],['15m','15M'],['30m','30M'],['1h','1H'],['2h','2H'],['1d','1D'],['1w','1W'],['1mo','1M'],['3mo','3M'],['6mo','6M'],['1y','1Y']]" :key="id" :label="text" :value="id"/></el-select><el-input-number v-for="(_arg,a) in row.args" :key="a" v-model="row.args[a]" :controls="false" :min="0"/><el-select v-if="row.operator" v-model="row.operator"><el-option label=">" value="gt"/><el-option label=">=" value="ge"/><el-option label="&lt;" value="lt"/><el-option label="<=" value="le"/><el-option label="=" value="eq"/></el-select><el-input-number v-if="row.operator" v-model="row.value" :controls="false"/><el-button text type="danger" @click="group.conditions.splice(r,1)">删除</el-button></div><el-button text type="primary" @click="group.conditions.push(condition())">添加函数</el-button></section><el-button plain @click="addGroup">添加嵌套条件组</el-button></section></template><template v-else><el-form-item label="K 线周期"><el-select v-model="period"><el-option v-for="[id,text] in [['5m','5M'],['15m','15M'],['30m','30M'],['1h','1H'],['2h','2H'],['1d','1D'],['1w','1W'],['1mo','1M'],['3mo','3M'],['6mo','6M'],['1y','1Y']]" :key="id" :label="text" :value="id"/></el-select></el-form-item><el-form-item label="安全 Python 条件"><el-input v-model="source" type="textarea" :rows="14" spellcheck="false" class="source"/><p class="muted">仅允许赋值、数值/布尔运算、比较与白名单策略函数；必须输出 signal。</p></el-form-item></template></el-form><template #footer><el-button @click="dialog = false">取消</el-button><el-button type="primary" :loading="submitting" @click="void save()">保存</el-button></template></el-dialog>
+  </main>
 </template>
+
+<style scoped>
+.strategy-page{max-width:1500px;margin:0 auto}.page-heading{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin-bottom:18px}.page-heading h1,.page-heading p{margin:0}.page-heading p{margin-top:6px;color:var(--ml-text-secondary);font-size:13px}.panel{margin-bottom:18px;padding:18px}.panel-title{display:flex;justify-content:space-between;align-items:flex-start}.panel-title h2,.panel-title p{margin:0}.catalog-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin-top:14px}.catalog-grid article{display:flex;flex-direction:column;gap:8px;padding:14px;border:1px solid var(--ml-divider);border-radius:8px}.catalog-grid h3,.catalog-grid p{margin:0}.catalog-grid p{color:var(--ml-text-secondary);font-size:13px;line-height:1.55}.catalog-grid code{padding:7px;border-radius:5px;background:var(--ml-background);font-size:11px;overflow:auto}.catalog-grid small{color:var(--ml-text-secondary)}.functions{margin-top:18px}.condition-builder{display:grid;gap:12px}.scope-row,.root-row{display:flex;flex-wrap:wrap;align-items:center;gap:10px;padding:10px;border:1px solid var(--ml-divider);border-radius:7px}.scope-row .el-checkbox-group{display:flex;flex-wrap:wrap;gap:8px 14px}.root-row .el-select{width:160px}.condition-group{padding:12px;border:1px dashed var(--ml-divider);border-radius:8px}.condition-group header{display:flex;align-items:center;gap:10px;margin-bottom:8px}.condition-group header .el-select{width:100px}.condition-row{display:grid;grid-template-columns:minmax(170px,1fr) repeat(3,minmax(90px,120px)) minmax(70px,90px) minmax(100px,130px) auto;gap:8px;margin:7px 0}.source :deep(textarea){font-family:ui-monospace,Consolas,monospace;line-height:1.55}@media(max-width:760px){.page-heading{flex-direction:column}.condition-row{grid-template-columns:1fr 1fr}.strategy-page{min-width:0}}
+</style>

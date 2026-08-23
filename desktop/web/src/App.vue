@@ -2,16 +2,16 @@
 import { computed } from "vue";
 import { useRoute } from "vue-router";
 import { useThemeStore } from "./stores/theme";
-import type { ThemeMode } from "./design/tokens";
 
 const theme = useThemeStore();
 const route = useRoute();
 
 const client = [
   ["/market/", "行情"],
+  ["/settings/", "设置"],
   ["/data/", "数据"],
   ["/strategy/", "策略"],
-  ["/stats/", "统计"],
+  ["/stats/", "账户分析"],
   ["/industry/", "产业链"],
 ] as const;
 
@@ -21,12 +21,6 @@ const backend = [
   ["/f10/", "F10"],
   ["/logs/", "日志"],
 ] as const;
-
-const themeLabels: Record<ThemeMode, string> = {
-  system: "跟随系统",
-  light: "浅色",
-  dark: "深色",
-};
 
 const activePath = computed(() => route.path);
 const isActive = (path: string): boolean =>
@@ -72,8 +66,7 @@ function chooseTheme(mode: string): void {
           </el-dropdown-menu>
         </template>
       </el-dropdown>
-      <span class="mode">{{ themeLabels[theme.mode] }} · LOCAL RESEARCH TERMINAL</span>
     </el-header>
-    <el-main><router-view /></el-main>
+    <el-main :class="{ 'market-main': isActive('/market/') }"><router-view /></el-main>
   </el-container>
 </template>

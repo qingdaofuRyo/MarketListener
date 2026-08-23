@@ -157,6 +157,12 @@ DEFAULT_DATASETS: tuple[DatasetDefinition, ...] = (
         "国内期货主力合约连续 K 线，按持仓量/成交量/近月选择",
     ),
     DatasetDefinition(
+        "FUTURE_SECONDARY_BAR", "期货次连合约K线", "CN", "FUTURE", "5m/15m/30m/1h/1d",
+        "通达信期货通本地缓存", "INCREMENTAL", ("instrument_id", "period", "bar_start"),
+        BAR_FIELDS, "FILTERED", "OHLC 有界、质量 PASS、按主键去重；来源与主连/加权物理隔离",
+        "国内期货次连（通达信期货通 L7）K线",
+    ),
+    DatasetDefinition(
         "FUTURE_WEIGHTED_BAR", "期货加权连续K线", "CN", "FUTURE", "1d",
         "jqdata/akshare", "DAILY", ("instrument_id", "period", "bar_start"),
         BAR_FIELDS, "FILTERED", "OHLC 有界、质量 PASS、按主键去重；加权权重与算法版本必须记录",

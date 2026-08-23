@@ -2,11 +2,11 @@
 
 本目录保存 Day 0 的实现、测试、审查和环境阻塞证据。用户已于 2026-08-04 决定停止执行 Day 0；这些文件不可作为“Day 0 已封板”的依据，也不是后续会话的待办队列。
 
-正式任务入口见根目录 [START_HERE.md](../../START_HERE.md) 与 [STATUS.md](../../STATUS.md)。[正式开发交接](../正式开发交接.md) 保存计划固化前基线，最终 Day 0 状态以 [Day0阶段性交接](./Day0阶段性交接.md) 为准。
+当前任务入口见根目录 [Plan_R3.md](../../Plan_R3.md)，当前架构见 [ARCHITECTURE.md](../ARCHITECTURE.md)。本目录保存旧 `FULL-*` 与 Day 0 证据；[正式开发交接](../正式开发交接.md) 保存计划固化前基线，最终 Day 0 状态以 [Day0阶段性交接](./Day0阶段性交接.md) 为准。
 
 ## 正式项目交付
 
-- [FULL-001](./FULL-001.md)：正式全周期计划、实时状态入口、启动协议和 ADR-0007/0008 的实现交付；当前状态以根目录 `STATUS.md` 为准。
+- [FULL-001](./FULL-001.md)：正式全周期计划、历史状态入口、启动协议和 ADR-0007/0008 的实现交付；其当时状态保留在 `docs/STATUS.md`。
 - [FULL-002](./FULL-002.md)：首个 Git 回退提交及 Python/JDK/Gradle/Android SDK/依赖锁定基线。
 - [FULL-003](./FULL-003.md)：已独立验收的统一 Python/Android 基线验证入口、Ruff 锁定与成功/受控失败/恢复证据。
 - [FULL-100](./FULL-100.md)：待独立审查的 Provider Contract v2、v1→v2 迁移、能力登记与共享契约夹具。

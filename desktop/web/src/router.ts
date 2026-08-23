@@ -6,6 +6,7 @@ const F10View = () => import("./views/F10View.vue");
 const IndustryView = () => import("./views/IndustryView.vue");
 const LogsView = () => import("./views/LogsView.vue");
 const MarketView = () => import("./views/MarketView.vue");
+const SettingsView = () => import("./views/SettingsView.vue");
 const StrategyView = () => import("./views/StrategyView.vue");
 const StatsView = () => import("./views/StatsView.vue");
 
@@ -14,6 +15,7 @@ export default createRouter({
   routes: [
     { path: "/", component: HomeView },
     { path: "/market/", component: MarketView },
+    { path: "/settings/", component: SettingsView },
     { path: "/data/", component: DataView },
     { path: "/data-sources/", component: DataSourcesView },
     { path: "/strategy/", component: StrategyView },

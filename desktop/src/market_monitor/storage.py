@@ -13,6 +13,9 @@ from uuid import uuid4
 
 import duckdb
 
+from .market_data_version import advance_market_data_version, market_data_version
+from .market_query_cache import apply_kline_cache_update
+
 
 @dataclass(frozen=True)
 class PartitionKey:
@@ -70,6 +73,8 @@ class MarketStore:
         bars: Sequence[Mapping[str, Any]],
         data_cutoff: str,
         source_run_id: str,
+        *,
+        update_query_cache: bool = True,
     ) -> Path:
         if not bars:
             raise ValueError("A Silver partition requires at least one normalized bar")
@@ -100,10 +105,27 @@ class MarketStore:
             self.connection.execute(
                 "CREATE OR REPLACE TEMP TABLE _silver_stage (bar_json VARCHAR, instrument_id VARCHAR, bar_period VARCHAR, bar_open_time VARCHAR)"
             )
-            for row in rows.values():
-                self.connection.execute(
+            stage_rows = list(rows.values())
+            # Registering a small DataFrame lets DuckDB ingest a batch in C
+            # instead of crossing the Python/SQL boundary once per K line.
+            # It is especially important for offline TDX imports, which can
+            # contain hundreds of millions of historical minute bars.
+            try:
+                import pandas as pd
+
+                frame = pd.DataFrame.from_records(
+                    stage_rows,
+                    columns=["bar_json", "instrument_id", "bar_period", "bar_open_time"],
+                )
+                self.connection.register("_silver_stage_rows", frame)
+                try:
+                    self.connection.execute("INSERT INTO _silver_stage SELECT * FROM _silver_stage_rows")
+                finally:
+                    self.connection.unregister("_silver_stage_rows")
+            except ImportError:  # pragma: no cover - pandas is supplied by AkShare in production
+                self.connection.executemany(
                     "INSERT INTO _silver_stage VALUES (?, ?, ?, ?)",
-                    (row["bar_json"], row["instrument_id"], row["bar_period"], row["bar_open_time"]),
+                    [(row["bar_json"], row["instrument_id"], row["bar_period"], row["bar_open_time"]) for row in stage_rows],
                 )
             self.connection.execute(
                 f"COPY (SELECT bar_json, instrument_id, bar_period, bar_open_time FROM _silver_stage) TO '{escaped_parquet}' (FORMAT PARQUET)"
@@ -115,6 +137,11 @@ class MarketStore:
             if row_count != len(rows):
                 raise RuntimeError(f"Silver validation row mismatch: expected {len(rows)}, got {row_count}")
             checksum = _sha256(staging_parquet)
+            # The immutable Parquet write is authoritative.  Advance the
+            # revision only after it succeeds, then update the optional chart
+            # query cache in-place.  If that cache update fails it is safely
+            # rebuilt on the next chart read.
+            previous_revision = market_data_version(self.root)
             os.replace(staging_parquet, target)
             self.connection.execute(
                 """INSERT INTO partitions VALUES (?, ?, ?, ?, ?, ?, 'COMPLETE', ?)
@@ -123,6 +150,9 @@ class MarketStore:
                 status=excluded.status, updated_at=excluded.updated_at""",
                 [key.partition_id, str(target.relative_to(self.root)), row_count, data_cutoff, checksum, source_run_id, _now()],
             )
+            recorded_previous, current_revision = advance_market_data_version(self.root)
+            if update_query_cache:
+                apply_kline_cache_update(self.root, recorded_previous or previous_revision, current_revision, bars)
             return target
         finally:
             staging_parquet.unlink(missing_ok=True)

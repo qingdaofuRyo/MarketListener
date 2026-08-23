@@ -1,17 +1,16 @@
-# 正式开发任务启动协议
+# R3 当前启动协议与历史 FULL 角色模板
 
 ## 必读顺序
 
 每个新的实现、审查或验收任务必须依次阅读：
 
-1. `ADR.md` 与当前任务相关的单项 ADR；
-2. `CONTEXT.md`；
-3. `Plan_full.md`；
-4. `STATUS.md`；
-5. 当前任务依赖的交付记录；
-6. `Experience.md` 与 `Log.md` 中相关环境事实。
+1. 根目录 `Plan_R3.md`，确认唯一当前任务和状态；
+2. `ADR.md` 与当前任务相关的单项 ADR；
+3. `CONTEXT.md`；
+4. `Experience.md` 与 `Log.md` 中相关环境事实；
+5. 当前任务相关的契约、数据审计、测试和历史交付记录。
 
-`Plan.md` 与 `docs/deliveries/D0-*` 只用于查阅 Day 0 历史证据，不是待办队列。
+`Plan_R1.md`、`Plan_R2.md`、`Plan_full.md`、`STATUS.md`、`Plan.md` 与 `docs/deliveries/D0-*` 只用于查阅历史规范和证据，不是 R3 待办队列。下方按 `FULL-*` 状态领取任务的提示词保留为历史角色模板；R3 实际状态以 `Plan_R3.md` 为准。
 
 ## 按角色固定启动提示词
 

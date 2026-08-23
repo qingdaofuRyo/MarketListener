@@ -102,3 +102,33 @@
 - Android 同步包重建：`market-20260809-081649-141aff2e`（13,585,044 字节，ed25519+ecdsa 签名）；zip 内 `industry/industry-atlas.html` 与本地哈希一致；后端 `/api/android-package` 实测 200 且下载包哈希一致。
 - 回归：桌面 `pytest desktop/tests` 525 项通过 / 0 失败；`ruff check desktop/src desktop/tests` 通过；Android `testDebugUnitTest --rerun-tasks` BUILD SUCCESSFUL（21 suites / 74 tests / 0 failures），`assembleDebug` 成功。
 - 文档更新：`STATUS.md`、`Log.md`、`Plan_full.md`、`INDUSTRY_GRAPH_*.md`、`release/known-gaps.md`、`deliveries/FULL-705.md`、`README.md`；工作区保持未提交（用户明确要求不 commit）。
+
+## 2026-08-13 至 2026-08-24 - R3 未提交工作区实现汇总
+
+- 行情数据层新增集中式市场分类、证券/期货名称配置、行情数据版本、文件清单式查询缓存、游标历史窗口、卡片批量尾部 K 线和缓存增量更新；扩展行情、数据源、控制中心和目录接口。
+- 新增通达信本地证券导入：沪深北/港股 `.day/.lc5`、名称读取、增量检查点、日期范围、来源隔离和 ETF/LOF/REIT/转债/回购/板块指数分类。
+- 新增国内外期货批量链路：通达信期货通次连/主连/原生加权、月份合约、商品指数、AKShare 主连补缺、国际连续合约，以及合约乘数、保证金、沉淀资金和持仓量加权计算。
+- 新增账户分析、FIFO 成本、CSV、回收站、策略台账、多空绩效、公式白名单引擎和公式策略运行；更新统计页和策略页。
+- 网页行情页形成列表/卡片/双看板/全屏详情结构，加入列宽与面板宽度调整、行标记、迷你 K 线、设置页及本地缓存。
+- 画线工具支持水平线、垂直线、箱体和文本；完成卡片显示画线、24 色预置、透明度拇指、箱体说明与端点布局、稳定整体拖动、上下文悬浮工具栏，以及按图形类型持久保存样式/吸附/跨周期/连续画线。
+- ETF 名称初次加载改为等待当前数据版本，避免把临时“ETF+代码”写入持久缓存；市场类型补充交易所代码区间与通达信 `880/881` 板块指数。
+- 新增离线 HTML/静态构建脚本和 TickDB 可恢复下载脚本；数据源页增加本地表/数据集/字段浏览与字段口径；设置配置 JSON 随 Python 包发布并忽略 `exports/`；`README.md` 与数据源能力矩阵已补充期货和离线快照说明。
+- 2026-08-24 定向执行公式、期货、市场分类、查询缓存、通达信、TickDB、行情、统计和策略共 106 项 Python 测试，全部通过；执行 `npm run build` 通过，保留两个约 1 MB 的 Vite chunk 警告。
+- 当前仍未提交，完整 Ruff/pytest/Playwright/Android 回归尚未在最终工作区执行；临时 `_patch_*.py`、未引用的 `MarketView-v2.vue` 和 `MarketInstrumentPanel.vue` 已清理。两个导出脚本分别承担“直接读本地数据的单文件”和“复用 Vue 资源的受限静态网站”职责，均保留。
+
+## 2026-08-24 - TickDB/通达信 K 线只读审计
+
+- TickDB 原始目录有 9,702 个 gzip 文件、约 50.7 万条唯一 K 线；存在 latest/incremental 重复、4 个空文件、159073 的 4 根零价五分钟线、两个失败 K 线任务和不完整 ETF 前缀范围。Silver 中尚无 TickDB 来源记录。
+- 通达信支持 12,207 个日线和 11,930 个五分钟文件。1,490 只同日重叠 ETF 验证表明当前日线价格统一 `/100` 后全部比 TickDB 放大 10 倍；转债和质押式回购抽样放大 100 倍。
+- TickDB ETF 成交量通常为手；通达信大部分文件为份，但高成交量标的可能也存手。正式入库前必须统一单位并修复已有错误分区。
+- 完整审计和接入门槛写入 `docs/TICKDB_TDX_DATA_AUDIT_2026-08-24.md`；本次没有执行数据导入或数据库修改。
+
+## 2026-08-24 - R3 全量回归、文档与发布前安全审计
+
+- `scripts/verify.ps1` 完整通过：Python 3.11.0、JDK 21.0.11、依赖锁/pip check、Ruff、共享 Schema、738 项桌面 pytest、Android `lintDebug/testDebugUnitTest/assembleDebug` 全部成功。
+- `npm run build` 通过；完整 Playwright 19/19 通过，覆盖行情画线偏好、ETF 首屏名称、产业链、策略、账户、数据源和全部终端路由。
+- 新增脚本 `build_offline_html.py`、`build_static_site.py`、`tickdb_download.py` 的 `--help` 均可启动；Windows 当前控制台对脚本中文帮助显示乱码属于终端编码表现，源码为 UTF-8。
+- 清理 `_patch_*.py`、未引用的 `MarketView-v2.vue` 和 `MarketInstrumentPanel.vue`；两个导出脚本职责确认不同并保留。
+- 新增 `docs/ARCHITECTURE.md`，统一 README、AGENTS、ADR、API 契约、组件 README、R3、STATUS、Experience、数据源矩阵和历史入口。
+- 安全审计：候选文件无真实密钥命中，测试中的 `local-password/local-token` 和合成私钥文本为明确夹具；没有候选源码文件超过 5 MiB；本地数据库、Parquet、TDX 文件、报告、日志、导出、`.env` 和 `local.properties` 均被 `.gitignore` 排除。
+- 指定 GitHub 仓库 `qingdaofuRyo/MarketListener` 的远端 `master` 在发布前为 `1bc76c2`，与本地基线一致；当前旧 `origin` 地址不同，正式推送前需切换并复核。

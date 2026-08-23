@@ -44,3 +44,14 @@ def test_dashboard_marks_malformed_quarantine_reports_as_blocking(tmp_path) -> N
     health = build_health_report(data_root)
 
     assert any(entry["partition_id"] == "broken" and entry["blocking"] for entry in health.quarantine)
+
+
+def test_dashboard_stays_available_when_another_process_holds_catalog(monkeypatch, tmp_path) -> None:
+    class LockedStore:
+        def __init__(self, _root):
+            raise OSError("catalog is locked")
+
+    monkeypatch.setattr("market_monitor.dashboard.MarketStore", LockedStore)
+    health = build_health_report(tmp_path / "data")
+    assert health.sources[0]["run_id"] == "catalog-busy"
+    assert health.sources[0]["status"] == "RUNNING"

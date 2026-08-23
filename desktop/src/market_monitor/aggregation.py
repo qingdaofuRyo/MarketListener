@@ -26,6 +26,8 @@ SESSION_RULES = {
     "CN_STOCK": SessionRule(1, ((time(9, 30), time(11, 30)), (time(13), time(15)))),
     "HK_STOCK": SessionRule(1, ((time(9, 30), time(12),), (time(13), time(16)))),
     "CN_FUTURE": SessionRule(1, ((time(9), time(11, 30)), (time(13, 30), time(15)), (time(21), time(23)))),
+    "CN_FUTURE_0100": SessionRule(2, ((time(9), time(11, 30)), (time(13, 30), time(15)), (time(21), time(1)))),
+    "CN_FUTURE_0230": SessionRule(2, ((time(9), time(11, 30)), (time(13, 30), time(15)), (time(21), time(2, 30)))),
 }
 
 
@@ -51,7 +53,7 @@ def aggregate_bars(
         session_start, session_end = session
         elapsed_minutes = int((open_time - session_start).total_seconds() // 60)
         bucket_start = session_start + timedelta(minutes=(elapsed_minutes // period_minutes) * period_minutes)
-        trading_day = _trading_day_for_bar(bar, open_time, rule, trading_calendar)
+        trading_day = _trading_day_for_bar(bar, open_time, session_rule, trading_calendar)
         bucket_key = (trading_day, bucket_start.isoformat())
         buckets.setdefault(bucket_key, []).append(bar)
         boundaries[bucket_key] = min(bucket_start + timedelta(minutes=period_minutes), session_end)
@@ -75,8 +77,8 @@ def aggregate_daily_bars(
     volume/amount 求和、open_interest 取末日。不跨标的混合。
     """
 
-    if output_period not in ("1w", "1mo", "1q", "1y"):
-        raise ValueError("output_period must be one of '1w', '1mo', '1q', '1y'")
+    if output_period not in ("1w", "1mo", "1q", "3mo", "6mo", "1y"):
+        raise ValueError("output_period must be one of '1w', '1mo', '1q', '3mo', '6mo', '1y'")
     groups: dict[tuple[str, str], list[Mapping[str, Any]]] = {}
     for bar in sorted(bars, key=lambda item: (str(item.get("instrument_key", "")), str(item["bar_open_time"]))):
         trading_day = str(bar["trading_day"])
@@ -110,6 +112,7 @@ def _combine(bars: Sequence[Mapping[str, Any]], period_minutes: int, expected_en
             "volume": _sum_optional(bars, "volume"),
             "amount": _sum_optional(bars, "amount"),
             "open_interest": last.get("open_interest"),
+            "settlement": last.get("settlement"),
             "session_rule_version": rule_version,
             "is_partial": _parse(str(last["bar_close_time"])) < expected_end,
         }
@@ -133,6 +136,7 @@ def _combine_daily(bars: Sequence[Mapping[str, Any]], output_period: str) -> dic
             "volume": _sum_optional(bars, "volume"),
             "amount": _sum_optional(bars, "amount"),
             "open_interest": last.get("open_interest"),
+            "settlement": last.get("settlement"),
             "aggregated_from": "1d",
             "aggregation_rule_version": 1,
             "is_partial": False,
@@ -169,11 +173,11 @@ def _min_optional(bars: Sequence[Mapping[str, Any]], field: str) -> float | None
 def _trading_day_for_bar(
     bar: Mapping[str, Any],
     open_time: datetime,
-    rule: SessionRule,
+    session_rule: str,
     trading_calendar: Sequence[str] | None,
 ) -> str:
     source_day = str(bar.get("trading_day", open_time.date().isoformat()))
-    if rule != SESSION_RULES["CN_FUTURE"] or open_time.time() < NIGHT_SESSION_START:
+    if not session_rule.startswith("CN_FUTURE") or open_time.time() < NIGHT_SESSION_START:
         return source_day
     # 期货夜盘（21:00+）归属下一交易日。优先使用调用方提供的交易日历，
     # 否则按自然日+1（周一至周五的夜盘落在下一自然日；周五夜盘需要日历才能正确落在周一）。
@@ -198,8 +202,10 @@ def _period_bucket(trading_day: str, output_period: str) -> str:
         return f"{iso_year}-W{iso_week:02d}"
     if output_period == "1mo":
         return f"{value.year:04d}-{value.month:02d}"
-    if output_period == "1q":
+    if output_period in {"1q", "3mo"}:
         return f"{value.year:04d}-Q{(value.month - 1) // 3 + 1}"
+    if output_period == "6mo":
+        return f"{value.year:04d}-H{1 if value.month <= 6 else 2}"
     return f"{value.year:04d}"
 
 
@@ -214,6 +220,11 @@ def _session_for(value: datetime, rule: SessionRule) -> tuple[datetime, datetime
     for start, end in rule.sessions:
         session_start = value.replace(hour=start.hour, minute=start.minute, second=0, microsecond=0)
         session_end = value.replace(hour=end.hour, minute=end.minute, second=0, microsecond=0)
+        if end <= start:
+            session_end += timedelta(days=1)
+            if value < session_start:
+                session_start -= timedelta(days=1)
+                session_end -= timedelta(days=1)
         if session_start <= value < session_end:
             return session_start, session_end
     return None

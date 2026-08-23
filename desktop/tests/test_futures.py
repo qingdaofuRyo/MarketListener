@@ -1,4 +1,6 @@
+import json
 from datetime import date
+from pathlib import Path
 
 import pytest
 
@@ -7,9 +9,19 @@ from market_monitor.futures import (
     SERIES_KINDS,
     FutureCapitalDeposit,
     build_weighted_series,
+    contract_delivery_month,
     compute_future_capital_deposit,
+    futures_product_name,
+    is_expired_futures_contract,
     normalize_futures_bar,
+    resolve_futures_contract_spec,
 )
+
+
+def test_product_name_is_loaded_from_external_contract_spec() -> None:
+    assert futures_product_name("PS", "GFEX") == "多晶硅"
+    assert futures_product_name("ZN", "SHFE") == "沪锌"
+    assert futures_product_name("IF", "CFFEX") == "沪深300"
 
 
 def test_capital_deposit_doubles_single_side_open_interest():
@@ -66,6 +78,59 @@ def test_capital_deposit_rejects_invalid_parameters():
         compute_future_capital_deposit(**{**base, "contract_multiplier": 0})
     with pytest.raises(ValueError, match="margin_rate"):
         compute_future_capital_deposit(**{**base, "margin_rate": 1.5})
+
+
+def test_contract_spec_resolves_latest_effective_record(tmp_path: Path) -> None:
+    config = tmp_path / "specs.json"
+    config.write_text(
+        json.dumps(
+            {
+                "products": {
+                    "DCE.JM": {
+                        "records": [
+                            {"effectiveFrom": "2025-01-01", "contractMultiplier": 60, "marginRate": 0.12},
+                            {"effectiveFrom": "2026-07-01", "contractMultiplier": 60, "marginRate": 0.2, "source": "交易所通知"},
+                        ]
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    old = resolve_futures_contract_spec("jm", "dce", date(2026, 6, 30), config_path=config)
+    current = resolve_futures_contract_spec("JM", "DCE", date(2026, 8, 1), config_path=config)
+
+    assert old.spec is not None and old.spec.margin_rate == pytest.approx(0.12)
+    assert current.spec is not None and current.spec.margin_rate == pytest.approx(0.2)
+    assert current.spec.effective_from == date(2026, 7, 1)
+    assert current.spec.source == "交易所通知"
+
+
+def test_contract_spec_reports_missing_rate_instead_of_guessing(tmp_path: Path) -> None:
+    config = tmp_path / "specs.json"
+    config.write_text(
+        '{"products":{"DCE.JM":{"records":[{"effectiveFrom":"2026-01-01","contractMultiplier":60}]}}}',
+        encoding="utf-8",
+    )
+
+    resolution = resolve_futures_contract_spec("JM", "DCE", date(2026, 8, 1), config_path=config)
+
+    assert resolution.spec is None
+    assert resolution.reason == "DCE.JM缺少保证金率"
+
+
+def test_delivery_month_handles_four_digit_and_czce_three_digit_symbols() -> None:
+    today = date(2026, 8, 22)
+    assert contract_delivery_month("JM2505", "DCE", reference_day=today) == date(2025, 5, 1)
+    assert is_expired_futures_contract("JM2505", "DCE", reference_day=today)
+    assert not is_expired_futures_contract("JM2608", "DCE", reference_day=today)
+    assert contract_delivery_month(
+        "AP505", "CZCE", reference_day=today, last_trading_day=date(2025, 5, 10)
+    ) == date(2025, 5, 1)
+    assert contract_delivery_month(
+        "AP705", "CZCE", reference_day=today, last_trading_day=date(2026, 8, 20)
+    ) == date(2027, 5, 1)
 
 
 def weighted_bar(day, code, close, oi, volume=10.0, amount=100.0):
