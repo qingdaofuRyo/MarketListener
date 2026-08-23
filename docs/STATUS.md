@@ -4,8 +4,8 @@
 
 ## R3 当前摘要
 
-- 行情页、画线、市场分类、查询缓存、账户/策略、期货、本地通达信导入和数据源界面已形成一组尚未提交的实现，详见 `Plan_R3.md`。
-- 2026-08-24 完整验证通过：Ruff、共享 Schema、738 项桌面 pytest、Android lint/JVM/APK、Vue build 和 19 项 Playwright；工作区清理及发布安全审计已完成，GitHub 推送与远端核验仍由 `R3-T011` 跟踪。
+- 行情页、画线、市场分类、查询缓存、账户/策略、期货、本地通达信导入和数据源界面已形成 R3 实现，详见 `Plan_R3.md`。
+- 2026-08-24 完整验证通过：Ruff、共享 Schema、738 项桌面 pytest、Android lint/JVM/APK、Vue build 和 19 项 Playwright；工作区清理、安全审计与 GitHub 发布已完成，R3 主体提交为 `ce91a83`，`R3-T011` 已完成。
 - 通达信日线存在按资产类型缩放和成交量单位问题，TickDB 只有原始文件且尚无 Silver 导入器；两项均不得标为正式入库完成。审计见 `docs/TICKDB_TDX_DATA_AUDIT_2026-08-24.md`。
 
 ## 2026-08-09 历史状态

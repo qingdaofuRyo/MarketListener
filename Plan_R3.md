@@ -6,7 +6,7 @@
 
 - 状态使用 `NEW → ANALYSIS → PLAN_CREATED → CODING → CODE_REVIEW → TESTING → VERIFYING → DONE`；外部条件无法由代码解除时使用 `BLOCKED`。
 - `DONE` 必须同时具备实现、定向测试、全量回归、真实数据或页面验证、文档与清理证据。只有代码或测试文件存在时不得标记完成。
-- 本轮工作区尚未提交；不得把 `_patch_*.py`、本地数据、缓存、日志、导出文件或凭据纳入提交。
+- 本轮 R3 主体已于 2026-08-24 推送到用户指定 GitHub 仓库；`_patch_*.py`、本地数据、缓存、日志、导出文件和凭据均未纳入提交。
 - 数据来源必须物理隔离并保留 `source`、`source_symbol`、获取时间和质量状态。跨来源同标的只在查询层统一，不逐字段拼接成无法追溯的记录。
 
 ## 当前基线
@@ -102,11 +102,11 @@
 
 ### R3-T011 — 安全提交与 GitHub 发布
 
-- `type`：版本控制与发布；`priority`：P0；`state`：VERIFYING；`failure_count`：0。
+- `type`：版本控制与发布；`priority`：P0；`state`：DONE；`failure_count`：0。
 - `目标`：在不上传 API Key、凭据、本地数据库、行情、报告、日志和导出的前提下，把 R3 源码、配置、测试与文档推送到用户指定的 `https://github.com/qingdaofuRyo/MarketListener`。
-- `安全证据`：候选文件密钥扫描只命中测试中的显式合成凭据；无候选源码文件超过 5 MiB；`data_control/reports/artifacts/exports/.env/local.properties` 均被忽略；`.gitignore` 增加 DuckDB/SQLite/DB/Parquet/TDX/临时凭据/补丁规则。
-- `远端证据`：发布前只读 `git ls-remote` 显示指定仓库 `master` 为本地基线 `1bc76c2`；当前旧 `origin` 指向另一仓库，推送前必须改为用户指定地址并再次核对。
-- `完成条件`：检查精确暂存区、提交、推送、读取远端 `master` SHA 并与本地 HEAD 一致；最终提交信息和验证记录写入 `docs/Log.md`。
+- `安全证据`：精确暂存区共 86 个变更文件，新增密钥模式命中为 0、禁传路径/扩展名为 0、超过 5 MiB 的文件为 0；全仓索引中的命中均为既有网页夹具、合成测试凭据或历史示例；`data_control/reports/artifacts/exports/.env/local.properties` 均被忽略；`.gitignore` 增加 DuckDB/SQLite/DB/Parquet/TDX/临时凭据/补丁规则。
+- `远端证据`：发布前指定仓库 `master` 与本地基线均为 `1bc76c2`；已把 `origin` 切换为用户指定地址并移除两个指向旧仓库的重复远端；R3 主体提交 `ce91a83328e28fd8398704b5cf76f624ee5abd62` 推送后，`git ls-remote origin refs/heads/master` 与本地 HEAD 一致。
+- `完成结果`：精确暂存检查、提交、首次推送和远端 SHA 核验均通过；发布记录写入 `docs/Log.md`，本记录提交后再执行最终推送核验。
 
 ## 推荐执行顺序
 
@@ -116,4 +116,4 @@
 4. R3-T004：完成画线和行情页真实浏览器验收。
 5. R3-T003/R3-T005/R3-T006/R3-T007：完成实际数据与长时间运行复核。
 6. R3-T010：全量回归、审查和清理。
-7. R3-T011：安全提交、推送和远端核验。
+7. R3-T011：安全提交、推送和远端核验（已完成）。

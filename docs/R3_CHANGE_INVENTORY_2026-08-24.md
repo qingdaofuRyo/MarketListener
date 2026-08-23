@@ -135,3 +135,10 @@
 - 2026-08-24：完整 19 项 Playwright 通过；三个新增脚本的 `--help` 均可启动。
 - `git diff --check` 通过；全仓库 Markdown 本地链接检查通过。
 - Vite 保留两个大 chunk 提示；签名篡改测试保留一个故意重复 `manifest.json` 的既有警告，不影响通过结论。
+
+## 发布记录
+
+- 目标仓库：`https://github.com/qingdaofuRyo/MarketListener`，分支：`master`。
+- R3 主体提交：`ce91a83328e28fd8398704b5cf76f624ee5abd62`。
+- 首次推送后，`git ls-remote origin refs/heads/master` 返回值与本地 HEAD 一致。
+- 发布只包含源码、测试、公共配置和文档；本地数据库、行情原始文件、报告、日志、导出和凭据未进入提交。

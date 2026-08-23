@@ -123,12 +123,13 @@
 - TickDB ETF 成交量通常为手；通达信大部分文件为份，但高成交量标的可能也存手。正式入库前必须统一单位并修复已有错误分区。
 - 完整审计和接入门槛写入 `docs/TICKDB_TDX_DATA_AUDIT_2026-08-24.md`；本次没有执行数据导入或数据库修改。
 
-## 2026-08-24 - R3 全量回归、文档与发布前安全审计
+## 2026-08-24 - R3 全量回归、文档、安全审计与 GitHub 发布
 
 - `scripts/verify.ps1` 完整通过：Python 3.11.0、JDK 21.0.11、依赖锁/pip check、Ruff、共享 Schema、738 项桌面 pytest、Android `lintDebug/testDebugUnitTest/assembleDebug` 全部成功。
 - `npm run build` 通过；完整 Playwright 19/19 通过，覆盖行情画线偏好、ETF 首屏名称、产业链、策略、账户、数据源和全部终端路由。
 - 新增脚本 `build_offline_html.py`、`build_static_site.py`、`tickdb_download.py` 的 `--help` 均可启动；Windows 当前控制台对脚本中文帮助显示乱码属于终端编码表现，源码为 UTF-8。
 - 清理 `_patch_*.py`、未引用的 `MarketView-v2.vue` 和 `MarketInstrumentPanel.vue`；两个导出脚本职责确认不同并保留。
 - 新增 `docs/ARCHITECTURE.md`，统一 README、AGENTS、ADR、API 契约、组件 README、R3、STATUS、Experience、数据源矩阵和历史入口。
-- 安全审计：候选文件无真实密钥命中，测试中的 `local-password/local-token` 和合成私钥文本为明确夹具；没有候选源码文件超过 5 MiB；本地数据库、Parquet、TDX 文件、报告、日志、导出、`.env` 和 `local.properties` 均被 `.gitignore` 排除。
-- 指定 GitHub 仓库 `qingdaofuRyo/MarketListener` 的远端 `master` 在发布前为 `1bc76c2`，与本地基线一致；当前旧 `origin` 地址不同，正式推送前需切换并复核。
+- 安全审计：精确暂存区共 86 个变更文件，新增密钥模式、禁传路径/扩展名和超过 5 MiB 文件均为 0；全仓索引命中仅为既有网页夹具、合成测试凭据或历史示例；本地数据库、Parquet、TDX 文件、报告、日志、导出、`.env` 和 `local.properties` 均被 `.gitignore` 排除。
+- 指定 GitHub 仓库 `qingdaofuRyo/MarketListener` 的远端 `master` 在发布前为 `1bc76c2`，与本地基线一致；`origin` 已切换到该仓库，两个指向旧仓库的重复远端已移除。
+- R3 主体以提交 `ce91a83328e28fd8398704b5cf76f624ee5abd62` 推送到 `origin/master`；首次推送后通过 `git ls-remote` 核对远端 SHA 与本地 HEAD 完全一致。本文档记录提交完成后再执行最终远端一致性核验。
