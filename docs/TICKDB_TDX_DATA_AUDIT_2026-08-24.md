@@ -1,12 +1,14 @@
 # TickDB 与通达信 K 线数据接入审计
 
-审计日期：2026-08-24。审计对象为本机 `data_control/tickdb` 和 `C:\tongdaxin`；本次只读检查，没有把数据写入 Silver 或修改数据库。
+审计日期：2026-08-24。审计对象为当时本机的 `data_control/tickdb` 和 `C:\tongdaxin`；本次只读检查，没有把数据写入 Silver 或修改数据库。
+
+> **历史证据，已废弃为现行规范。** TickDB 原始目录后来已删除，活动下载代码与测试已在 R4 移除；本文关于 TickDB 的接入建议不得作为当前依赖或倍率结论。通达信现行规则以 `tdx-cn-v2` 和最新迁移报告为准。
 
 ## 结论
 
-两类数据都可以纳入项目，但不能直接导入当前正式库：
+当时的两类数据都不能直接导入当时的正式库：
 
-- TickDB 原始 K 线字段完整、绝大多数记录通过基本 OHLCV 检查，但需要新增标准化导入器、去重、证券代码映射、成交量单位转换和异常隔离。
+- TickDB 原始 K 线字段曾完整、绝大多数记录通过基本 OHLCV 检查；该来源现已移除，以下发现仅供历史追溯。
 - 通达信证券导入器已经存在，但中国市场日线的统一 `/100` 价格缩放对 ETF、LOF、REIT、转债和回购不正确；成交量还存在股/份与手的动态单位差异。必须先修复并重导受影响分区。
 
 ## TickDB 盘点
@@ -78,13 +80,11 @@
 
 1. 修复并测试通达信的资产类型价格倍率和成交量单位。
 2. 对现有错误日线分区执行可恢复重导，而不是覆盖来源不明的数据。
-3. 补齐 TickDB ETF 范围并重试两个失败任务。
-4. 实现 TickDB dry-run：字段、代码映射、重复、空值、时间、OHLC、量额单位全部输出报告。
-5. dry-run 通过后写入来源隔离 Silver；再做跨来源同日 OHLCVA 抽样、API 查询和网页显示验收。
+3. （已废弃）TickDB 相关的补齐、重试和 dry-run 提议不再执行；若未来重新引入，须重新立项并审计。
 
 ## 相关代码
 
-- TickDB 下载：`scripts/tickdb_download.py`
+- TickDB 下载：历史文件 `scripts/tickdb_download.py` 已在 R4 删除。
 - 通达信证券导入：`desktop/src/market_monitor/tdx_local.py`
 - 市场分类：`desktop/src/market_monitor/market_classification.py`
 - 标准 K 线契约：`contracts/bar.schema.json`

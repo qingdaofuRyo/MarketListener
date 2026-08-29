@@ -21,7 +21,7 @@
 | 前缀 | 主要端点 | 边界 |
 | --- | --- | --- |
 | `/api/market` | `overview`、`cache-status`、`groups`、`categories`、`instruments`、bars meta/history/batch、`chart`、`indicator-series`、drawings index/batch/read/write/delete | 只读行情来自本地；画线写入个人目录且仅 loopback。 |
-| `/api/data-sources` | `providers`、`inventory`、根路径 GET/PUT | 清单、字段和路由配置；不在页面请求中探测外网 Provider。 |
+| `/api/data-sources` | `providers`、`inventory`、`tdx-local-normalization`、根路径 GET/PUT | 清单、字段、TDX 标准化审计和路由配置；不在页面请求中探测外网 Provider。 |
 | `/api/personal` | `watchlist`、`dashboard` | 本机个人配置；写操作仅 loopback。 |
 | `/api/stats` | accounts/trash/analysis、snapshots/cashflows/fills/strategy-uses、CSV、summary、trades/positions、strategy-ledger/performance | 个人交易和账户数据，不写入 Silver。 |
 | `/api/strategy` | definitions CRUD/mark、indicators/conditions/functions、formula/condition validate、matches、validate/run/history | 只允许白名单 DSL/公式；禁止任意 Python、文件和网络访问。 |
@@ -44,7 +44,8 @@
 
 - `/providers` 仅表示代码中注册的能力与配置状态，不等于真实可用或已入库。
 - `/inventory` 基于 catalog/Parquet/查询清单返回本地物理表、数据集、字段样本、来源、质量和时间范围。
-- TickDB 原始文件存在但 Silver 来源为 0 时必须显示为未入库，不能提升为可用数据库来源。
+- `/tdx-local-normalization` 返回最近一次 `tdx-cn-v2` 审计的版本、扫描、正式写入、隔离和异常统计；报告不存在时显式返回不可用，不伪造覆盖率。
+- TickDB 已从活动数据源移除；历史审计文件不得作为 Provider 或回退来源显示。
 
 ## /api/market
 

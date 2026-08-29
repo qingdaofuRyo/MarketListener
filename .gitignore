@@ -49,6 +49,11 @@ Thumbs.db
 # Runtime data stores / local backups (never uploaded to git).
 data_control/
 data_control_old_20260808/
+# TDX normalization audit/migration outputs when a custom data root points at the repository.
+/tdx_local_migration/
+/quarantine/tdx-cn-v2/
+/state/tdx_local_import*.json
+/reports/tdx-local/
 *.duckdb
 *.duckdb.wal
 *.sqlite

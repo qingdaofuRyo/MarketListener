@@ -1,6 +1,6 @@
 # Repository Guidelines
 
-The current development source of truth is `Plan_R3.md`. Read it together with `docs/ADR.md`, `docs/CONTEXT.md`, `docs/ARCHITECTURE.md`, and the relevant entries in `docs/Experience.md` and `docs/Log.md` before making changes. `Plan_R1.md`, `Plan_R2.md`, `docs/Plan_full.md`, and `docs/STATUS.md` are historical evidence, not parallel active queues.
+The current development source of truth is `Plan_R4.md`. Read it together with `docs/ADR.md`, `docs/CONTEXT.md`, `docs/ARCHITECTURE.md`, and the relevant entries in `docs/Experience.md` and `docs/Log.md` before making changes. `Plan_R1.md`, `Plan_R2.md`, `Plan_R3.md`, `docs/Plan_full.md`, and `docs/STATUS.md` are historical evidence, not parallel active queues.
 
 ## Project Structure & Module Organization
 
@@ -25,7 +25,7 @@ powershell -ExecutionPolicy Bypass -File scripts\verify.ps1
 
 `verify.ps1` is the full baseline: dependency checks, Ruff, Python tests, Android lint/unit tests, and Debug APK build. It requires the pinned Python 3.11 and JDK 21 configuration; it also handles the temporary ASCII-path mapping needed by Gradle.
 
-Relevant R3 commands include:
+Relevant inherited R3/R4 data commands include:
 
 ```powershell
 desktop\.venv\Scripts\python -m market_monitor kline-cache --data-root data_control
@@ -34,7 +34,7 @@ desktop\.venv\Scripts\python -m market_monitor bulk-futures --data-root data_con
 desktop\.venv\Scripts\python scripts\build_offline_html.py --data-root data_control --report-root reports
 ```
 
-Do not run the TDX securities import against the authoritative store until the asset-specific daily price scaling and volume-unit issue tracked by `R3-T008` is fixed and verified.
+TDX securities imports must use the `tdx-cn-v2` normalization gate. Run `--audit-only` before a source replacement; only rows with explicit price scale, volume multiplier/unit, normalization provenance, and `PASS` quality may enter authoritative Silver.
 
 ## Coding Style & Naming Conventions
 

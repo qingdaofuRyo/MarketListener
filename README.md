@@ -1,10 +1,10 @@
 # 行情监控和产业链图谱项目文档入口
 
-当前开发唯一入口：[Plan_R3.md](./Plan_R3.md)。`Plan_R1.md`、`Plan_R2.md`、`Plan.md`、`Plan_full.md` 与 `docs/STATUS.md` 保留历史计划和验收事实。
+当前开发唯一入口：[Plan_R4.md](./Plan_R4.md)。`Plan_R1.md`、`Plan_R2.md`、`Plan_R3.md`、`Plan.md`、`Plan_full.md` 与 `docs/STATUS.md` 保留历史计划和验收事实。
 
 ## 开发前必读
 
-1. [Plan_R3.md](./Plan_R3.md)：第三轮当前任务、状态、验证与下一步。
+1. [Plan_R4.md](./Plan_R4.md)：第四轮当前任务、已确认口径、待决策项与下一步。
 2. [ARCHITECTURE.md](./docs/ARCHITECTURE.md)：桌面生产端、Web、Android、存储、来源和安全边界。
 3. [ADR.md](./docs/ADR.md)：不可擅自修改的项目约束与架构决策索引。
 4. [CONTEXT.md](./docs/CONTEXT.md)：项目统一术语。
@@ -20,9 +20,11 @@
 
 ## 当前开发状态
 
-第三轮实时进度只看 [Plan_R3.md](./Plan_R3.md)。旧 `FULL-*` 状态、审查和验收结论完整保留在 [docs/STATUS.md](./docs/STATUS.md) 与 `docs/deliveries/`，但不再作为当前任务队列。
+第四轮实时进度只看 [Plan_R4.md](./Plan_R4.md)。R1–R3、旧 `FULL-*` 状态、审查和验收结论完整保留，但不再作为当前任务队列。
 
-2026-08-24 R3 进展：行情页、画线、市场分类、查询缓存、账户/策略、期货、本地通达信导入、数据源浏览和离线快照实现已发布；Ruff、共享 Schema、738 项桌面 pytest、Android lint/JVM/APK、Vue 生产构建及 19 项 Playwright 均通过。通达信证券日线缩放/成交量单位和 TickDB Raw-to-Silver 仍是明确未完成项，详见 R3 计划与专项审计。
+2026-08-27 R4 进展：`R4-T008` 已实现国内期货多空热度 Gold、只读 API、三 Gauge、用户权重持久化和同图三线历史趋势；真实最新日方向覆盖 100%、资金覆盖 98.65%，剩余 1 个品种缺口明确标为 `PARTIAL`。本地月份合约长历史不完整，近 1 年资金/总热度为 222/243 日，近 5 年为 237/1,211 日；API 明确返回覆盖且缺失日保持 `null`。四张期货结构图仍按 `R4-T004～R4-T007` 独立推进，价格基准和真实席位覆盖保持 `ANALYSIS`；80 色调色板和笔刷任务仍按各自计划执行。
+
+2026-08-29 R4 进展：通达信证券导入已升级为 `tdx-cn-v2`，按资产解释日线价格并逐行验证成交量倍率，保留原始值与标准化证据；B 股独立分类，无法解释的记录进入隔离区。TickDB 活动下载代码已移除，2026-08-24 专项文档仅作为历史审计证据。
 
 2026-08-12 历史存量基线：桌面后端曾统计 9,937 个标的、3,090,089 条 K 线；此计数会随本地导入变化，当前值必须以运行中的 `/api/market/overview` 为准，不能从本文推断。
 
@@ -96,9 +98,14 @@ desktop\.venv\Scripts\python -m market_monitor probe --config-file $env:USERPROF
 
 ```powershell
 desktop\.venv\Scripts\python -m market_monitor bulk-futures --data-root data_control --tdx-futures-root C:\new_tdxqh
+desktop\.venv\Scripts\python -m market_monitor futures-calendar-sync --data-root data_control
+desktop\.venv\Scripts\python -m market_monitor futures-rule-sync --data-root data_control --lookback-days 10
+desktop\.venv\Scripts\python -m market_monitor futures-heat --data-root data_control
 ```
 
 任务将本地 5 分钟/日线、AKShare 国内主连备用、两个 CCIDX 商品指数和受控国外连续合约写入 Silver。检查点位于 `data_control/state/`；不会读取 Cookie、CTP 或 pytdx 期货网络协议。AKShare 的 `品种0` 只作主连备用，`品种9` 不作为加权来源。
+
+多空热度构建顺序为统一交易日历、逐日合约规则快照、Silver→Gold。页面 `/futures/` 和 `/api/futures/heat` 只读取 Gold；拖动用户权重不会重扫 Silver，固定 40/60 总分也不会作为唯一历史真值入库。
 - 浏览器 IndexedDB：只保存网页查询缓存，不是权威业务数据源。
 
 `data_control` 出现在仓库根目录，是因为 CLI 的 `--data-root data_control` 使用相对路径；相对路径按启动命令的当前工作目录解析。这是本地开发时期形成的运行约定，并非 DuckDB 或 Parquet 的限制。所有采集和后端命令都可以改传仓库外的绝对路径，例如 `D:\MarketListenerData`。迁移已有数据时，采集、后端、定时任务和脚本必须统一切换到同一个绝对路径，不能只移动目录。

@@ -1,6 +1,6 @@
 # 数据源能力矩阵
 
-审计日期：2026-08-24。这里的“已实现”仅指仓库存在 adapter/collector 代码；“当前存量”仅指 `data_control/silver` 已落库数据。两者都不等同于持续可用、实时更新或无缺口的全市场覆盖。TickDB 与通达信本地证券的专项盘点见 `TICKDB_TDX_DATA_AUDIT_2026-08-24.md`。
+审计日期：2026-08-29。这里的“已实现”仅指仓库存在 adapter/collector 代码；“当前存量”仅指 `data_control/silver` 已落库数据。两者都不等同于持续可用、实时更新或无缺口的全市场覆盖。2026-08-24 TickDB/通达信专项盘点是历史问题发现证据，当前通达信口径以 `tdx-cn-v2` 审计和迁移报告为准。
 
 ## 统一口径
 
@@ -41,8 +41,8 @@ Each local inventory category also exposes `sourceDetails`: its stored source id
 | Binance | HTTPS JSON：`https://data-api.binance.vision/api/v3/klines` | BTC/ETH 日线 | 公共端点 | collector 已落库；网络可达性需每次会话实测。 |
 | 东财/CBOE/腾讯 | 东财 `push2his.eastmoney.com/api/qt/stock/kline/get`；CBOE VIX CSV；腾讯回退 | DXY/VIX 日线指标 | 公共端点 | collector 已实现，TLS/网络可能导致部分失败。 |
 | 同花顺行情中心 | `q.10jqka.com.cn` 市场页与指数页快照 | A 股涨跌家数、涨停/跌停家数、昨日涨停平均收益率、指数表格 | 网站会话/反爬策略 | 已实现 `ths-market` 可恢复快照任务；公开页可获取首批指数，翻页请求会返回登录/授权限制。使用已登录浏览器 Cookie 的自动化仍需在可用浏览器会话中另行验证。 |
-| 通达信金融终端本地证券文件 | `C:\tongdaxin\vipdoc` 的 `.day/.lc5` | 沪深北及港股日线/五分钟，含股票、指数、ETF、LOF、REIT、转债和回购分类 | 本机已下载文件；无网络认证 | 已实现增量导入和来源隔离，但中国市场日线价格倍率及大成交量文件的手/份单位尚未修复，当前为 **CHANGES_REQUIRED**，不得继续正式导入受影响类型。 |
-| TickDB | 历史 K 线 REST 原始 gzip 缓存 | 当前下载含中国 ETF、中国/港股指数的 1d/5m/30m/1h 子集 | API Key 仅来自环境变量 | 原始文件和可恢复下载器已存在；Silver 中来源计数为 0。需要去重、代码映射、量额单位和异常隔离导入器，当前为 **RAW_ONLY**。 |
+| 通达信金融终端本地证券文件 | `C:\tongdaxin\vipdoc` 的 `.day/.lc5` | 沪深北及港股日线/五分钟，含 A/B 股、指数、ETF、LOF、REIT、转债和回购分类 | 本机已下载文件；无网络认证 | `tdx-cn-v2` 已实现资产级价格精度、逐行成交量倍率、原始值追溯、隔离质量门、只读审计和可回滚来源替换；当前真实覆盖以最新迁移报告为准。 |
+| TickDB | 无活动来源 | 无本地原始目录、无 Silver、无活动下载器 | 不适用 | **REMOVED**；只保留 2026-08-24 历史审计，不参与正式导入、回退或质量判定。 |
 
 ## R2 分层实测（2026-08-13）
 
@@ -74,5 +74,5 @@ Each local inventory category also exposes `sourceDetails`: its stored source id
 | --- | --- | --- |
 | 全部 A 股、HK 股、ETF 的 30m/1h/2h/4h/1d/1w/1m | PARTIAL | A/H 个股和大部分 ETF 的日线已落库；API 可由已存 30m 或 1d 派生部分周期。仍缺全量分钟基础数据、14 个 ETF 上游缺口及 1 个港股缺口。 |
 | 全部指数同周期与成交量 | BLOCKED | 当前仅部分指数日线/快照；同花顺 575 指数分页受登录限制，部分上游不提供成交量；需按字段能力保留 NULL。 |
-| 国内期货主力+加权连续的全周期与沉淀资金 | BLOCKED | 当前仅主力日线/部分商品指数；未定义可验证的沉淀资金计算口径和连续合约来源。 |
+| 国内期货品种收益、沉淀资金与多空热度 | PARTIAL | 月份合约与原生加权日线、双边沉淀资金公式、统一交易日、逐日乘数/保证金快照和版本化 Gold 已接通；2026-08-21 方向覆盖 74/74、资金覆盖 73/74。长历史月份合约不足使 `FundScore10` 仅覆盖 237/5,244 日（近 1 年 222/243）；规则/日历为 AKShare 公共上游快照且有 15 个规则空表日。 |
 | 国内外商品分类指数全覆盖 | BLOCKED | 当前只有 CCIDX/少量公开数据；同花顺、Wind、QMT、文华等未实现或需授权，不能伪装接入。 |

@@ -1,6 +1,6 @@
 # android（Android 13+ 消费端）
 
-Android 消费端基于 Kotlin + Jetpack Compose，`minSdk=33`。当前基线包含签名行情包导入、中文导入状态、已激活 `payload.sqlite` 的只读查询和本地 Lightweight Charts K 线转换代码。当前任务从 `../Plan_R3.md` 启动，整体边界见 `../docs/ARCHITECTURE.md` 与 `../docs/ADR.md`；Day 0 与 `FULL-*` 结论保留为历史证据。
+Android 消费端基于 Kotlin + Jetpack Compose，`minSdk=33`。当前基线包含签名行情包导入、中文导入状态、已激活 `payload.sqlite` 的只读查询和本地 Lightweight Charts K 线转换代码。当前任务从 `../Plan_R4.md` 启动，整体边界见 `../docs/ARCHITECTURE.md` 与 `../docs/ADR.md`；R1–R3、Day 0 与 `FULL-*` 结论保留为历史证据。
 
 ## 环境
 
