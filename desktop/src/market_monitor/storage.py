@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -214,6 +215,108 @@ class MarketStore:
         self.connection.commit()
         return len(metrics)
 
+    def upsert_futures_long_short_heat(self, rows: Sequence[Mapping[str, Any]]) -> int:
+        """Persist replayable daily futures heat outputs without a user-weighted total."""
+
+        if not rows:
+            return 0
+        for row in rows:
+            _validate_futures_long_short_heat_row(row)
+        columns = _FUTURES_LONG_SHORT_HEAT_COLUMNS
+        placeholders = ", ".join("?" for _ in columns)
+        updates = ", ".join(
+            f"{column}=excluded.{column}"
+            for column in columns
+            if column not in {"formula_version", "trade_date"}
+        )
+        values = [[row[column] for column in columns] for row in rows]
+        self.connection.executemany(
+            f"""INSERT INTO futures_long_short_heat_daily ({', '.join(columns)})
+            VALUES ({placeholders})
+            ON CONFLICT(formula_version, trade_date) DO UPDATE SET {updates}""",
+            values,
+        )
+        self.connection.commit()
+        return len(values)
+
+    def list_futures_long_short_heat(
+        self,
+        *,
+        start_day: str | None = None,
+        end_day: str | None = None,
+        formula_version: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Read Gold heat rows in trading-day order; this never scans Silver."""
+
+        clauses: list[str] = []
+        parameters: list[str] = []
+        if start_day is not None:
+            clauses.append("trade_date >= ?")
+            parameters.append(start_day)
+        if end_day is not None:
+            clauses.append("trade_date <= ?")
+            parameters.append(end_day)
+        if formula_version is not None:
+            clauses.append("formula_version = ?")
+            parameters.append(formula_version)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        cursor = self.connection.execute(
+            f"SELECT {', '.join(_FUTURES_LONG_SHORT_HEAT_COLUMNS)} "
+            f"FROM futures_long_short_heat_daily{where} ORDER BY trade_date, formula_version",
+            parameters,
+        )
+        return [
+            dict(zip(_FUTURES_LONG_SHORT_HEAT_COLUMNS, row, strict=True))
+            for row in cursor.fetchall()
+        ]
+
+    def replace_futures_long_short_heat(
+        self,
+        rows: Sequence[Mapping[str, Any]],
+        *,
+        formula_version: str,
+        start_day: str | None = None,
+        end_day: str | None = None,
+    ) -> int:
+        """Atomically replace one formula version (or a bounded date slice)."""
+
+        if not formula_version:
+            raise ValueError("formula_version is required")
+        if start_day is not None and end_day is not None and start_day > end_day:
+            raise ValueError("start_day must not be after end_day")
+        if any(row.get("formula_version") != formula_version for row in rows):
+            raise ValueError("all replacement rows must use formula_version")
+        for row in rows:
+            _validate_futures_long_short_heat_row(row)
+        clauses = ["formula_version = ?"]
+        parameters: list[Any] = [formula_version]
+        if start_day is not None:
+            clauses.append("trade_date >= ?")
+            parameters.append(start_day)
+        if end_day is not None:
+            clauses.append("trade_date <= ?")
+            parameters.append(end_day)
+        columns = _FUTURES_LONG_SHORT_HEAT_COLUMNS
+        placeholders = ", ".join("?" for _ in columns)
+        values = [[row[column] for column in columns] for row in rows]
+        try:
+            self.connection.execute("BEGIN TRANSACTION")
+            self.connection.execute(
+                f"DELETE FROM futures_long_short_heat_daily WHERE {' AND '.join(clauses)}",
+                parameters,
+            )
+            if values:
+                self.connection.executemany(
+                    f"INSERT INTO futures_long_short_heat_daily ({', '.join(columns)}) "
+                    f"VALUES ({placeholders})",
+                    values,
+                )
+            self.connection.commit()
+        except Exception:
+            self.connection.rollback()
+            raise
+        return len(values)
+
     def _atomic_json(self, target: Path, data: Any) -> None:
         staging = target.with_suffix(f".{uuid4().hex}.json")
         try:
@@ -248,6 +351,163 @@ class MarketStore:
                 definition VARCHAR NOT NULL, calculation_method VARCHAR NOT NULL, timestamp VARCHAR NOT NULL
             )"""
         )
+        self._ensure_futures_long_short_heat_schema()
+
+    def _ensure_futures_long_short_heat_schema(self) -> None:
+        table_name = "futures_long_short_heat_daily"
+        exists = self.connection.execute(
+            """SELECT count(*) FROM information_schema.tables
+            WHERE table_schema=current_schema() AND table_name=?""",
+            [table_name],
+        ).fetchone()[0]
+        if not exists:
+            self.connection.execute(_futures_heat_table_ddl(table_name))
+            return
+        primary = self.connection.execute(
+            """SELECT constraint_column_names FROM duckdb_constraints()
+            WHERE table_name=? AND constraint_type='PRIMARY KEY'""",
+            [table_name],
+        ).fetchone()
+        primary_columns = tuple(primary[0]) if primary else ()
+        if primary_columns == ("formula_version", "trade_date"):
+            return
+        if primary_columns != ("trade_date",):
+            raise RuntimeError(
+                "unsupported futures_long_short_heat_daily primary key; expected legacy trade_date"
+            )
+        migration_table = f"_futures_heat_migration_{uuid4().hex}"
+        self.connection.execute("BEGIN TRANSACTION")
+        try:
+            self.connection.execute(_futures_heat_table_ddl(migration_table))
+            self.connection.execute(
+                f"INSERT INTO {migration_table} ({', '.join(_FUTURES_LONG_SHORT_HEAT_COLUMNS)}) "
+                f"SELECT {', '.join(_FUTURES_LONG_SHORT_HEAT_COLUMNS)} FROM {table_name}"
+            )
+            self.connection.execute(f"DROP TABLE {table_name}")
+            self.connection.execute(f"ALTER TABLE {migration_table} RENAME TO {table_name}")
+            self.connection.execute("COMMIT")
+        except Exception:
+            self.connection.execute("ROLLBACK")
+            raise
+
+
+_FUTURES_LONG_SHORT_HEAT_COLUMNS = (
+    "trade_date",
+    "total_variety_count",
+    "valid_variety_count",
+    "missing_variety_count",
+    "up_variety_count",
+    "down_variety_count",
+    "flat_variety_count",
+    "fund_valid_variety_count",
+    "fund_missing_variety_count",
+    "up_fund",
+    "down_fund",
+    "flat_fund",
+    "return_coverage",
+    "fund_coverage",
+    "breadth_score_daily",
+    "fund_score_daily",
+    "breadth_score_10d",
+    "fund_score_10d",
+    "divergence",
+    "is_warmup",
+    "data_quality_status",
+    "formula_version",
+    "source_cutoff",
+    "calculation_method",
+    "calculated_at",
+)
+
+
+def _validate_futures_long_short_heat_row(row: Mapping[str, Any]) -> None:
+    missing = [column for column in _FUTURES_LONG_SHORT_HEAT_COLUMNS if column not in row]
+    if missing:
+        raise ValueError(f"futures heat row missing columns: {missing}")
+    count_fields = (
+        "total_variety_count",
+        "valid_variety_count",
+        "missing_variety_count",
+        "up_variety_count",
+        "down_variety_count",
+        "flat_variety_count",
+        "fund_valid_variety_count",
+        "fund_missing_variety_count",
+    )
+    for field in count_fields:
+        value = row[field]
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(f"{field} must be a non-negative integer")
+    if row["total_variety_count"] != row["valid_variety_count"] + row["missing_variety_count"]:
+        raise ValueError("total variety count must equal valid plus missing")
+    if row["valid_variety_count"] != sum(
+        row[field] for field in ("up_variety_count", "down_variety_count", "flat_variety_count")
+    ):
+        raise ValueError("valid variety count must equal up plus down plus flat")
+    if row["valid_variety_count"] != row["fund_valid_variety_count"] + row["fund_missing_variety_count"]:
+        raise ValueError("fund valid plus missing must equal valid variety count")
+    for field in ("up_fund", "down_fund", "flat_fund"):
+        value = _finite_number(row[field], field)
+        if value < 0:
+            raise ValueError(f"{field} must be non-negative")
+    for field in ("return_coverage", "fund_coverage"):
+        value = _finite_number(row[field], field)
+        if not 0 <= value <= 1:
+            raise ValueError(f"{field} must be in [0, 1]")
+    for field in (
+        "breadth_score_daily",
+        "fund_score_daily",
+        "breadth_score_10d",
+        "fund_score_10d",
+    ):
+        if row[field] is not None and not -100 <= _finite_number(row[field], field) <= 100:
+            raise ValueError(f"{field} must be in [-100, 100]")
+    if row["divergence"] is not None and not -200 <= _finite_number(row["divergence"], "divergence") <= 200:
+        raise ValueError("divergence must be in [-200, 200]")
+    if not isinstance(row["is_warmup"], bool):
+        raise ValueError("is_warmup must be boolean")
+    if row["data_quality_status"] not in {"PASS", "PARTIAL", "UNAVAILABLE"}:
+        raise ValueError("unsupported futures heat data_quality_status")
+    for field in ("trade_date", "formula_version", "source_cutoff", "calculation_method", "calculated_at"):
+        if not isinstance(row[field], str) or not row[field].strip():
+            raise ValueError(f"{field} must be a non-empty string")
+
+
+def _finite_number(value: Any, field: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+        raise ValueError(f"{field} must be finite")
+    return float(value)
+
+
+def _futures_heat_table_ddl(table_name: str) -> str:
+    return f"""CREATE TABLE {table_name} (
+        trade_date VARCHAR NOT NULL,
+        total_variety_count INTEGER NOT NULL,
+        valid_variety_count INTEGER NOT NULL,
+        missing_variety_count INTEGER NOT NULL,
+        up_variety_count INTEGER NOT NULL,
+        down_variety_count INTEGER NOT NULL,
+        flat_variety_count INTEGER NOT NULL,
+        fund_valid_variety_count INTEGER NOT NULL,
+        fund_missing_variety_count INTEGER NOT NULL,
+        up_fund DOUBLE NOT NULL,
+        down_fund DOUBLE NOT NULL,
+        flat_fund DOUBLE NOT NULL,
+        return_coverage DOUBLE NOT NULL,
+        fund_coverage DOUBLE NOT NULL,
+        breadth_score_daily DOUBLE,
+        fund_score_daily DOUBLE,
+        breadth_score_10d DOUBLE,
+        fund_score_10d DOUBLE,
+        divergence DOUBLE,
+        is_warmup BOOLEAN NOT NULL,
+        data_quality_status VARCHAR NOT NULL,
+        formula_version VARCHAR NOT NULL,
+        source_cutoff VARCHAR NOT NULL,
+        calculation_method VARCHAR NOT NULL,
+        calculated_at VARCHAR NOT NULL,
+        PRIMARY KEY(formula_version, trade_date)
+    )"""
 
 
 def _now() -> str:

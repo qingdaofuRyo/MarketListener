@@ -29,6 +29,16 @@ export interface Palette {
   chartAxis: string;
   chartTooltip: string;
   chartTooltipBorder: string;
+  heatTotal: string;
+  heatBreadth: string;
+  heatFund: string;
+  heatExtremeShort: string;
+  heatShort: string;
+  heatMildShort: string;
+  heatNeutral: string;
+  heatMildLong: string;
+  heatLong: string;
+  heatExtremeLong: string;
 }
 
 export const palettes: Record<EffectiveTheme, Palette> = {
@@ -54,6 +64,16 @@ export const palettes: Record<EffectiveTheme, Palette> = {
     chartAxis: "#7c8899",
     chartTooltip: "#1b2534",
     chartTooltipBorder: "#31415c",
+    heatTotal: "#5b8cff",
+    heatBreadth: "#f6c453",
+    heatFund: "#b692f6",
+    heatExtremeShort: "#0b6b4f",
+    heatShort: "#12976b",
+    heatMildShort: "#55c89a",
+    heatNeutral: "#5f6b7a",
+    heatMildLong: "#f58b94",
+    heatLong: "#ef4b57",
+    heatExtremeLong: "#b91c2c",
   },
   light: {
     background: "#f5f7fa",
@@ -77,6 +97,16 @@ export const palettes: Record<EffectiveTheme, Palette> = {
     chartAxis: "#687386",
     chartTooltip: "#ffffff",
     chartTooltipBorder: "#d7dee9",
+    heatTotal: "#1d4ed8",
+    heatBreadth: "#a16207",
+    heatFund: "#7e22ce",
+    heatExtremeShort: "#065f46",
+    heatShort: "#0e9f6e",
+    heatMildShort: "#7fcdb0",
+    heatNeutral: "#94a3b8",
+    heatMildLong: "#f5a3a9",
+    heatLong: "#d92d20",
+    heatExtremeLong: "#991b1b",
   },
 };
 

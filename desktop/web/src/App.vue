@@ -10,6 +10,7 @@ const client = [
   ["/market/", "行情"],
   ["/settings/", "设置"],
   ["/data/", "数据"],
+  ["/futures/", "期货数据"],
   ["/strategy/", "策略"],
   ["/stats/", "账户分析"],
   ["/industry/", "产业链"],
