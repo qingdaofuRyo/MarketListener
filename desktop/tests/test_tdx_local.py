@@ -40,7 +40,11 @@ def test_readers_keep_standard_a_share_and_hk_daily_layouts_separate(tmp_path: P
     hk = read_tdx_local_file(root / "vipdoc" / "ds" / "lday" / "31#00700.day", hong_kong=True)
     minute = read_tdx_local_file(root / "vipdoc" / "sh" / "fzline" / "sh600000.lc5")
 
-    assert cn == [{"day": "2026-08-14", "time": "00:00:00", "open": 9.14, "high": 9.17, "low": 9.06, "close": 9.1, "amount": 397_586_112.0, "volume": 43_623_080}]
+    assert cn[0]["close"] == 9.1
+    assert cn[0]["raw_close"] == 910
+    assert cn[0]["price_scale"] == 100.0
+    assert cn[0]["amount"] == 397_586_112.0
+    assert cn[0]["volume"] == 43_623_080
     assert hk[0]["close"] == 440.0
     assert hk[0]["amount"] == 13_498_062_848.0
     assert minute[0]["time"] == "09:00:00"
@@ -85,6 +89,8 @@ def test_cn_classification_covers_bond_repo_fund_and_reit_codes() -> None:
     assert _cn_classification("sz", "180101")[0] == "REIT"
     assert _cn_classification("sz", "181001")[0] == "REIT"
     assert _cn_classification("sz", "158001")[0] == "ETF"
+    assert _cn_classification("sh", "900901")[:2] == ("B_SHARE", "B_SHARE")
+    assert _cn_classification("sz", "200002")[:2] == ("B_SHARE", "B_SHARE")
 
 
 def test_import_is_source_isolated_and_checkpointed(tmp_path: Path) -> None:
@@ -114,7 +120,7 @@ def test_import_reads_only_records_appended_after_checkpoint(tmp_path: Path) -> 
     path = root / "vipdoc" / "sh" / "lday" / "sh600000.day"
     with path.open("ab") as stream:
         stream.write(
-            struct.pack("<IiiiifII", 20260815, 910, 920, 905, 918, 100_000.0, 20_000, 0)
+            struct.pack("<IiiiifII", 20260815, 910, 920, 905, 918, 183_600.0, 20_000, 0)
         )
 
     summary = run_tdx_local_import(data_root, tdx_root=root, batch_rows=1_000)
@@ -133,8 +139,8 @@ def test_import_can_limit_local_bars_to_requested_date_range(tmp_path: Path) -> 
     old_day = (2024 - 2004) * 2048 + 918
     current_day = (2026 - 2004) * 2048 + 814
     path.write_bytes(
-        struct.pack("<HHfffffII", old_day, 9 * 60, 8.0, 8.2, 7.9, 8.1, 100.0, 10, 0)
-        + struct.pack("<HHfffffII", current_day, 9 * 60, 9.14, 9.17, 9.06, 9.10, 200.0, 20, 0)
+        struct.pack("<HHfffffII", old_day, 9 * 60, 8.0, 8.2, 7.9, 8.1, 80.5, 10, 0)
+        + struct.pack("<HHfffffII", current_day, 9 * 60, 9.14, 9.17, 9.06, 9.10, 182.0, 20, 0)
     )
 
     summary = run_tdx_local_import(
@@ -143,3 +149,93 @@ def test_import_can_limit_local_bars_to_requested_date_range(tmp_path: Path) -> 
 
     assert summary["写入K线"] == 1
     assert summary["开始日期"] == "2024-09-18"
+
+
+def test_asset_specific_daily_price_scales_and_volume_units(tmp_path: Path) -> None:
+    root = _root(tmp_path)
+    lday = root / "vipdoc" / "sh" / "lday"
+    (lday / "sh510300.day").write_bytes(
+        struct.pack("<IiiiifII", 20260814, 4680, 4700, 4660, 4690, 469_000.0, 100_000, 0)
+    )
+    (lday / "sh110075.day").write_bytes(
+        struct.pack("<IiiiifII", 20260814, 1060000, 1070000, 1050000, 1065000, 1_065_000.0, 1_000, 0)
+    )
+    (lday / "sh204001.day").write_bytes(
+        struct.pack("<IiiiifII", 20260814, 18000, 19000, 17000, 18500, 2_000_000.0, 2_000, 0)
+    )
+    (lday / "sh900901.day").write_bytes(
+        struct.pack("<IiiiifII", 20260814, 3210, 3240, 3190, 3220, 322_000.0, 10_000, 0)
+    )
+
+    summary = run_tdx_local_import(tmp_path / "data", tdx_root=root, batch_rows=1_000)
+
+    assert summary["状态"] == "完成"
+    client = TestClient(create_web_app(tmp_path / "data"), client=("127.0.0.1", 50000))
+    etf = client.get("/api/market/instruments/CN.SSE.ETF.510300/bars", params={"period": "1d"}).json()["bars"][0]
+    bond = client.get("/api/market/instruments/CN.SSE.CONVERTIBLE_BOND.110075/bars", params={"period": "1d"}).json()["bars"][0]
+    b_share = client.get("/api/market/instruments/CN.SSE.B_SHARE.900901/bars", params={"period": "1d"}).json()["bars"][0]
+    assert etf["close"] == 4.69
+    assert bond["close"] == 106.5
+    assert bond["volume"] == 10_000.0
+    assert b_share["close"] == 3.22
+    assert b_share["currency"] == "USD"
+
+
+def test_row_level_volume_multipliers_preserve_valid_unit_transitions(tmp_path: Path) -> None:
+    root = _root(tmp_path)
+    path = root / "vipdoc" / "sh" / "lday" / "sh510300.day"
+    path.write_bytes(
+        struct.pack("<IiiiifII", 20260813, 4600, 4700, 4500, 4650, 465_000.0, 100_000, 0)
+        + struct.pack("<IiiiifII", 20260814, 4680, 4700, 4660, 4690, 469_000.0, 1_000, 0)
+    )
+
+    summary = run_tdx_local_import(tmp_path / "data", tdx_root=root, batch_rows=1_000)
+
+    assert summary["状态"] == "完成"
+    client = TestClient(create_web_app(tmp_path / "data"), client=("127.0.0.1", 50000))
+    bars = client.get("/api/market/instruments/CN.SSE.ETF.510300/bars", params={"period": "1d"}).json()["bars"]
+    assert [bar["volumeMultiplier"] for bar in bars] == [1.0, 100.0]
+    assert [bar["volume"] for bar in bars] == [100_000.0, 100_000.0]
+
+
+def test_unverifiable_nonzero_row_is_quarantined_without_rejecting_valid_rows(tmp_path: Path) -> None:
+    root = _root(tmp_path)
+    path = root / "vipdoc" / "sh" / "lday" / "sh510300.day"
+    path.write_bytes(
+        struct.pack("<IiiiifII", 20260813, 4600, 4700, 4500, 4650, 465_000.0, 100_000, 0)
+        + struct.pack("<IiiiifII", 20260814, 4680, 4700, 4660, 4690, 1.0, 1_000, 0)
+    )
+
+    summary = run_tdx_local_import(tmp_path / "data", tdx_root=root, batch_rows=1_000)
+
+    assert summary["状态"] == "完成（含隔离）"
+    assert summary["隔离文件"] == 1
+    assert summary["隔离K线"] == 1
+    assert list((tmp_path / "data" / "quarantine" / "tdx-cn-v2").glob("*.json"))
+
+
+def test_replace_source_keeps_a_recoverable_backup_and_promotes_v2(tmp_path: Path) -> None:
+    root = _root(tmp_path)
+    data_root = tmp_path / "data"
+    first = run_tdx_local_import(data_root, tdx_root=root, batch_rows=1_000, rebuild_cache=False)
+    assert first["写入K线"] == 4
+
+    result = run_tdx_local_import(
+        data_root,
+        tdx_root=root,
+        batch_rows=1_000,
+        rebuild_cache=False,
+        full_rescan=True,
+        replace_source=True,
+    )
+
+    assert result["状态"] == "完成"
+    assert result["替换旧分区"] > 0
+    assert result["提升新分区"] > 0
+    assert list(Path(result["旧数据备份"]).rglob("TDX-LOCAL-*.parquet"))
+    client = TestClient(create_web_app(data_root), client=("127.0.0.1", 50000))
+    bar = client.get(
+        "/api/market/instruments/CN.SSE.STOCK.600000/bars",
+        params={"period": "1d"},
+    ).json()["bars"][0]
+    assert bar["normalizationVersion"] == "tdx-cn-v2"

@@ -11,6 +11,9 @@ from market_monitor import __version__
 from market_monitor.collector import run_fetch_session
 from market_monitor.full_market import run_full_etf_backfill, run_full_stock_backfill
 from market_monitor.futures_bulk import run_bulk_futures
+from market_monitor.futures_heat_pipeline import run_futures_heat_pipeline
+from market_monitor.futures_calendar import sync_futures_trading_calendar
+from market_monitor.futures_rule_sync import sync_futures_rule_snapshots
 from market_monitor.tdx_local import run_tdx_local_import
 from market_monitor.ths_market import run_ths_market_snapshot
 from market_monitor.configuration import ConfigurationError, load_local_configuration
@@ -90,6 +93,19 @@ def build_parser() -> argparse.ArgumentParser:
     bulk_futures.add_argument("--global-only", action="store_true", help="仅导入国外重点期货与参考指数")
     bulk_futures.add_argument("--local-only", action="store_true", help="仅导入通达信期货通本地文件，不请求 AKShare")
     bulk_futures.add_argument("--full-rescan", action="store_true", help="忽略本地文件检查点并全量重扫")
+    futures_heat = subcommands.add_parser("futures-heat", help="从 Silver 离线构建中国商品期货多空热度 Gold 数据")
+    futures_heat.add_argument("--data-root", type=Path, default=Path("data_control"))
+    futures_heat.add_argument("--start-day", default=None, help="仅写入该交易日（含）之后的 Gold，格式 YYYY-MM-DD")
+    futures_heat.add_argument("--end-day", default=None, help="仅读取并写入该交易日（含）之前的数据，格式 YYYY-MM-DD")
+    futures_rules = subcommands.add_parser(
+        "futures-rule-sync", help="同步最近有效交易日的期货乘数与保证金规则快照"
+    )
+    futures_rules.add_argument("--data-root", type=Path, default=Path("data_control"))
+    futures_rules.add_argument("--lookback-days", type=int, default=10, help="同步最近 N 个 Silver 有效交易日")
+    futures_calendar = subcommands.add_parser(
+        "futures-calendar-sync", help="同步并持久化中国期货统一交易日历"
+    )
+    futures_calendar.add_argument("--data-root", type=Path, default=Path("data_control"))
     tdx_local = subcommands.add_parser("import-tdx-local", help="增量导入通达信金融终端本地 A 股、港股日线与 5 分钟线")
     tdx_local.add_argument("--data-root", type=Path, default=Path("data_control"))
     tdx_local.add_argument("--tdx-root", type=Path, default=None, help="通达信金融终端安装目录")
@@ -98,6 +114,18 @@ def build_parser() -> argparse.ArgumentParser:
     tdx_local.add_argument("--skip-cache-rebuild", action="store_true", help="导入后不重建低延迟 K 线查询缓存")
     tdx_local.add_argument("--start-date", help="仅导入该日期（含）之后的本地K线，格式 YYYY-MM-DD")
     tdx_local.add_argument("--end-date", help="仅导入该日期（含）之前的本地K线，格式 YYYY-MM-DD")
+    tdx_local.add_argument("--audit-only", action="store_true", help="只生成 tdx-cn-v2 标准化审计，不写入 Silver")
+    tdx_local.add_argument(
+        "--replace-source",
+        action="store_true",
+        help="在独立暂存库重建并可回滚地替换现有 TDX Silver；必须与 --full-rescan 同用",
+    )
+    tdx_local.add_argument(
+        "--resume-staging",
+        type=Path,
+        default=None,
+        help="续跑已中断的 data_control/tdx_local_migration/staging 暂存目录，完成后提升来源",
+    )
     ths = subcommands.add_parser("ths-market", help="collect THS market breadth and CSI index snapshots")
     ths.add_argument("--data-root", type=Path, default=Path("data_control"))
     f10 = subcommands.add_parser("f10", help="fetch A/H share F10 basics (throttled, resumable)")
@@ -181,6 +209,12 @@ def main(argv: list[str] | None = None) -> int:
             return _bulk_etfs(args)
         if args.command == "bulk-futures":
             return _bulk_futures(args)
+        if args.command == "futures-heat":
+            return _futures_heat(args)
+        if args.command == "futures-rule-sync":
+            return _futures_rule_sync(args)
+        if args.command == "futures-calendar-sync":
+            return _futures_calendar_sync(args)
         if args.command == "import-tdx-local":
             return _import_tdx_local(args)
         if args.command == "ths-market":
@@ -322,6 +356,51 @@ def _bulk_futures(args: argparse.Namespace) -> int:
     return EXIT_SUCCESS if success else EXIT_PARTIAL_FAILURE
 
 
+def _futures_heat(args: argparse.Namespace) -> int:
+    summary = run_futures_heat_pipeline(
+        args.data_root,
+        start_day=args.start_day,
+        end_day=args.end_day,
+    )
+    success = summary["status"] == "PASS"
+    print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
+    _emit(
+        "SUCCESS" if success else "PARTIAL_FAILURE",
+        EXIT_SUCCESS if success else EXIT_PARTIAL_FAILURE,
+        message=f"商品期货多空热度 Gold 构建完成：写入 {summary['writtenRows']} 个交易日",
+    )
+    return EXIT_SUCCESS if success else EXIT_PARTIAL_FAILURE
+
+
+def _futures_rule_sync(args: argparse.Namespace) -> int:
+    summary = sync_futures_rule_snapshots(
+        args.data_root,
+        lookback_days=args.lookback_days,
+    )
+    success = summary["status"] in {"UPDATED", "UNCHANGED"}
+    print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
+    _emit(
+        "SUCCESS" if success else "PARTIAL_FAILURE",
+        EXIT_SUCCESS if success else EXIT_PARTIAL_FAILURE,
+        message=(
+            f"期货合约规则快照同步结束：新增 {summary['fetchedDayCount']} 个交易日，"
+            f"{summary['productRuleCount']} 条品种规则"
+        ),
+    )
+    return EXIT_SUCCESS if success else EXIT_PARTIAL_FAILURE
+
+
+def _futures_calendar_sync(args: argparse.Namespace) -> int:
+    summary = sync_futures_trading_calendar(args.data_root)
+    print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
+    _emit(
+        "SUCCESS",
+        EXIT_SUCCESS,
+        message=f"中国期货交易日历同步结束：{summary['tradingDayCount']} 个有效交易日",
+    )
+    return EXIT_SUCCESS
+
+
 def _import_tdx_local(args: argparse.Namespace) -> int:
     summary = run_tdx_local_import(
         args.data_root,
@@ -331,8 +410,11 @@ def _import_tdx_local(args: argparse.Namespace) -> int:
         rebuild_cache=not args.skip_cache_rebuild,
         start_date=args.start_date,
         end_date=args.end_date,
+        audit_only=args.audit_only,
+        replace_source=args.replace_source,
+        resume_staging=args.resume_staging,
     )
-    success = summary["状态"] == "完成"
+    success = str(summary["状态"]).startswith("完成")
     print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
     _emit(
         "SUCCESS" if success else "PARTIAL_FAILURE",

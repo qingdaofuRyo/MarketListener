@@ -16,6 +16,7 @@ from typing import Any
 
 
 _CONFIG_PATH = Path(__file__).with_name("config") / "market_classification.json"
+UNCLASSIFIED_CATEGORY = "unclassified"
 _LEGACY_CATEGORIES = {
     "cn-index": {"a-index", "tdx-board-index", "tdx-industry-index"},
     "cn-stock": {"a-sh", "a-sz", "a-bse", "a-chinext", "a-star"},
@@ -104,6 +105,8 @@ def _a_share_category(symbol: str, exchange: str, asset_type: str, spec: dict[st
         return "a-etf"
     if asset_type == "INDEX":
         return "a-index"
+    if asset_type == "B_SHARE":
+        return "b-sh" if exchange == "SSE" else "b-sz" if exchange == "SZSE" else None
     if asset_type in {"CONVERTIBLE_BOND", "EXCHANGEABLE_BOND", "PLEDGED_REPO", "REPO", "LOF", "REIT"}:
         return {
             "CONVERTIBLE_BOND": "a-convertible",
@@ -178,7 +181,7 @@ def _future_category(
         product in products for products in rules["commodityProducts"].values()
     ):
         return "cn-future-commodity"
-    return "other"
+    return UNCLASSIFIED_CATEGORY
 
 
 def classify_market(item: dict[str, Any]) -> str:
@@ -199,7 +202,7 @@ def classify_market(item: dict[str, Any]) -> str:
             return "hk-index"
         if asset_type in {"", "STOCK"} and symbol.isdigit() and 1 <= len(symbol) <= 5:
             return "hk-stock"
-        return "other"
+        return UNCLASSIFIED_CATEGORY
 
     is_future = asset_type == "FUTURE" or (
         not asset_type and (exchange in spec["futures"]["commodityProducts"] or exchange == "CFFEX")
@@ -208,8 +211,8 @@ def classify_market(item: dict[str, Any]) -> str:
         return _future_category(item, symbol, exchange, series_kind, parts, spec)
 
     if market == "CN" or exchange in {"SSE", "SZSE", "BSE"} or re.fullmatch(r"\d{6}", symbol):
-        return _a_share_category(symbol, exchange, asset_type, spec) or "other"
-    return "other"
+        return _a_share_category(symbol, exchange, asset_type, spec) or UNCLASSIFIED_CATEGORY
+    return UNCLASSIFIED_CATEGORY
 
 
 def night_session(item: dict[str, Any]) -> str | None:

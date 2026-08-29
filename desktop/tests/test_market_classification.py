@@ -1,5 +1,7 @@
 from market_monitor.market_classification import (
+    UNCLASSIFIED_CATEGORY,
     classify_market,
+    market_category_options,
     matches_market_category,
     night_session,
     split_zero_prefix_symbols,
@@ -95,15 +97,28 @@ def test_legacy_stock_key_remains_compatible() -> None:
     assert matches_market_category(instrument("600519", exchange="SSE", asset_type="STOCK"), "cn-stock")
 
 
+def test_b_shares_are_separate_from_a_share_categories() -> None:
+    sh_b = instrument("900901", exchange="SSE", asset_type="B_SHARE")
+    sz_b = instrument("200002", exchange="SZSE", asset_type="B_SHARE")
+    assert classify_market(sh_b) == "b-sh"
+    assert classify_market(sz_b) == "b-sz"
+    assert not matches_market_category(sh_b, "cn-stock")
+
+
 def test_legacy_index_key_includes_tongdaxin_board_indexes() -> None:
     assert matches_market_category(instrument("880001", exchange="SSE"), "cn-index")
     assert matches_market_category(instrument("881048", exchange="SSE"), "cn-index")
 
 
 def test_options_are_excluded_while_convertible_bonds_are_classified() -> None:
-    assert classify_market(instrument("rb-2510-C-3800", exchange="SHFE", asset_type="OPTION")) == "other"
-    assert classify_market(instrument("10008155", exchange="SSE", asset_type="OPTION")) == "other"
+    assert classify_market(instrument("rb-2510-C-3800", exchange="SHFE", asset_type="OPTION")) == UNCLASSIFIED_CATEGORY
+    assert classify_market(instrument("10008155", exchange="SSE", asset_type="OPTION")) == UNCLASSIFIED_CATEGORY
     assert classify_market(instrument("113001", exchange="SSE", asset_type="BOND")) == "a-convertible"
+
+
+def test_unclassified_is_not_a_public_market_category() -> None:
+    assert UNCLASSIFIED_CATEGORY not in {item["id"] for item in market_category_options()}
+    assert "other" not in {item["id"] for item in market_category_options()}
 
 
 def test_night_session_only_includes_products_that_actually_trade_overnight() -> None:

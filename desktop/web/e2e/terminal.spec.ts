@@ -4,6 +4,7 @@ const ROUTES = [
   ["/", "首页"],
   ["/market/", "行情"],
   ["/data/", "数据"],
+  ["/futures/", "国内期货数据"],
   ["/data-sources/", "数据源"],
   ["/strategy/", "策略"],
   ["/stats/", "账户分析"],

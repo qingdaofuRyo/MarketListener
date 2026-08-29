@@ -77,6 +77,20 @@ interface InventoryPayload {
   metadata: { mode: string; rowCounts: string; fieldCoverage: string; scansSilverRows: boolean };
   summary: { categories: number; rows: number; instruments: number; tables: number; datasets: number };
 }
+interface TdxNormalization {
+  available: boolean;
+  normalizationVersion: string;
+  status?: string;
+  generatedAt?: string;
+  scannedFiles?: number;
+  importedFiles?: number;
+  writtenBars?: number;
+  quarantinedFiles?: number;
+  quarantinedBars?: number;
+  assetFiles?: Record<string, number>;
+  volumeMultipliers?: Record<string, number>;
+  reason?: string;
+}
 
 const payload = ref<InventoryPayload>({
   inventory: [], tables: [], datasets: [], preferences: {},
@@ -84,6 +98,7 @@ const payload = ref<InventoryPayload>({
   summary: { categories: 0, rows: 0, instruments: 0, tables: 0, datasets: 0 },
 });
 const providers = ref<Provider[]>([]);
+const tdxNormalization = ref<TdxNormalization>({ available: false, normalizationVersion: "tdx-cn-v2" });
 const preferences = ref<Record<string, Preference>>({});
 const inventoryLoading = ref(false);
 const providersLoading = ref(false);
@@ -133,9 +148,10 @@ function addCustom(key: string): void {
 }
 async function load(): Promise<void> {
   inventoryLoading.value = true; providersLoading.value = true; error.value = "";
-  const [inventoryResult, providerResult] = await Promise.allSettled([
+  const [inventoryResult, providerResult, tdxResult] = await Promise.allSettled([
     apiGet<InventoryPayload>("/api/data-sources/inventory", undefined, { force: true }),
     apiGet<{ items: Provider[] }>("/api/data-sources/providers", undefined, { force: true }),
+    apiGet<TdxNormalization>("/api/data-sources/tdx-local-normalization", undefined, { force: true }),
   ]);
   if (inventoryResult.status === "fulfilled") {
     payload.value = inventoryResult.value;
@@ -146,6 +162,7 @@ async function load(): Promise<void> {
   inventoryLoading.value = false;
   if (providerResult.status === "fulfilled") providers.value = providerResult.value.items;
   else error.value = [error.value, providerResult.reason instanceof Error ? providerResult.reason.message : "Provider 注册表加载失败"].filter(Boolean).join("；");
+  if (tdxResult.status === "fulfilled") tdxNormalization.value = tdxResult.value;
   providersLoading.value = false;
 }
 async function save(): Promise<void> {
@@ -164,6 +181,18 @@ onMounted(() => void load());
       <div><el-button :loading="loading" @click="load">刷新盘点</el-button><el-button type="primary" :loading="saving" data-test="data-sources-save" @click="save">保存路由配置</el-button></div>
     </div>
     <el-alert v-if="error" :title="error" type="warning" :closable="false" class="page-alert" />
+    <section class="panel data-source-panel" data-test="tdx-normalization-status">
+      <div class="panel-heading">
+        <div><h2>通达信证券标准化</h2><p class="page-note">价格、成交量和资产分类只在通过 tdx-cn-v2 质量门后进入正式 Silver。</p></div>
+        <el-tag :type="tdxNormalization.available && tdxNormalization.status === '完成' ? 'success' : 'warning'" effect="plain">{{ tdxNormalization.available ? formatStatus(tdxNormalization.status || "") : "未审计" }}</el-tag>
+      </div>
+      <div v-if="tdxNormalization.available" class="overview-strip">
+        <div class="metric compact"><span>标准化版本 / 扫描文件</span><strong>{{ tdxNormalization.normalizationVersion }} / {{ formatNumber(tdxNormalization.scannedFiles || 0) }}</strong></div>
+        <div class="metric compact"><span>正式 K 线 / 文件</span><strong>{{ formatNumber(tdxNormalization.writtenBars || 0) }} / {{ formatNumber(tdxNormalization.importedFiles || 0) }}</strong></div>
+        <div class="metric compact"><span>隔离文件 / K 线</span><strong>{{ formatNumber(tdxNormalization.quarantinedFiles || 0) }} / {{ formatNumber(tdxNormalization.quarantinedBars || 0) }}</strong></div>
+      </div>
+      <el-empty v-else :description="tdxNormalization.reason || '尚未运行通达信标准化审计'" :image-size="52" />
+    </section>
     <section class="overview-strip"><div class="metric compact"><span>本地表 / 数据集</span><strong>{{ payload.summary.tables }} / {{ payload.summary.datasets }}</strong></div><div class="metric compact"><span>K 线记录</span><strong>{{ formatNumber(payload.summary.rows) }}</strong></div><div class="metric compact"><span>已入库行情标的（非全市场）</span><strong>{{ formatNumber(payload.summary.instruments) }}</strong></div></section>
     <section class="panel data-source-panel">
       <div class="panel-heading">

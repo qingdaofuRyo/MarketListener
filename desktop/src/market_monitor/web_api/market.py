@@ -22,6 +22,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from market_monitor.aggregation import aggregate_bars, aggregate_daily_bars
 from market_monitor.market_data_version import market_data_version
 from market_monitor.market_classification import (
+    UNCLASSIFIED_CATEGORY,
+    classify_market,
     market_category_options,
     matches_market_category,
     night_session,
@@ -35,6 +37,7 @@ from market_monitor.futures import (
 )
 from market_monitor.industry_graph.f10 import CompanyRepository
 from market_monitor.tdx_local import _cn_classification
+from market_monitor.unclassified_instruments import scan_unclassified_tdx
 
 from .common import (
     DEFAULT_PAGE_SIZE,
@@ -662,6 +665,72 @@ def market_categories() -> dict[str, Any]:
     return {"items": items, "total": len(items)}
 
 
+def _silver_unclassified_items(data_root: Path) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for source_item in _logical_instruments(data_root).values():
+        item = _normalize_tdx_instrument(_normalize_future_name(source_item))
+        if classify_market(item) != UNCLASSIFIED_CATEGORY:
+            continue
+        market = str(item.get("market") or "")
+        exchange = str(item.get("exchange") or "")
+        asset_type = str(item.get("assetType") or "")
+        symbol = str(item.get("symbol") or item.get("sourceSymbol") or "")
+        period = str(item.get("period") or "")
+        items.append({
+            "reviewId": f"silver:{item.get('instrumentId') or symbol}",
+            "instrumentId": item.get("instrumentId"),
+            "name": item.get("name"),
+            "code": symbol,
+            "sourceCode": item.get("sourceSymbol") or symbol,
+            "marketPrefix": exchange,
+            "latestClose": item.get("lastClose"),
+            "lastBarAt": item.get("lastBarAt"),
+            "pricePeriod": period or None,
+            "periods": [period] if period else [],
+            "sourceTerminal": item.get("actualSource") or item.get("source") or "Silver 标准库",
+            "origin": "SILVER_UNCLASSIFIED",
+            "classificationStatus": "PENDING_REVIEW",
+            "reason": (
+                "标准标的字段未命中已登记分类规则"
+                f"（market={market or '-'}, exchange={exchange or '-'}, assetType={asset_type or '-'}）"
+            ),
+        })
+    return items
+
+
+@router.get("/unclassified")
+def market_unclassified(
+    request: Request,
+    q: str = "",
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE, alias="pageSize"),
+    refresh: bool = False,
+) -> dict[str, Any]:
+    """Return the single review queue for unclassified Silver rows and raw TDX files."""
+    data_root = _data_root(request)
+    financial_root = getattr(request.app.state, "tdx_root", None)
+    futures_root = getattr(request.app.state, "tdx_futures_root", None)
+    items = _silver_unclassified_items(data_root)
+    items.extend(scan_unclassified_tdx(financial_root, futures_root, refresh=refresh))
+    keyword = q.strip().casefold()
+    if keyword:
+        items = [
+            item for item in items
+            if any(
+                keyword in str(item.get(field) or "").casefold()
+                for field in ("name", "code", "sourceCode", "marketPrefix", "sourceTerminal", "reason")
+            )
+        ]
+    items.sort(key=lambda item: (
+        str(item.get("sourceTerminal") or ""),
+        str(item.get("marketPrefix") or ""),
+        str(item.get("code") or ""),
+    ))
+    payload = paginate(items, page, page_size)
+    payload["dataVersion"] = _response_data_version(data_root)
+    return clean(payload)
+
+
 @router.get("/instruments")
 def market_instruments(
     request: Request,
@@ -679,6 +748,7 @@ def market_instruments(
         _normalize_tdx_instrument(_normalize_future_name(item))
         for item in _logical_instruments(_data_root(request)).values()
     ]
+    items = [item for item in items if classify_market(item) != UNCLASSIFIED_CATEGORY]
     if not include_expired:
         items = [item for item in items if not _is_expired_contract_item(item)]
     if category_key:

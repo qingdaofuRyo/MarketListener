@@ -18,13 +18,14 @@
     {"id": "a-repo", "label": "A股-债券回购"},
     {"id": "a-lof", "label": "A股-LOF基金"},
     {"id": "a-reit", "label": "A股-REITs"},
+    {"id": "b-sh", "label": "B股-沪市"},
+    {"id": "b-sz", "label": "B股-深市"},
     {"id": "hk-index", "label": "港股-指数"},
     {"id": "hk-stock", "label": "港股-个股"},
     {"id": "cn-future-index", "label": "国内期货-指数"},
     {"id": "cn-future-cffex", "label": "国内期货-中金所"},
     {"id": "cn-future-commodity", "label": "国内期货-商品期货"},
-    {"id": "cn-future-night", "label": "国内期货-商品期货夜盘"},
-    {"id": "other", "label": "其它"}
+    {"id": "cn-future-night", "label": "国内期货-商品期货夜盘"}
   ],
   "exchangeAliases": {
     "SSE": ["SSE", "SH", "XSHG"],

@@ -38,7 +38,12 @@ from market_monitor.web_api.common import (
     now_iso,
     paginate,
 )
-from market_monitor.web_api.market import _logical_instruments, matches_market_category
+from market_monitor.market_classification import (
+    UNCLASSIFIED_CATEGORY,
+    classify_market,
+    matches_market_category,
+)
+from market_monitor.web_api.market import _logical_instruments
 
 router = APIRouter(prefix="/api/strategy", tags=["strategy"])
 
@@ -533,7 +538,8 @@ def strategy_matches(request: Request, body: StrategyMatchesRequest) -> dict[str
     storage_to_logical = {
         str(item.get("storageInstrumentId") or instrument_id): instrument_id
         for instrument_id, item in logical.items()
-        if not body.categoryKeys or any(matches_market_category(item, key) for key in body.categoryKeys)
+        if classify_market(item) != UNCLASSIFIED_CATEGORY
+        and (not body.categoryKeys or any(matches_market_category(item, key) for key in body.categoryKeys))
     }
     source_bars = bars_by_instrument(data_root, period="1d", limit_per_instrument=500, max_instruments=500)
     instruments = {
@@ -557,6 +563,8 @@ def strategy_matches(request: Request, body: StrategyMatchesRequest) -> dict[str
                 instrument_id = str(scan["instrumentId"])
                 item = logical.get(instrument_id)
                 if not item:
+                    continue
+                if classify_market(item) == UNCLASSIFIED_CATEGORY:
                     continue
                 if body.categoryKeys and not any(matches_market_category(item, key) for key in body.categoryKeys):
                     continue

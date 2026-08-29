@@ -26,6 +26,7 @@ EXPECTED_IDS = {
     "DERIVED_METRIC",
     "STRATEGY_SIGNAL",
     "FUTURES_BREADTH",
+    "FUTURES_LONG_SHORT_HEAT",
     "FUTURES_OI_LEADERBOARD",
     "CN_MARGIN",
     "A_SHARE_BREADTH",
@@ -96,6 +97,22 @@ def test_futures_breadth_and_leaderboard_are_registered():
     assert leaderboard.primary_key == ("instrument_id", "trading_day")
     for field in ("long_position", "short_position", "net_position", "net_position_change"):
         assert field in leaderboard.fields
+
+
+def test_futures_long_short_heat_registers_replayable_gold_without_user_total():
+    heat = dataset_index()["FUTURES_LONG_SHORT_HEAT"]
+    assert heat.primary_key == ("formula_version", "trade_date")
+    for field in (
+        "breadth_score_daily",
+        "fund_score_daily",
+        "breadth_score_10d",
+        "fund_score_10d",
+        "source_cutoff",
+        "calculation_method",
+        "calculated_at",
+    ):
+        assert field in heat.fields
+    assert "total_score_10d" not in heat.fields
 
 
 def test_from_dict_rejects_missing_primary_key_or_fields():

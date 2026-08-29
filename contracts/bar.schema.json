@@ -23,6 +23,18 @@
     "volume": {"type": "number", "minimum": 0},
     "amount": {"type": "number", "minimum": 0},
     "open_interest": {"type": ["number", "null"], "minimum": 0},
+    "raw_open": {"type": ["number", "null"], "description": "来源文件中的原始开盘值"},
+    "raw_high": {"type": ["number", "null"], "description": "来源文件中的原始最高值"},
+    "raw_low": {"type": ["number", "null"], "description": "来源文件中的原始最低值"},
+    "raw_close": {"type": ["number", "null"], "description": "来源文件中的原始收盘值"},
+    "raw_volume": {"type": ["number", "null"], "minimum": 0},
+    "raw_amount": {"type": ["number", "null"], "minimum": 0},
+    "price_scale": {"type": "number", "exclusiveMinimum": 0},
+    "volume_multiplier": {"type": "number", "exclusiveMinimum": 0},
+    "volume_unit": {"enum": ["SHARE", "BOND_UNIT", "TDX_INDEX_RAW", "REPO_LOT_1000_CNY"]},
+    "normalization_method": {"type": "string", "minLength": 1},
+    "normalization_status": {"enum": ["PASS", "FAILED"]},
+    "normalization_version": {"type": "string", "minLength": 1},
     "price_mode": {"enum": ["RAW", "FORWARD_ADJUSTED", "BACKWARD_ADJUSTED"]},
     "source": {
       "type": "object",
@@ -45,7 +57,7 @@
       "properties": {
         "country_or_market": {"type": "string", "pattern": "^[A-Z]{2,12}$"},
         "exchange": {"type": "string", "pattern": "^[A-Z0-9_-]{2,16}$"},
-        "asset_type": {"enum": ["STOCK", "INDEX", "FUTURE", "OPTION", "FUND", "ETF", "BOND", "COMMODITY", "CRYPTO"]},
+        "asset_type": {"enum": ["STOCK", "B_SHARE", "INDEX", "FUTURE", "OPTION", "FUND", "ETF", "LOF", "REIT", "BOND", "CONVERTIBLE_BOND", "EXCHANGEABLE_BOND", "PLEDGED_REPO", "REPO", "COMMODITY", "CRYPTO"]},
         "code": {"type": "string", "pattern": "^[A-Z0-9._-]+$"}
       }
     }

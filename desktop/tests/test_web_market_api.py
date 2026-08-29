@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import date
 from pathlib import Path
 
@@ -117,6 +118,34 @@ def test_data_source_inventory_traces_registered_provider_to_endpoint(tmp_path: 
     assert detail[0]["fieldNotes"]
 
 
+def test_tdx_normalization_diagnostics_read_latest_audit_report(tmp_path: Path) -> None:
+    data_root = tmp_path / "tdx-diagnostics"
+    report = data_root / "reports" / "tdx-local" / "latest-audit.json"
+    report.parent.mkdir(parents=True)
+    report.write_text(
+        json.dumps({
+            "状态": "完成",
+            "标准化版本": "tdx-cn-v2",
+            "生成时间": "2026-08-29 12:00:00",
+            "扫描文件": 24,
+            "导入文件": 23,
+            "写入K线": 1000,
+            "隔离文件": 1,
+            "隔离K线": 2,
+            "资产文件统计": {"STOCK": 20},
+            "成交量倍率统计": {"STOCK:1d:1.0": 20},
+        }, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    client = TestClient(create_web_app(data_root), client=("127.0.0.1", 50000))
+
+    payload = client.get("/api/data-sources/tdx-local-normalization").json()
+
+    assert payload["available"] is True
+    assert payload["normalizationVersion"] == "tdx-cn-v2"
+    assert payload["quarantinedFiles"] == 1
+
+
 def test_data_source_browser_uses_manifest_metadata_without_reopening_silver_rows(tmp_path: Path) -> None:
     data_root = _data_root(tmp_path)
     get_kline_query_store(data_root).rebuild()
@@ -184,8 +213,57 @@ def test_market_categories_expose_ordered_r3_filter_contract(tmp_path: Path) -> 
         "a-chinext", "a-star", "a-etf", "a-convertible", "a-exchangeable", "a-pledged-repo",
         "a-repo", "a-lof", "a-reit",
         "hk-index", "hk-stock", "cn-future-index", "cn-future-cffex",
-        "cn-future-commodity", "cn-future-night", "other",
+        "cn-future-commodity", "cn-future-night",
     }
+    assert "other" not in {item["id"] for item in items}
+
+
+def test_unclassified_endpoint_combines_silver_and_raw_review_rows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    data_root = tmp_path / "unclassified"
+    unresolved = silver_row(
+        "CN.TDX.FUTURE.CES013.CONTRACT",
+        "2026-08-27",
+        market="CN",
+        asset_type="FUTURE",
+        close=2801.5,
+    )
+    unresolved["symbol"] = "CES013"
+    write_silver(
+        data_root,
+        [unresolved],
+    )
+    raw_item = {
+        "reviewId": "raw:fixture:62#000300",
+        "name": None,
+        "code": "000300",
+        "sourceCode": "62#000300",
+        "marketPrefix": "62",
+        "latestClose": 4492.25,
+        "lastBarAt": "2026-08-27T00:00:00+08:00",
+        "pricePeriod": "1d",
+        "periods": ["1d", "5m"],
+        "sourceTerminal": "通达信金融终端",
+        "origin": "RAW_UNRECOGNIZED",
+        "classificationStatus": "PENDING_REVIEW",
+        "reason": "待确认",
+    }
+    monkeypatch.setattr("market_monitor.web_api.market.scan_unclassified_tdx", lambda *args, **kwargs: [raw_item])
+    client = TestClient(create_web_app(data_root), client=("127.0.0.1", 50000))
+
+    normal = client.get("/api/market/instruments")
+    assert normal.status_code == 200
+    assert normal.json()["total"] == 0
+
+    response = client.get("/api/market/unclassified", params={"pageSize": 10})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total"] == 2
+    origins = {item["origin"] for item in payload["items"]}
+    assert origins == {"RAW_UNRECOGNIZED", "SILVER_UNCLASSIFIED"}
+    silver = next(item for item in payload["items"] if item["origin"] == "SILVER_UNCLASSIFIED")
+    assert silver["code"] == "CES013"
+    assert silver["latestClose"] == 2801.5
+    assert "assetType=FUTURE" in silver["reason"]
 
 
 def test_tdx_index_names_resolve_from_bundled_name_map() -> None:

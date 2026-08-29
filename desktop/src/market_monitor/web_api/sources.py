@@ -40,11 +40,11 @@ _PROVIDERS: tuple[dict[str, Any], ...] = (
         "priority": 5,
         "enabled": True,
         "markets": ["CN", "HK"],
-        "assetTypes": ["STOCK", "ETF", "INDEX"],
+        "assetTypes": ["STOCK", "B_SHARE", "ETF", "LOF", "REIT", "INDEX", "CONVERTIBLE_BOND", "EXCHANGEABLE_BOND", "PLEDGED_REPO", "REPO"],
         "periods": ["5m", "15m", "30m", "1h", "2h", "1d", "1w", "1mo", "1q", "1y"],
         "fields": ["open", "high", "low", "close", "volume", "amount"],
-        "fieldNotes": "本地日线与 5 分钟线；大周期由本机聚合，不依赖页面临时联网。",
-        "status": "IMPLEMENTED_LOCAL",
+        "fieldNotes": "tdx-cn-v2 保留原始值、价格除数、成交量倍率与单位；未通过质量门的数据进入隔离区。",
+        "status": "IMPLEMENTED_LOCAL_VALIDATED",
     },
     {
         "providerId": "tdx_futures_local",
@@ -644,6 +644,30 @@ def providers() -> dict[str, Any]:
 @router.get("/inventory")
 def inventory(request: Request) -> dict[str, Any]:
     return _inventory_payload(request)
+
+
+@router.get("/tdx-local-normalization")
+def tdx_local_normalization(request: Request) -> dict[str, Any]:
+    """Expose the latest local normalization audit without scanning Silver."""
+
+    path = _data_root(request) / "reports" / "tdx-local" / "latest-audit.json"
+    document = load_json(path, {})
+    if not isinstance(document, dict) or not document:
+        return clean({"available": False, "normalizationVersion": "tdx-cn-v2", "reason": "尚未运行通达信标准化审计"})
+    return clean({
+        "available": True,
+        "normalizationVersion": document.get("标准化版本"),
+        "status": document.get("状态"),
+        "generatedAt": document.get("生成时间"),
+        "scannedFiles": document.get("扫描文件", 0),
+        "importedFiles": document.get("导入文件", 0),
+        "writtenBars": document.get("写入K线", 0),
+        "quarantinedFiles": document.get("隔离文件", 0),
+        "quarantinedBars": document.get("隔离K线", 0),
+        "assetFiles": document.get("资产文件统计", {}),
+        "volumeMultipliers": document.get("成交量倍率统计", {}),
+        "reportPath": str(path),
+    })
 
 
 @router.get("")
