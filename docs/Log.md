@@ -360,3 +360,4 @@
 
 - 新增 `fetch --dataset <ID>`，任务会先完成本地选择再访问 Provider，避免为刷新单一数据集启动全市场采集。本次只执行 `FUTURES_OI_LEADERBOARD`：2026-08-28 写入 9,488 条公开方向排名及 6 条逐交易所覆盖记录。
 - 覆盖结果为 CFFEX `22/880`、CZCE `123/4,856`、SHFE `75/2,951`、INE `9/321`、GFEX `12/480` 均 `PASS`；DCE 为 `FAILED(0/0)`，错误为 `BadZipFile: File is not a zip file`。商品 API 因而返回该日期、`PARTIAL` 和唯一缺失交易所 DCE；单日席位结构派生保留 8,608 条商品原始排名的各方向部分记录，但五个方向均为 `NO_COMPLETE_COVERAGE`，未生成固定基准。
+- 为核验是否存在官方回退源，针对同一交易日向旧的 DCE `memberDealPosiQuotes.html` 只发送一条逐合约查询。服务返回 HTTP `412` 防自动化 HTML（3,261 字节），不是排名表；该入口与 `batchDownload` 超时一样不能成为生产采集回退，未使用第三方镜像。
