@@ -20,9 +20,8 @@
 | 境内 ETF | AKShare、pytdx | 已实现；日线回填部分完成 | 1d | 1,559 个 ETF 已写入；14 个 `530xxx` 标的从 pytdx 未返回日线，不能伪造为完成。 |
 | A/H 股指数 | AKShare、pytdx、同花顺 | 已实现；当前为部分存量 | 1d | 同花顺指数快照采集已接入；公开访问仅取得首批页面，后续页受登录/反爬限制，不能宣称 575 个指数已完整入库。 |
 | 全球指数 | AKShare | 已实现；当前为少量存量 | 1d | `index_global_hist_em` 等适配调用；无全市场承诺。 |
-| 国内期货主连、次连、加权、商品指数 | 通达信期货通本地缓存；AKShare 主连备用 | 已实现 `bulk-futures` 增量导入 | 通达信原始 5m/1d；可派生 15m/30m/1h/2h/4h/周月季年 | 本地 `L7=次连`、`L8=主连`、`L9=原生加权`；动态发现文件，主连仅在本地缺失或明显滞后时回退 AKShare `品种0`。AKShare `品种9` 不可验证，禁止当作加权。 |
+| 国内期货主连、次连、加权、月份合约与指数 | 通达信期货通本地缓存；AKShare 主连备用 | 已实现 `bulk-futures` 增量导入 | 通达信原始 5m/1d；可派生 15m/30m/1h/2h/4h/周月季年 | 28/29/30/47/66 覆盖郑商所、大商所、上期所、中金所、广期所，INE 按产品拆分；另含 `42#` 商品指数、`68#` 波动率/期权指数、大商所 `*-F` 与中金所 L0～L3/标的指数。期货通中的证券指数重复前缀不导入。 |
 | 国际重点期货 | AKShare | 已实现受控目录增量导入 | 1d | 东财 `00Y` 真实连续合约与新浪 `AHD/OIL`；无原生加权时明确不支持，不自行构造。 |
-| 加密货币 | Binance 公共接口 | 已实现；BTC/ETH 存量 | 1d | `https://data-api.binance.vision/api/v3/klines`；不属于六类股票/期货目标。 |
 | 美元指数、VIX | 东方财富 / CBOE，腾讯回退 | 已实现；Gold 指标 | 1d | 东财 kline API、CBOE VIX CSV；当前为指标而不是统一 bars。 |
 
 ## Provider / Adapter 事实
@@ -38,10 +37,9 @@ Each local inventory category also exposes `sourceDetails`: its stored source id
 | Baostock | `baostock.login`、`query_history_k_data_plus` | CN 股票 1d/30m | SDK 登录 | 2026-08-12 首次 10 秒超时；30 秒复测未在本任务运行时限内产出报告。当前没有可验证 PASS 结论，不能提升为可用来源。 |
 | JQData | `jqdatasdk.auth` 和价格接口 | CN 股票/ETF/指数/期货（以探测能力为准） | 用户名/密码、授权 | `BLOCKED_CONFIGURATION`，不能显示为当前可用。 |
 | Tushare Pro | `TUSHARE_TOKEN`、`pro_api`、`daily`/`stk_mins`/`stock_basic` | CN 股票日线/分钟、清单与财务（以积分权限为准） | token 与接口积分/权限 | `BLOCKED_CONFIGURATION`，不能显示为当前可用。 |
-| Binance | HTTPS JSON：`https://data-api.binance.vision/api/v3/klines` | BTC/ETH 日线 | 公共端点 | collector 已落库；网络可达性需每次会话实测。 |
 | 东财/CBOE/腾讯 | 东财 `push2his.eastmoney.com/api/qt/stock/kline/get`；CBOE VIX CSV；腾讯回退 | DXY/VIX 日线指标 | 公共端点 | collector 已实现，TLS/网络可能导致部分失败。 |
 | 同花顺行情中心 | `q.10jqka.com.cn` 市场页与指数页快照 | A 股涨跌家数、涨停/跌停家数、昨日涨停平均收益率、指数表格 | 网站会话/反爬策略 | 已实现 `ths-market` 可恢复快照任务；公开页可获取首批指数，翻页请求会返回登录/授权限制。使用已登录浏览器 Cookie 的自动化仍需在可用浏览器会话中另行验证。 |
-| 通达信金融终端本地证券文件 | `C:\tongdaxin\vipdoc` 的 `.day/.lc5` | 沪深北及港股日线/五分钟，含 A/B 股、指数、ETF、LOF、REIT、转债和回购分类；代码亦识别 `ds` 的国际/港股/中证/华证/国证指数与外盘期货前缀 | 本机已下载文件；无网络认证 | `tdx-cn-v2` 已实现资产级价格精度、逐行成交量倍率、原始值追溯、隔离质量门、只读审计和可回滚来源替换。`12/16/17/18/27/31/48/62/69/102#` 的浮点日线已由只读审计后增量写入 4,043 个文件/38,663,985 根 PASS K 线；907 个文件/108,456 根记录隔离、138 个拒绝。该集合尚未另行执行新的全量来源替换。外盘期货金额/连续合约语义、汇率、宏观、基金及未知前缀仍不提升为正式 Silver。 |
+| 通达信金融终端本地证券文件 | `C:\tongdaxin\vipdoc` 的 `.day/.lc5` | 沪深北及港股日线/五分钟，含 A/B 股、指数、ETF、LOF、REIT、转债、回购、基本汇率与宏观 | 本机已下载文件；无网络认证 | `tdx-cn-v2` 已实现资产级价格精度、逐行成交量倍率、原始值追溯、隔离质量门、只读审计和可回滚来源替换。金融终端拥有 `10/12/16/17/18/27/31/38/48/62/69/102#`；`27#HZ`、`49#`、`98#` 已退役。普通增量可用 `--ds-prefix` 限定，查询缓存只刷新新增分区。 |
 | TickDB | 无活动来源 | 无本地原始目录、无 Silver、无活动下载器 | 不适用 | **REMOVED**；只保留 2026-08-24 历史审计，不参与正式导入、回退或质量判定。 |
 
 ## R2 分层实测（2026-08-13）

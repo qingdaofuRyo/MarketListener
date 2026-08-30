@@ -27,6 +27,7 @@ from market_monitor.industry_graph.f10.providers import get_governance, list_pro
 from market_monitor.industry_atlas import build_atlas
 from market_monitor.package_builder import build_android_package
 from market_monitor.market_query_cache import rebuild_kline_query_cache
+from market_monitor.retired_market_data import prune_retired_market_data
 from market_monitor.report_pipeline import (
     build_chain_index,
     process_report_batch,
@@ -72,6 +73,10 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--quiet", action="store_true", help="suppress per-request HTTP logs")
     kline_cache = subcommands.add_parser("kline-cache", help="build or refresh the local low-latency K-line query cache")
     kline_cache.add_argument("--data-root", type=Path, default=Path("data_control"))
+    prune_retired = subcommands.add_parser(
+        "prune-retired-market-data", help="可恢复地清理已退役的 Binance、HZ 与香港基金行情"
+    )
+    prune_retired.add_argument("--data-root", type=Path, default=Path("data_control"))
     fetch = subcommands.add_parser("fetch", help="run a real data-fetch session and persist results")
     fetch.add_argument("--data-root", type=Path, default=Path("data_control"))
     fetch.add_argument("--limit-futures", type=int, default=15, help="number of domestic futures main contracts to fetch")
@@ -137,6 +142,10 @@ def build_parser() -> argparse.ArgumentParser:
     tdx_local.add_argument("--start-date", help="仅导入该日期（含）之后的本地K线，格式 YYYY-MM-DD")
     tdx_local.add_argument("--end-date", help="仅导入该日期（含）之前的本地K线，格式 YYYY-MM-DD")
     tdx_local.add_argument("--audit-only", action="store_true", help="只生成 tdx-cn-v2 标准化审计，不写入 Silver")
+    tdx_local.add_argument(
+        "--ds-prefix", action="append", dest="ds_prefixes",
+        help="只处理指定的金融终端 ds 数字前缀；可重复，例如 --ds-prefix 38",
+    )
     tdx_local.add_argument(
         "--replace-source",
         action="store_true",
@@ -223,6 +232,8 @@ def main(argv: list[str] | None = None) -> int:
             return _serve(args)
         if args.command == "kline-cache":
             return _kline_cache(args)
+        if args.command == "prune-retired-market-data":
+            return _prune_retired_market_data(args)
         if args.command == "fetch":
             return _fetch(args)
         if args.command == "bulk-stocks":
@@ -488,6 +499,7 @@ def _import_tdx_local(args: argparse.Namespace) -> int:
         audit_only=args.audit_only,
         replace_source=args.replace_source,
         resume_staging=args.resume_staging,
+        ds_prefixes=args.ds_prefixes,
     )
     success = str(summary["状态"]).startswith("完成")
     print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
@@ -497,6 +509,17 @@ def _import_tdx_local(args: argparse.Namespace) -> int:
         message="通达信本地 A 股、港股行情导入结束",
     )
     return EXIT_SUCCESS if success else EXIT_PARTIAL_FAILURE
+
+
+def _prune_retired_market_data(args: argparse.Namespace) -> int:
+    summary = prune_retired_market_data(args.data_root)
+    print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
+    _emit(
+        "SUCCESS",
+        EXIT_SUCCESS,
+        message=f"已清理 {summary['retiredRows']} 条退役行情；原分区保留在可恢复备份",
+    )
+    return EXIT_SUCCESS
 
 
 def _ths_market(args: argparse.Namespace) -> int:

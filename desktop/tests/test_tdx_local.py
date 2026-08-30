@@ -139,9 +139,12 @@ def test_verified_financial_ds_prefixes_keep_float_prices_and_raw_future_units(t
     assert financial_ds_metadata("16#GC00W.day")["series_kind"] == "MAIN"  # type: ignore[index]
     assert financial_ds_metadata("17#CL00Y.day")["series_kind"] == "CONTINUOUS"  # type: ignore[index]
     assert financial_ds_metadata("18#ZS2609.day")["series_kind"] == "CONTRACT"  # type: ignore[index]
-    assert financial_ds_metadata("10#AUDUSD.day") is None
-    assert financial_ds_metadata("38#1_GDP.day") is None
-    assert financial_ds_metadata("49#00001.day") is None
+    assert financial_ds_metadata("10#AUDUSD.day")["asset_type"] == "FX_RATE"  # type: ignore[index]
+    assert financial_ds_metadata("12#B_DAX.K.day")["asset_type"] == "INDEX"  # type: ignore[index]
+    assert financial_ds_metadata("38#1_GDP.day")["asset_type"] == "MACRO"  # type: ignore[index]
+    assert financial_ds_metadata("49#00001.lc5") is None
+    assert financial_ds_metadata("62#000688CNY01.day")["exchange"] == "CSI"  # type: ignore[index]
+    assert financial_ds_metadata("27#HZ5014.day") is None
     assert financial_ds_metadata("98#02261F.day") is None
 
     summary = run_tdx_local_import(tmp_path / "data", tdx_root=root, batch_rows=1_000)

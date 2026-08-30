@@ -61,10 +61,34 @@ def _recognized_by_financial_terminal(name: str) -> bool:
 
 def _recognized_by_futures_terminal(name: str) -> bool:
     return any(pattern.fullmatch(name) is not None for pattern in (
+        futures_bulk._OPTION_VOLATILITY,
+        futures_bulk._CFFEX_REFERENCE,
+        futures_bulk._CFFEX_RANKED,
+        futures_bulk._DCE_F_CONTRACT,
+        futures_bulk._DCE_F_SPECIAL,
         futures_bulk._SPECIAL,
         futures_bulk._CONTRACT,
         futures_bulk._INDEX,
     ))
+
+
+def _excluded_from_review(name: str, *, financial: bool) -> bool:
+    """Hide retired rows and files owned by the other terminal.
+
+    The source files remain untouched.  This is the same terminal-ownership
+    boundary used by the importers, so duplicates never become a fourth
+    pseudo-category in the public review table.
+    """
+
+    source_code = Path(name).stem.upper()
+    prefix, separator, code = source_code.partition("#")
+    if not separator:
+        return False
+    if code.startswith("HZ"):
+        return True
+    if financial:
+        return prefix in {"28", "29", "30", "42", "47", "49", "66", "68", "98"}
+    return prefix not in {"28", "29", "30", "42", "47", "66", "68"}
 
 
 def _scan_terminal(root: Path, *, terminal: str, financial: bool) -> list[dict[str, Any]]:
@@ -76,7 +100,11 @@ def _scan_terminal(root: Path, *, terminal: str, financial: bool) -> list[dict[s
         if not folder.is_dir():
             continue
         for path in folder.iterdir():
-            if path.suffix.casefold() not in {".day", ".lc5"} or recognizer(path.name):
+            if (
+                path.suffix.casefold() not in {".day", ".lc5"}
+                or _excluded_from_review(path.name, financial=financial)
+                or recognizer(path.name)
+            ):
                 continue
             source_code = path.stem.upper()
             market_prefix, separator, code = source_code.partition("#")

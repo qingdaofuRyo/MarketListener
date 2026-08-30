@@ -207,9 +207,17 @@ def classify_market(item: dict[str, Any]) -> str:
     if market == "GLOBAL":
         if asset_type == "INDEX":
             return "global-index"
+        if asset_type == "FX_RATE":
+            return "global-fx"
         if asset_type == "FUTURE":
             return "global-future"
         return UNCLASSIFIED_CATEGORY
+
+    if market == "CN" and asset_type == "MACRO":
+        return "cn-macro"
+
+    if market == "CN" and series_kind in {"OPTION_VOLATILITY_INDEX", "FUTURES_UNDERLYING_INDEX"}:
+        return "cn-future-index"
 
     is_future = asset_type == "FUTURE" or (
         not asset_type and (exchange in spec["futures"]["commodityProducts"] or exchange == "CFFEX")

@@ -50,11 +50,11 @@ test("market list ignores a persisted pre-v2 unclassified response", async ({ pa
   const currentVersion = `${revision}:market-categories-r4-v2`;
   const staleKey = `/api/market/instruments?page=1&pageSize=20&version=${encodeURIComponent(staleVersion)}`;
   const staleInstrument = {
-    instrumentId: "GLOBAL.CRYPTO.BTCUSDT",
-    symbol: "BTCUSDT",
-    name: "未分类加密资产",
+    instrumentId: "GLOBAL.UNKNOWN.LEGACY",
+    symbol: "LEGACY",
+    name: "旧版待分类标的",
     market: "GLOBAL",
-    assetType: "CRYPTO",
+    assetType: "UNKNOWN",
   };
   const requestedVersions: Array<string | null> = [];
 
@@ -96,6 +96,6 @@ test("market list ignores a persisted pre-v2 unclassified response", async ({ pa
 
   await page.goto("/market/");
   await expect(page.locator(".instrument-row").first()).toContainText("浦发银行");
-  await expect(page.locator(".all-section")).not.toContainText("未分类加密资产");
+  await expect(page.locator(".all-section")).not.toContainText("旧版待分类标的");
   expect(requestedVersions).toEqual([currentVersion]);
 });

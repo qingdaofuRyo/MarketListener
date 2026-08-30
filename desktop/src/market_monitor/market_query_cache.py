@@ -591,6 +591,110 @@ class KLineQueryStore:
             self._ready_revision = current_revision
             return True
 
+    def refresh_partition_files(self, files: Iterable[Path | str]) -> bool:
+        """Reconcile only explicitly supplied Parquet files into the manifest."""
+
+        source_files = sorted({str(Path(value)) for value in files if Path(value).is_file()})
+        if not source_files or not self.path.is_file():
+            return False
+        revision = market_data_version(self.data_root)
+        with self._lock:
+            try:
+                with self._connect() as connection:
+                    connection.execute("BEGIN TRANSACTION")
+                    try:
+                        connection.execute(
+                            "CREATE TEMP TABLE changed_files (file_path VARCHAR PRIMARY KEY)"
+                        )
+                        connection.executemany(
+                            "INSERT INTO changed_files VALUES (?)", [(value,) for value in source_files]
+                        )
+                        connection.execute(
+                            "CREATE TEMP TABLE affected (instrument_id VARCHAR PRIMARY KEY)"
+                        )
+                        connection.execute(
+                            "INSERT OR IGNORE INTO affected SELECT DISTINCT instrument_id "
+                            "FROM instrument_file WHERE file_path IN (SELECT file_path FROM changed_files)"
+                        )
+                        connection.execute(
+                            "INSERT OR IGNORE INTO affected SELECT DISTINCT CAST(instrument_id AS VARCHAR) "
+                            "FROM read_parquet(?, union_by_name=true, hive_partitioning=true) "
+                            "WHERE instrument_id IS NOT NULL",
+                            [source_files],
+                        )
+                        connection.execute(
+                            "DELETE FROM instrument_file WHERE file_path IN (SELECT file_path FROM changed_files)"
+                        )
+                        connection.execute(
+                            "INSERT INTO instrument_file "
+                            "SELECT CAST(instrument_id AS VARCHAR), CAST(period AS VARCHAR), "
+                            "CAST(filename AS VARCHAR), count(*)::BIGINT, min(bar_open_time), "
+                            "max(bar_open_time), any_value(market), any_value(asset_type) "
+                            "FROM read_parquet(?, filename=true, union_by_name=true, hive_partitioning=true) "
+                            "WHERE instrument_id IS NOT NULL AND period IS NOT NULL AND bar_open_time IS NOT NULL "
+                            "GROUP BY instrument_id, period, filename",
+                            [source_files],
+                        )
+                        connection.execute(
+                            "DELETE FROM instrument_period WHERE instrument_id IN "
+                            "(SELECT instrument_id FROM affected)"
+                        )
+                        connection.execute(
+                            "INSERT INTO instrument_period SELECT instrument_id, period, "
+                            "sum(row_count)::BIGINT, min(earliest_bar_at), max(latest_bar_at) "
+                            "FROM instrument_file WHERE instrument_id IN (SELECT instrument_id FROM affected) "
+                            "GROUP BY instrument_id, period"
+                        )
+                        affected_files = [
+                            str(row[0])
+                            for row in connection.execute(
+                                "SELECT DISTINCT file_path FROM instrument_file WHERE instrument_id IN "
+                                "(SELECT instrument_id FROM affected)"
+                            ).fetchall()
+                        ]
+                        connection.execute(
+                            "DELETE FROM instrument_latest WHERE instrument_id IN "
+                            "(SELECT instrument_id FROM affected)"
+                        )
+                        if affected_files:
+                            connection.execute(
+                                "INSERT INTO instrument_latest "
+                                "WITH bounds AS (SELECT instrument_id, max(latest_bar_at) AS latest_bar_at "
+                                "FROM instrument_period WHERE instrument_id IN (SELECT instrument_id FROM affected) "
+                                "GROUP BY instrument_id) "
+                                "SELECT CAST(raw.instrument_id AS VARCHAR), any_value(raw.market), "
+                                "any_value(raw.asset_type), any_value(CAST(raw.period AS VARCHAR)), "
+                                "bounds.latest_bar_at, any_value(raw.bar_json) "
+                                "FROM read_parquet(?, union_by_name=true, hive_partitioning=true) AS raw "
+                                "JOIN bounds ON CAST(raw.instrument_id AS VARCHAR) = bounds.instrument_id "
+                                "AND raw.bar_open_time = bounds.latest_bar_at "
+                                "GROUP BY raw.instrument_id, bounds.latest_bar_at",
+                                [affected_files],
+                            )
+                        connection.execute(
+                            "DELETE FROM derived_bars WHERE instrument_id IN (SELECT instrument_id FROM affected)"
+                        )
+                        row_count = int(
+                            connection.execute(
+                                "SELECT coalesce(sum(row_count), 0) FROM instrument_period"
+                            ).fetchone()[0]
+                        )
+                        connection.execute("DELETE FROM cache_meta")
+                        connection.execute(
+                            "INSERT INTO cache_meta VALUES (?, ?, ?, ?, ?)",
+                            [_SCHEMA_VERSION, revision, row_count, _now(), 0.0],
+                        )
+                        connection.execute("COMMIT")
+                    except Exception:
+                        connection.execute("ROLLBACK")
+                        raise
+            except Exception:
+                return False
+            self._hot.clear()
+            self._hot_revision = revision
+            self._ready_revision = revision
+            return True
+
     def _locate_updated_files(
         self, rows: list[tuple[str, str, str, str, str, str]]
     ) -> list[str]:
@@ -859,6 +963,12 @@ def apply_kline_cache_update(
     bars: Iterable[Mapping[str, Any]],
 ) -> bool:
     return get_kline_query_store(data_root).apply_silver_update(previous_revision, current_revision, bars)
+
+
+def refresh_kline_cache_partitions(data_root: Path, files: Iterable[Path | str]) -> bool:
+    """Refresh the query manifest for a bounded set of newly written partitions."""
+
+    return get_kline_query_store(data_root).refresh_partition_files(files)
 
 
 def _where(instrument_id: str, period: str | None) -> tuple[str, list[str]]:

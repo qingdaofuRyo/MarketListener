@@ -99,6 +99,12 @@ def test_hong_kong_and_futures_boundaries() -> None:
     assert classify_market(rb) == "cn-future-commodity"
     assert night_session(rb) == "21:00-23:00"
     assert classify_market(instrument("rb000", exchange="SHFE", asset_type="FUTURE")) == "cn-future-index"
+    assert classify_market(instrument("USDJPY", market="GLOBAL", exchange="BASIC_FX", asset_type="FX_RATE")) == "global-fx"
+    assert classify_market(instrument("2_CPI", market="CN", exchange="TDX_MACRO", asset_type="MACRO")) == "cn-macro"
+    assert classify_market({
+        **instrument("V050C0", exchange="TDX_OPTION_VOLATILITY", asset_type="INDEX"),
+        "seriesKind": "OPTION_VOLATILITY_INDEX",
+    }) == "cn-future-index"
 
 
 def test_legacy_stock_key_remains_compatible() -> None:

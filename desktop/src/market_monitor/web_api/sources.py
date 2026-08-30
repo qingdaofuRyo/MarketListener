@@ -155,24 +155,6 @@ _PROVIDERS: tuple[dict[str, Any], ...] = (
         "status": "BLOCKED_CONFIGURATION",
     },
     {
-        "providerId": "binance",
-        "name": "Binance public data",
-        "type": "http_adapter",
-        "access": "HTTPS JSON",
-        "endpoint": "https://data-api.binance.vision/api/v3/klines",
-        "authentication": "none for current public endpoint",
-        "implemented": True,
-        "configured": True,
-        "priority": 20,
-        "enabled": True,
-        "markets": ["GLOBAL"],
-        "assetTypes": ["CRYPTO"],
-        "periods": ["1d"],
-        "fields": ["open", "high", "low", "close", "volume", "amount"],
-        "fieldNotes": "仅用于加密资产；本轮数据抓取已排除该类别。",
-        "status": "IMPLEMENTED_UNVERIFIED",
-    },
-    {
         "providerId": "eastmoney_cboe",
         "name": "东方财富 / CBOE",
         "type": "http_adapter",
@@ -237,8 +219,6 @@ def _provider_for_source(source: str) -> str:
         return "pytdx"
     if value.startswith("akshare") or value.startswith("sina-"):
         return "akshare"
-    if value.startswith("binance"):
-        return "binance"
     if "eastmoney" in value or "cboe" in value or value.startswith("tencent"):
         return "eastmoney_cboe"
     if value.startswith("baostock"):

@@ -294,6 +294,8 @@ const ASSET_TYPE_LABELS: Record<string, string> = {
   REPO: "债券回购",
   LOF: "LOF基金",
   REIT: "公募REITs",
+  FUND: "基金",
+  FX_RATE: "基本汇率",
   CRYPTO: "加密资产",
   MACRO: "宏观指标",
 };

@@ -309,12 +309,6 @@ DEFAULT_DATASETS: tuple[DatasetDefinition, ...] = (
         "COMEX 黄金/白银/铜、NYMEX WTI 原油日线",
     ),
     DatasetDefinition(
-        "CRYPTO_BAR", "加密货币K线", "GLOBAL", "CRYPTO", "1d",
-        "binance", "DAILY", ("instrument_id", "period", "bar_start"),
-        BAR_FIELDS, "FILTERED", "OHLC 有界、质量 PASS、按主键去重",
-        "BTC/ETH 等加密货币日线",
-    ),
-    DatasetDefinition(
         "USD_INDEX_VIX", "美元指数/VIX", "GLOBAL", "MACRO", "DAILY",
         "eastmoney/cboe/tencent", "DAILY", ("metric_id",),
         ("metric_id", "instrument_id", "trading_date", "period", "metric_name", "value", "definition", "calculation_method", "timestamp"),

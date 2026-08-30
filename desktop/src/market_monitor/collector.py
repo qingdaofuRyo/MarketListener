@@ -202,7 +202,6 @@ def build_collection_tasks(*, limit_futures: int, limit_cn_stocks: int) -> list[
         CollectionTask("HSGT_FLOW", "北向南向资金", "akshare", _collect_hsgt),
         CollectionTask("CN_ZT_POOL", "涨停/跌停池与连板高度", "akshare", _collect_zt_pool),
         CollectionTask("FUTURE_GLOBAL_BAR", "外盘期货/金银比/金油比", "akshare", _collect_foreign_futures),
-        CollectionTask("CRYPTO_BAR", "加密货币K线", "binance", _collect_crypto),
         CollectionTask("USD_INDEX_VIX", "美元指数/VIX", "eastmoney+cboe", _collect_usd_vix),
     ]
 
@@ -1991,66 +1990,6 @@ def _collect_foreign_futures() -> CollectionTaskResult:
         "PASS" if bars and not errors else "PARTIAL_FAILURE",
         len(bars) + len(metrics),
         f"\u5916\u76d8K\u7ebf={len(bars)} \u6307\u6807={len(metrics)}\uff1b\u9519\u8bef={'; '.join(errors) or '无'}",
-        "; ".join(errors) or None,
-        plan,
-    )
-
-
-def _collect_crypto() -> CollectionTaskResult:
-    metrics: list[dict[str, Any]] = []
-    bars: list[dict[str, Any]] = []
-    errors: list[str] = []
-    for symbol, name, series_id in (("BTCUSDT", "\u6bd4\u7279\u5e01", "BTC_USD"), ("ETHUSDT", "\u4ee5\u592a\u574a", "ETH_USD")):
-        url = f"https://data-api.binance.vision/api/v3/klines?symbol={symbol}&interval=1d&limit=60"
-        try:
-            request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-            with _direct_network():
-                with urllib.request.urlopen(request, timeout=20) as response:
-                    klines = json.loads(response.read().decode("utf-8"))
-        except Exception as error:
-            errors.append(f"{symbol}:{type(error).__name__}")
-            continue
-        for kline in klines:
-            day = datetime.fromtimestamp(int(kline[0]) / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
-            bars.append(
-                _daily_bar(
-                    f"GLOBAL.CRYPTO.{symbol}",
-                    name,
-                    day,
-                    open_=float(kline[1]),
-                    high=float(kline[2]),
-                    low=float(kline[3]),
-                    close=float(kline[4]),
-                    volume=float(kline[5]),
-                    amount=float(kline[7]),
-                    currency="USD",
-                    source="binance-klines",
-                )
-            )
-            metrics.append(
-                _metric(
-                    series_id,
-                    series_id,
-                    day,
-                    "DAILY",
-                    macro_series_index()[series_id].name,
-                    float(kline[4]),
-                    macro_series_index()[series_id].definition,
-                    macro_series_index()[series_id].calculation_method,
-                    metric_key="close",
-                )
-            )
-    plan = PersistPlan()
-    if bars:
-        plan.bar_writes.extend(_bar_partitions("GLOBAL", "CRYPTO", "1d", bars, "GLOBAL-CRYPTO-1d"))
-    plan.gold_metrics.extend(metrics)
-    return _result(
-        "CRYPTO_BAR",
-        "\u52a0\u5bc6\u8d27\u5e01K\u7ebf",
-        "binance",
-        "PASS" if bars and not errors else "PARTIAL_FAILURE",
-        len(bars) + len(metrics),
-        f"BTC/ETH\u65e5\u7ebf={len(bars)} \u6307\u6807={len(metrics)}\uff1b\u9519\u8bef={'; '.join(errors) or '无'}",
         "; ".join(errors) or None,
         plan,
     )

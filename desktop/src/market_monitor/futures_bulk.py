@@ -16,17 +16,40 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 
+import duckdb
+
 from .futures import resolve_futures_contract_spec
+from .market_query_cache import refresh_kline_cache_partitions
 from .storage import MarketStore, PartitionKey
 
 _DAY = struct.Struct("<IffffIIf")
 _LC5 = struct.Struct("<HHffffIIf")
 _SPECIAL = re.compile(r"^(?P<market>\d+)#(?P<code>[A-Z]+L[789])\.(?P<kind>day|lc5)$", re.I)
+_DCE_F_SPECIAL = re.compile(
+    r"^(?P<market>29)#(?P<code>(?P<product>[A-Z]+-F)L(?P<continuous>[789]))\.(?P<kind>day|lc5)$",
+    re.I,
+)
 _CONTRACT = re.compile(
     r"^(?P<market>\d+)#(?P<code>(?P<product>[A-Z]+)(?P<delivery>\d{3,4}))\.(?P<kind>day|lc5)$",
     re.I,
 )
+_DCE_F_CONTRACT = re.compile(
+    r"^(?P<market>29)#(?P<code>(?P<product>[A-Z]+)-F(?P<delivery>\d{3,4}))\.(?P<kind>day|lc5)$",
+    re.I,
+)
+_CFFEX_RANKED = re.compile(
+    r"^(?P<market>47)#(?P<code>(?P<product>IC|IF|IH|IM|TF|TL|TS|T)L(?P<rank>[0-3]))\.(?P<kind>day|lc5)$",
+    re.I,
+)
+_CFFEX_REFERENCE = re.compile(
+    r"^(?P<market>47)#(?P<code>(?:IC500|IF300|IH50|IM1000|IZ100))\.(?P<kind>day|lc5)$",
+    re.I,
+)
 _INDEX = re.compile(r"^42#(?P<code>(?:IMCI|T\d{3}))\.(?P<kind>day|lc5)$", re.I)
+_OPTION_VOLATILITY = re.compile(
+    r"^(?P<market>68)#(?P<code>[A-Z0-9_.-]+)\.(?P<kind>day|lc5)$",
+    re.I,
+)
 _EXCHANGES = {"28": "CZCE", "29": "DCE", "30": "SHFE", "47": "CFFEX", "66": "GFEX"}
 _INE_PRODUCTS = {"SC", "NR", "LU", "BC", "EC"}
 _LOCAL_TDX_MINUTE_START = "2018-01-02"
@@ -252,8 +275,22 @@ def _tdx_rows(
         if not folder.is_dir():
             continue
         for path in sorted(folder.glob("*")):
-            match = _SPECIAL.match(path.name) or _CONTRACT.match(path.name) or _INDEX.match(path.name)
+            match = (
+                _OPTION_VOLATILITY.fullmatch(path.name)
+                or _CFFEX_REFERENCE.fullmatch(path.name)
+                or _CFFEX_RANKED.fullmatch(path.name)
+                or _DCE_F_CONTRACT.fullmatch(path.name)
+                or _DCE_F_SPECIAL.fullmatch(path.name)
+                or _SPECIAL.fullmatch(path.name)
+                or _CONTRACT.fullmatch(path.name)
+                or _INDEX.fullmatch(path.name)
+            )
             if not match:
+                continue
+            market_code = match.groupdict().get("market") or ("42" if path.name.upper().startswith("42#") else "")
+            # A filename that looks like a futures contract is only accepted
+            # from a terminal prefix owned by the domestic-derivatives import.
+            if market_code not in {*_EXCHANGES, "42", "68"}:
                 continue
             relative = str(path.relative_to(root)).replace("\\", "/")
             stat = path.stat()
@@ -276,7 +313,19 @@ def _tdx_rows(
             if period == "5m":
                 records = [record for record in records if str(record["day"]) >= _LOCAL_TDX_MINUTE_START]
             file_rows: list[dict[str, Any]] = []
-            if "code" in match.groupdict() and path.name.upper().startswith("42#"):
+            if market_code == "68":
+                code = match.group("code").upper()
+                canonical = f"CN.TDX_OPTION_VOLATILITY.INDEX.{code}.OPTION_VOLATILITY_INDEX"
+                physical = canonical + ".TDX"
+                name = metadata.get(f"68#{code}", f"期货波动率/期权指数 {code}")
+                for record in records:
+                    file_rows.append(_bar(
+                        physical_id=physical, canonical_id=canonical, symbol=code, name=name, market="CN",
+                        asset_type="INDEX", period=period, day=record["day"], time_text=record["time"], row=record,
+                        source="通达信期货通", series_kind="OPTION_VOLATILITY_INDEX",
+                        exchange="TDX_OPTION_VOLATILITY", source_symbol=code,
+                    ))
+            elif market_code == "42":
                 code = match.group("code").upper()
                 canonical = f"CN.TDX.INDEX.{code}.COMMODITY_INDEX"
                 physical = canonical + ".TDX"
@@ -285,9 +334,36 @@ def _tdx_rows(
                     file_rows.append(_bar(physical_id=physical, canonical_id=canonical, symbol=code, name=name, market="CN",
                                        asset_type="INDEX", period=period, day=record["day"], time_text=record["time"], row=record,
                                        source="通达信期货通", series_kind="COMMODITY_INDEX", exchange="TDX", source_symbol=code))
+            elif _CFFEX_REFERENCE.fullmatch(path.name):
+                code = match.group("code").upper()
+                canonical = f"CN.CFFEX.INDEX.{code}.FUTURES_UNDERLYING_INDEX"
+                physical = canonical + ".TDX"
+                name = metadata.get(f"47#{code}", f"中金所标的指数 {code}")
+                for record in records:
+                    file_rows.append(_bar(
+                        physical_id=physical, canonical_id=canonical, symbol=code, name=name, market="CN",
+                        asset_type="INDEX", period=period, day=record["day"], time_text=record["time"], row=record,
+                        source="通达信期货通", series_kind="FUTURES_UNDERLYING_INDEX",
+                        exchange="CFFEX", source_symbol=code,
+                    ))
+            elif match.groupdict().get("rank"):
+                code = match.group("code").upper()
+                product = match.group("product").upper()
+                rank = match.group("rank")
+                kind = f"RANKED_{rank}"
+                canonical = f"CN.CFFEX.FUTURE.{product}.{kind}"
+                physical = canonical + ".TDX"
+                name = metadata.get(f"47#{code}", f"{product} L{rank}序列")
+                for record in records:
+                    file_rows.append(_bar(
+                        physical_id=physical, canonical_id=canonical, symbol=code, name=name, market="CN",
+                        asset_type="FUTURE", period=period, day=record["day"], time_text=record["time"], row=record,
+                        source="通达信期货通", series_kind=kind, exchange="CFFEX",
+                        source_symbol=code, product_code=product,
+                    ))
             elif match.groupdict().get("delivery"):
                 market_code, code = match.group("market"), match.group("code").upper()
-                product = match.group("product").upper()
+                product = match.group("product").upper().removesuffix("-F")
                 exchange = _exchange(market_code, product)
                 canonical = f"CN.{exchange}.FUTURE.{code}.CONTRACT"
                 physical = canonical + ".TDX"
@@ -301,9 +377,10 @@ def _tdx_rows(
                     ))
             else:
                 market_code, code = match.group("market"), match.group("code").upper()
-                product, suffix = code[:-2], code[-2:]
+                product = (match.groupdict().get("product") or code[:-2]).upper()
+                suffix = code[-2:]
                 kind = {"L7": "SECONDARY", "L8": "MAIN", "L9": "WEIGHTED"}[suffix]
-                exchange = _exchange(market_code, product)
+                exchange = _exchange(market_code, product.removesuffix("-F"))
                 canonical = f"CN.{exchange}.FUTURE.{product}.{kind}"
                 physical = canonical + ".TDX"
                 raw_name = metadata.get(f"{market_code}#{code}") or metadata.get(f"{market_code}#{code[:-1]}9")
@@ -311,7 +388,8 @@ def _tdx_rows(
                 for record in records:
                     file_rows.append(_bar(physical_id=physical, canonical_id=canonical, symbol=code, name=name, market="CN",
                                           asset_type="FUTURE", period=period, day=record["day"], time_text=record["time"], row=record,
-                                          source="通达信期货通", series_kind=kind, exchange=exchange, source_symbol=code))
+                                          source="通达信期货通", series_kind=kind, exchange=exchange, source_symbol=code,
+                                          product_code=product.removesuffix("-F")))
             written += emit(file_rows)
             if checkpoint:
                 checkpoint({"files": next_files})
@@ -452,11 +530,13 @@ def run_bulk_futures(
     errors: list[str] = []
     output: list[dict[str, Any]] = []
     written = 0
+    cache_run_ids: list[str] = []
     tdx_root = resolve_tdx_root(tdx_futures_root)
     store = MarketStore(data_root)
     if include_domestic and tdx_root:
         store.register_default_datasets()
         tdx_run_id = store.begin_run("bulk-futures:通达信期货通")
+        cache_run_ids.append(tdx_run_id)
         try:
             local_written, next_state, local_errors = _tdx_rows(
                 tdx_root, state, full_rescan=full_rescan,
@@ -499,6 +579,7 @@ def run_bulk_futures(
     try:
         store.register_default_datasets()
         run_id = store.begin_run("bulk-futures")
+        cache_run_ids.append(run_id)
         try:
             written += _partition_writes(store, run_id, output, prefix="FUTURES-BULK") if output else 0
             status = "COMPLETE" if not errors else "PARTIAL_FAILURE"
@@ -508,6 +589,17 @@ def run_bulk_futures(
             raise
     finally:
         store.close()
+    if written and cache_run_ids:
+        catalog = data_root / "catalog.duckdb"
+        with duckdb.connect(str(catalog), read_only=True) as connection:
+            placeholders = ",".join("?" for _ in cache_run_ids)
+            rows = connection.execute(
+                f"SELECT file_path FROM partitions WHERE source_run_id IN ({placeholders})",
+                cache_run_ids,
+            ).fetchall()
+        refresh_kline_cache_partitions(
+            data_root, [data_root / str(row[0]) for row in rows if row and row[0]]
+        )
     _save_json(state_path, state)
     _save_json(catalog_path, {"updatedAt": _beijing_now(), "unsupported": unsupported})
     return {"状态": "完成" if written and not errors else "部分完成" if written else "失败", "写入K线": written,

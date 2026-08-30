@@ -13,8 +13,8 @@ from market_monitor.macro_series import (
 
 def test_default_macro_series_have_complete_registration():
     index = macro_series_index()
-    assert len(DEFAULT_MACRO_SERIES) == 30
-    assert len(index) == 30
+    assert len(DEFAULT_MACRO_SERIES) == 28
+    assert len(index) == 28
     required = {
         "M0_MONEY_SUPPLY",
         "CN_IMPORT_USD_YOY",
@@ -44,8 +44,6 @@ def test_default_macro_series_have_complete_registration():
         "FED_FUNDS_RATE",
         "GOLD_SILVER_RATIO",
         "GOLD_OIL_RATIO",
-        "BTC_USD",
-        "ETH_USD",
     }
     assert set(index) == required
     for series in DEFAULT_MACRO_SERIES:

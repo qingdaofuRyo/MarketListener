@@ -32,7 +32,7 @@
       "properties": {
         "country_or_market": {"type": "string", "pattern": "^[A-Z]{2,12}$"},
         "exchange": {"type": "string", "pattern": "^[A-Z0-9_-]{2,16}$"},
-        "asset_type": {"enum": ["STOCK", "INDEX", "FUTURE", "OPTION", "FUND", "ETF", "BOND", "COMMODITY", "CRYPTO"]},
+        "asset_type": {"enum": ["STOCK", "INDEX", "FUTURE", "OPTION", "FUND", "ETF", "BOND", "COMMODITY", "CRYPTO", "FX_RATE", "MACRO"]},
         "code": {"type": "string", "pattern": "^[A-Z0-9._-]+$"}
       }
     }

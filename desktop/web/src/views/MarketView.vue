@@ -37,6 +37,7 @@ const fallbackCategories: MarketCategory[] = [
   ["all", "全部市场"], ["a-index", "A股-指数"], ["tdx-industry-index", "通达信-行业板块指数"], ["tdx-board-index", "通达信-综合板块指数"], ["a-sh", "A股-沪市"], ["a-sz", "A股-深市"], ["a-bse", "A股-北证"],
   ["a-chinext", "A股-创业板"], ["a-star", "A股-科创板"], ["a-etf", "A股-ETF基金"], ["a-convertible", "A股-可转债"], ["a-exchangeable", "A股-可交债"],
   ["a-pledged-repo", "A股-债券通用质押式回购"], ["a-repo", "A股-债券回购"], ["a-lof", "A股-LOF基金"], ["a-reit", "A股-REITs"], ["hk-index", "港股-指数"], ["hk-stock", "港股-个股"],
+  ["global-index", "全球-指数"], ["global-fx", "全球-基本汇率"], ["global-future", "全球-期货"], ["cn-macro", "中国-宏观指标"],
   ["cn-future-index", "国内期货-指数"], ["cn-future-cffex", "国内期货-中金所"], ["cn-future-commodity", "国内期货-商品期货"], ["cn-future-night", "国内期货-商品期货夜盘"],
 ].map(([id, label]) => ({ id, label }));
 const periodOptions = [

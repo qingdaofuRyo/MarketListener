@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from market_monitor.futures_bulk import _ak_domestic, decode_lc5_day, read_tdx_file, run_bulk_futures
+from market_monitor.market_classification import classify_market
 from market_monitor.web_app import create_web_app
 
 
@@ -185,6 +186,28 @@ def test_tdx_commodity_index_uses_index_metadata_name(tmp_path: Path) -> None:
         item["instrumentId"] == "CN.TDX.INDEX.T003.COMMODITY_INDEX" and item["name"] == "工业品"
         for item in items
     )
+
+
+def test_tdx_classifies_dce_f_cffex_ranked_and_option_volatility_series(tmp_path: Path) -> None:
+    root = _future_root(tmp_path)
+    day = root / "vipdoc" / "ds" / "lday"
+    payload = struct.pack("<IffffIIf", 20260814, 20, 21, 19, 20.5, 100, 200, 20.4)
+    for filename in ("29#L-F2609.day", "47#ICL0.day", "47#IF300.day", "68#V050C0.day"):
+        (day / filename).write_bytes(payload)
+
+    data_root = tmp_path / "data"
+    run_bulk_futures(data_root, tdx_futures_root=root, include_global=False, api=_EmptyAk())
+    items = TestClient(create_web_app(data_root), client=("127.0.0.1", 50000)).get(
+        "/api/market/instruments", params={"pageSize": 100}
+    ).json()["items"]
+    by_id = {item["instrumentId"]: item for item in items}
+
+    assert by_id["CN.DCE.FUTURE.L-F2609.CONTRACT"]["seriesKind"] == "CONTRACT"
+    assert by_id["CN.CFFEX.FUTURE.IC.RANKED_0"]["seriesKind"] == "RANKED_0"
+    assert classify_market(by_id["CN.CFFEX.INDEX.IF300.FUTURES_UNDERLYING_INDEX"]) == "cn-future-index"
+    volatility = by_id["CN.TDX_OPTION_VOLATILITY.INDEX.V050C0.OPTION_VOLATILITY_INDEX"]
+    assert classify_market(volatility) == "cn-future-index"
+    assert volatility["actualSource"] == "通达信期货通"
 
 
 def test_akshare_domestic_daily_backfill_starts_in_2000() -> None:

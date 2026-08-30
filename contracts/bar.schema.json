@@ -31,7 +31,7 @@
     "raw_amount": {"type": ["number", "null"], "minimum": 0},
     "price_scale": {"type": "number", "exclusiveMinimum": 0},
     "volume_multiplier": {"type": "number", "exclusiveMinimum": 0},
-    "volume_unit": {"enum": ["SHARE", "BOND_UNIT", "TDX_INDEX_RAW", "REPO_LOT_1000_CNY"]},
+    "volume_unit": {"enum": ["SHARE", "BOND_UNIT", "TDX_INDEX_RAW", "TDX_SOURCE_RAW", "TDX_FOREIGN_FUTURE_RAW", "REPO_LOT_1000_CNY"]},
     "normalization_method": {"type": "string", "minLength": 1},
     "normalization_status": {"enum": ["PASS", "FAILED"]},
     "normalization_version": {"type": "string", "minLength": 1},
@@ -57,7 +57,7 @@
       "properties": {
         "country_or_market": {"type": "string", "pattern": "^[A-Z]{2,12}$"},
         "exchange": {"type": "string", "pattern": "^[A-Z0-9_-]{2,16}$"},
-        "asset_type": {"enum": ["STOCK", "B_SHARE", "INDEX", "FUTURE", "OPTION", "FUND", "ETF", "LOF", "REIT", "BOND", "CONVERTIBLE_BOND", "EXCHANGEABLE_BOND", "PLEDGED_REPO", "REPO", "COMMODITY", "CRYPTO"]},
+        "asset_type": {"enum": ["STOCK", "B_SHARE", "INDEX", "FUTURE", "OPTION", "FUND", "ETF", "LOF", "REIT", "BOND", "CONVERTIBLE_BOND", "EXCHANGEABLE_BOND", "PLEDGED_REPO", "REPO", "COMMODITY", "CRYPTO", "FX_RATE", "MACRO"]},
         "code": {"type": "string", "pattern": "^[A-Z0-9._-]+$"}
       }
     }

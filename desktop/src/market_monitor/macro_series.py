@@ -178,16 +178,6 @@ DEFAULT_MACRO_SERIES: tuple[MacroSeriesDefinition, ...] = (
         "本地派生（黄金、WTI 原油）", "黄金价格 / WTI 原油价格",
         "derived = AU / WTI；使用同一交易日同一币种价格",
     ),
-    MacroSeriesDefinition(
-        "BTC_USD", "比特币价格", "DAILY", "USD",
-        "外部行情源/akshare", "BTC/USD 收盘价",
-        "按交易日收盘价；24 小时市场以 UTC 日切",
-    ),
-    MacroSeriesDefinition(
-        "ETH_USD", "以太坊价格", "DAILY", "USD",
-        "外部行情源/akshare", "ETH/USD 收盘价",
-        "按交易日收盘价；24 小时市场以 UTC 日切",
-    ),
 )
 
 

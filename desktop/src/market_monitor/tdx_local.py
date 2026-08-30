@@ -26,7 +26,7 @@ import duckdb
 
 from .market_data_version import advance_market_data_version
 from .market_classification import market_classification_spec
-from .market_query_cache import rebuild_kline_query_cache
+from .market_query_cache import rebuild_kline_query_cache, refresh_kline_cache_partitions
 from .storage import MarketStore, PartitionKey
 
 
@@ -34,7 +34,7 @@ _CN_DAY = struct.Struct("<IiiiifII")
 _HK_DAY = struct.Struct("<IfffffII")
 _MINUTE = struct.Struct("<HHfffffII")
 _CN_FILE = re.compile(r"^(?P<prefix>sh|sz|bj)(?P<code>\d{6})\.(?P<kind>day|lc5)$", re.IGNORECASE)
-_DS_FILE = re.compile(r"^(?P<prefix>\d+)#(?P<code>[A-Za-z0-9_]+)\.(?P<kind>day|lc5)$", re.IGNORECASE)
+_DS_FILE = re.compile(r"^(?P<prefix>\d+)#(?P<code>[A-Za-z0-9_.-]+)\.(?P<kind>day|lc5)$", re.IGNORECASE)
 # Kept for the raw-unclassified scanner and older callers that specifically
 # need the financial-terminal Hong Kong main-board filename shape.
 _HK_FILE = re.compile(r"^31#(?P<code>\d{5})\.(?P<kind>day|lc5)$", re.IGNORECASE)
@@ -60,10 +60,10 @@ def resolve_tdx_root(value: Path | None = None) -> Path | None:
 def financial_ds_metadata(filename: str) -> dict[str, str] | None:
     """Classify one verified ordinary-terminal ``vipdoc/ds`` filename.
 
-    The mapping intentionally omits FX (``10#``), macro (``38#``), legacy HK
-    funds (``49#``), and unknown prefixes.  Their Bar semantic/unit contract
-    has not been verified, so they remain visible to the review table instead
-    of being promoted to Silver by filename alone.
+    Prefix ownership is explicit: the financial terminal owns securities,
+    equity indexes, basic FX, and macro indexes.  Domestic futures remain
+    owned by :mod:`futures_bulk`.  ``27#HZ``, ``49#``, and
+    ``98#`` are intentionally retired by the user's classification decision.
     """
 
     match = _DS_FILE.fullmatch(filename)
@@ -75,11 +75,9 @@ def financial_ds_metadata(filename: str) -> dict[str, str] | None:
     if not isinstance(base, dict):
         return None
     code = match.group("code").upper()
-    if prefix in {"27", "31", "48"} and not re.fullmatch(r"\d{5}" if prefix != "27" else r"[A-Z0-9_]+", code):
+    if prefix == "27" and code.startswith("HZ"):
         return None
-    if prefix in {"62", "69", "102"} and not re.fullmatch(r"\d{6}", code):
-        return None
-    if prefix in {"12", "16", "17", "18"} and not re.fullmatch(r"[A-Z0-9_]+", code):
+    if prefix in {"31", "48", "49"} and not re.fullmatch(r"\d{5}", code):
         return None
     metadata = {
         **{str(key): str(value) for key, value in base.items()},
@@ -183,6 +181,7 @@ def run_tdx_local_import(
     audit_only: bool = False,
     replace_source: bool = False,
     resume_staging: Path | None = None,
+    ds_prefixes: Iterable[str] | None = None,
 ) -> dict[str, Any]:
     """Audit or import TDX bars under the ``tdx-cn-v2`` quality policy."""
 
@@ -191,6 +190,11 @@ def run_tdx_local_import(
         raise ValueError("--audit-only 不能与来源替换或暂存续跑同时使用")
     if replace_source and resume_staging:
         raise ValueError("--replace-source 与 --resume-staging 不能同时使用")
+    selected_ds_prefixes = {str(value).strip() for value in (ds_prefixes or ()) if str(value).strip()}
+    if selected_ds_prefixes and (replace_source or resume_staging):
+        raise ValueError("--ds-prefix 只用于普通增量导入或审计")
+    if any(not value.isdigit() for value in selected_ds_prefixes):
+        raise ValueError("--ds-prefix 必须是数字前缀，例如 38")
     if resume_staging is not None:
         return _resume_tdx_source(
             data_root,
@@ -221,6 +225,7 @@ def run_tdx_local_import(
         start_date=start_date,
         end_date=end_date,
         audit_only=audit_only,
+        ds_prefixes=selected_ds_prefixes,
     )
 
 
@@ -234,6 +239,7 @@ def _run_tdx_local_import(
     start_date: str | None,
     end_date: str | None,
     audit_only: bool,
+    ds_prefixes: set[str] | None = None,
 ) -> dict[str, Any]:
     """Import local A-share, ETF/index, and HK stock daily/5-minute bars.
 
@@ -289,7 +295,7 @@ def _run_tdx_local_import(
         staged_files = {}
 
     try:
-        for path, metadata in _files(root):
+        for path, metadata in _files(root, ds_prefixes=ds_prefixes):
             scanned_files += 1
             relative = str(path.relative_to(root)).replace("\\", "/")
             signature = _signature(path)
@@ -364,7 +370,11 @@ def _run_tdx_local_import(
 
     cache: dict[str, Any] | None = None
     if written and rebuild_cache and not audit_only:
-        cache = rebuild_kline_query_cache(data_root)
+        partition_files = _partition_files_for_run(data_root, run_id)
+        if partition_files and refresh_kline_cache_partitions(data_root, partition_files):
+            cache = {"mode": "incremental", "partitionFiles": len(partition_files)}
+        else:
+            cache = rebuild_kline_query_cache(data_root)
     if not audit_only:
         _save_json(state_path, {"normalization_version": _NORMALIZATION_VERSION, "files": next_files})
     summary = {
@@ -388,6 +398,7 @@ def _run_tdx_local_import(
         "通达信目录": str(root),
         "开始日期": start_date,
         "结束日期": end_date,
+        "DS前缀筛选": sorted(ds_prefixes or ()),
         "检查点": str(state_path),
         "K线缓存": cache,
         "资产文件统计": dict(sorted(asset_counts.items())),
@@ -406,6 +417,18 @@ def _run_tdx_local_import(
 
 def _audit_report_path(data_root: Path) -> Path:
     return data_root / "reports" / "tdx-local" / "latest-audit.json"
+
+
+def _partition_files_for_run(data_root: Path, run_id: str) -> list[Path]:
+    catalog = data_root / "catalog.duckdb"
+    if not catalog.is_file():
+        return []
+    with duckdb.connect(str(catalog), read_only=True) as connection:
+        rows = connection.execute(
+            "SELECT file_path FROM partitions WHERE source_run_id=? AND status='COMPLETE'",
+            [run_id],
+        ).fetchall()
+    return [data_root / str(row[0]) for row in rows if row and row[0]]
 
 
 def _write_quarantine_evidence(data_root: Path, relative: str, audit: Mapping[str, Any]) -> None:
@@ -646,9 +669,9 @@ def _state_path(data_root: Path, root: Path, *, start_date: str | None, end_date
     return data_root / "state" / f"tdx_local_import-{token}{range_token}.json"
 
 
-def _files(root: Path) -> Iterable[tuple[Path, dict[str, str]]]:
+def _files(root: Path, *, ds_prefixes: set[str] | None = None) -> Iterable[tuple[Path, dict[str, str]]]:
     folders = (("sh", "CN"), ("sz", "CN"), ("bj", "CN"))
-    for prefix, market in folders:
+    for prefix, market in (() if ds_prefixes else folders):
         for kind_folder in ("lday", "fzline"):
             directory = root / "vipdoc" / prefix / kind_folder
             if not directory.is_dir():
@@ -668,7 +691,8 @@ def _files(root: Path) -> Iterable[tuple[Path, dict[str, str]]]:
             continue
         for path in sorted(directory.glob("*")):
             metadata = financial_ds_metadata(path.name)
-            if metadata is not None:
+            source_prefix = path.stem.partition("#")[0]
+            if metadata is not None and (not ds_prefixes or source_prefix in ds_prefixes):
                 yield path, metadata
 
 
@@ -742,10 +766,12 @@ def _price_scale(metadata: Mapping[str, str]) -> float:
 
 def _volume_unit(metadata: Mapping[str, str]) -> str:
     asset_type = metadata["asset_type"]
-    if asset_type == "INDEX":
-        return "TDX_INDEX_RAW"
     if asset_type == "FUTURE" and metadata.get("volume_semantics") == "RAW":
         return "TDX_FOREIGN_FUTURE_RAW"
+    if metadata.get("volume_semantics") == "RAW":
+        return "TDX_SOURCE_RAW"
+    if asset_type == "INDEX":
+        return "TDX_INDEX_RAW"
     if asset_type in {"PLEDGED_REPO", "REPO"}:
         return "REPO_LOT_1000_CNY"
     if asset_type in {"CONVERTIBLE_BOND", "EXCHANGEABLE_BOND"}:
@@ -762,6 +788,8 @@ def _volume_profile(
         return [1.0] * len(records), "asset-rule:index-raw-volume", Counter({1.0: len(records)}), []
     if asset_type == "FUTURE" and metadata.get("volume_semantics") == "RAW":
         return [1.0] * len(records), "asset-rule:foreign-future-raw-volume", Counter({1.0: len(records)}), []
+    if metadata.get("volume_semantics") == "RAW":
+        return [1.0] * len(records), "asset-rule:source-raw-volume", Counter({1.0: len(records)}), []
     is_repo = asset_type in {"PLEDGED_REPO", "REPO"}
     tolerance = _DAILY_VWAP_TOLERANCE if metadata["period"] == "1d" else _MINUTE_VWAP_TOLERANCE
     multipliers: list[float | None] = []
@@ -1124,6 +1152,12 @@ def _fallback_name(market: str, asset_type: str, code: str) -> str:
         return f"ETF {code}"
     if asset_type == "B_SHARE":
         return f"B股 {code}"
+    if asset_type == "FX_RATE":
+        return f"基本汇率 {code}"
+    if asset_type == "MACRO":
+        return f"宏观指标 {code}"
+    if asset_type == "FUND":
+        return f"港股基金 {code}"
     return f"港股 {code}" if market == "HK" else f"A股 {code}"
 
 

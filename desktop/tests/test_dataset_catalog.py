@@ -36,7 +36,6 @@ EXPECTED_IDS = {
     "HSGT_FLOW",
     "CN_ZT_POOL",
     "FUTURE_GLOBAL_BAR",
-    "CRYPTO_BAR",
     "USD_INDEX_VIX",
 }
 
