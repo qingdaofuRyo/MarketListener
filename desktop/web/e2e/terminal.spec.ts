@@ -128,6 +128,49 @@ test("data workbench is read-only, bounded and shows real dashboards", async ({ 
   await expectCleanTerminal(page);
 });
 
+test("A-share status lists retain their selected date and page through the local API contract", async ({ page }) => {
+  await page.route("**/api/data/equities/cn/lists**", async (route) => {
+    const url = new URL(route.request().url());
+    const requestedPage = Number(url.searchParams.get("page") || "1");
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        available: true,
+        market: "CN",
+        segment: "ALL",
+        listType: url.searchParams.get("type") || "st_warning",
+        listTitle: "ST 风险警示",
+        asOfDay: url.searchParams.get("asOfDay"),
+        page: requestedPage,
+        pageSize: 50,
+        total: 51,
+        items: [{
+          instrumentId: `CN.SSE.STOCK.60000${requestedPage}`,
+          symbol: `60000${requestedPage}`,
+          name: `测试状态标的 ${requestedPage}`,
+          assetType: "STOCK",
+          segment: "MAIN",
+          status: "ST",
+          effectiveFrom: "2026-08-20",
+          expectedEnd: null,
+          reason: "受控浏览器夹具",
+          source: "测试来源",
+          capturedAt: "2026-08-20T16:00:00+08:00",
+        }],
+        limitations: [],
+      }),
+    });
+  });
+
+  await page.goto("/data/?section=cn");
+  const list = page.locator('[data-test="r4-equity-status-list"]');
+  await expect(list).toContainText("测试状态标的 1");
+  await expect(list.locator(".el-pagination")).toBeVisible();
+  await list.locator(".el-pagination .btn-next").click();
+  await expect(list).toContainText("测试状态标的 2");
+  await expect(list.locator(".el-pagination .is-active")).toHaveText("2");
+});
+
 test("F10 API and detail page share one local company model", async ({ page }) => {
   const listing = await page.request.get("/api/f10/companies?page_size=10&market=CN");
   expect(listing.status()).toBe(200);

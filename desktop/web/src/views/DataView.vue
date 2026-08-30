@@ -135,6 +135,9 @@ const macroLoading = ref(false);
 const equityOverview = ref<EquityOverviewPayload>();
 const equityOverviewLoading = ref(false);
 const equityListType = ref<EquityListType>("st_warning");
+const equityListAsOfDay = ref<string | undefined>();
+const equityListPage = ref(1);
+const equityListPageSize = 50;
 const equityStatusList = ref<EquityStatusListPayload>();
 const equityStatusListLoading = ref(false);
 const equityListTypeOptions: Array<{ value: EquityListType; label: string }> = [
@@ -314,11 +317,26 @@ async function loadEquityStatusList(): Promise<void> {
   try {
     equityStatusList.value = await apiGet<EquityStatusListPayload>(
       "/api/data/equities/cn/lists",
-      { type: equityListType.value, page: 1, pageSize: 50 },
+      {
+        type: equityListType.value,
+        asOfDay: equityListAsOfDay.value,
+        page: equityListPage.value,
+        pageSize: equityListPageSize,
+      },
       { ttlMs: 5 * 60_000, persist: true, force: true },
     );
   } catch { equityStatusList.value = undefined; }
   finally { equityStatusListLoading.value = false; }
+}
+
+function refreshEquityStatusListFromFirstPage(): void {
+  equityListPage.value = 1;
+  void loadEquityStatusList();
+}
+
+function changeEquityStatusListPage(page: number): void {
+  equityListPage.value = page;
+  void loadEquityStatusList();
 }
 
 // ---- 数据浏览器（受控只读预览 ≤500 行） ----
@@ -397,7 +415,7 @@ watch(selectedMacroId, () => {
   void loadMacroSeries();
 });
 watch(macroView, () => void loadMacroSeries());
-watch(equityListType, () => void loadEquityStatusList());
+watch(equityListType, refreshEquityStatusListFromFirstPage);
 watch(() => route.query.section, value => {
   const section = typeof value === "string" ? { cn: "cn-equities", hk: "hk-equities", other: "macro" }[value] : undefined;
   if (section && r4Section.value !== section) r4Section.value = section;
@@ -464,10 +482,25 @@ onBeforeUnmount(() => {
             <p v-else-if="r4Section === section.id && section.id === 'hk-equities' && !equityOverviewLoading" class="muted">{{ equityOverview?.limitations[0] || '港股总览等待真实来源与统计范围验证。' }}</p>
             <section v-if="section.id === 'cn-equities'" class="r4-status-list" data-test="r4-equity-status-list">
               <div class="panel-title">
-                <h3>风险与状态名单</h3>
-                <el-radio-group v-model="equityListType" size="small" aria-label="A股状态名单类型">
-                  <el-radio-button v-for="option in equityListTypeOptions" :key="option.value" :value="option.value">{{ option.label }}</el-radio-button>
-                </el-radio-group>
+                <div>
+                  <h3>风险与状态名单</h3>
+                  <p class="muted">{{ equityStatusList?.asOfDay ? `截至 ${equityStatusList.asOfDay}` : '截至最新已采集的权威名单日期' }}</p>
+                </div>
+                <div class="r4-status-list-controls">
+                  <el-radio-group v-model="equityListType" size="small" aria-label="A股状态名单类型">
+                    <el-radio-button v-for="option in equityListTypeOptions" :key="option.value" :value="option.value">{{ option.label }}</el-radio-button>
+                  </el-radio-group>
+                  <el-date-picker
+                    v-model="equityListAsOfDay"
+                    type="date"
+                    value-format="YYYY-MM-DD"
+                    placeholder="按日期查看"
+                    clearable
+                    size="small"
+                    aria-label="A股状态名单日期"
+                    @change="refreshEquityStatusListFromFirstPage"
+                  />
+                </div>
               </div>
               <el-table v-if="equityStatusList?.available" :data="equityStatusList.items" max-height="340" empty-text="当前日期没有名单记录">
                 <el-table-column prop="symbol" label="代码" min-width="100" />
@@ -479,6 +512,16 @@ onBeforeUnmount(() => {
                 <el-table-column prop="reason" label="原因" min-width="220" show-overflow-tooltip />
                 <el-table-column prop="source" label="来源" min-width="160" show-overflow-tooltip />
               </el-table>
+              <el-pagination
+                v-if="equityStatusList?.available && typeof equityStatusList.total === 'number' && equityStatusList.total > equityListPageSize"
+                v-model:current-page="equityListPage"
+                :page-size="equityListPageSize"
+                :total="equityStatusList.total"
+                layout="total, prev, pager, next"
+                small
+                class="r4-status-list-pagination"
+                @current-change="changeEquityStatusListPage"
+              />
               <p v-else-if="!equityStatusListLoading" class="muted">{{ equityStatusList?.limitations[0] || '状态名单尚未加载。' }}</p>
             </section>
           </template>
@@ -592,6 +635,8 @@ onBeforeUnmount(() => {
 .r4-status-list { margin-top: 12px; padding: 12px; border: 1px solid var(--ml-border); border-radius: 8px; }
 .r4-status-list .panel-title { flex-wrap: wrap; }
 .r4-status-list .muted { margin: 0; }
+.r4-status-list-controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.r4-status-list-pagination { margin-top: 12px; justify-content: flex-end; }
 .macro-controls { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 12px; }
 .macro-controls .el-select { min-width: 270px; }
 .macro-catalog { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 8px; margin-bottom: 12px; }
