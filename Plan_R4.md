@@ -263,7 +263,7 @@
 - `type`：期货席位数据工程与网页图表；`priority`：P1；`state`：BLOCKED；`failure_count`：0。
 - `目标`：在“席位市值分布”模块展示交易所已公布排名覆盖范围内各会员席位的名义持仓规模结构，并明确其不是会员全部客户资金或全市场全量。
 - `依赖`：`R4-T004` 已锁定的 `priceBasis` 与公式版本、`FUTURES_MEMBER_POSITION_DAILY` 的真实全合约采集、席位规范名和来源覆盖探针；固定 `RB2610 / 2026-08-07` 样例不能作为验收数据。
-- `阻塞证据（2026-08-29）`：固定 `RB2610 / 2026-08-07` 样例已移除，采集器改为按交易日逐所拉取并持久化 `FUTURES_MEMBER_POSITION_DAILY` 的原始方向排名；真实 `2026-08-28` 采集获得 CFFEX 880、CZCE 4,856、SHFE/INE 3,272、GFEX 480 条排名，但 DCE 端点返回 `BadZipFile: File is not a zip file`。因此商品范围仍不完整，并且本任务继承 R4-T004 未决的唯一 `priceBasis`；两项证据未齐前不得生产或展示席位市值序列。
+- `阻塞证据（2026-08-29、2026-08-30）`：固定 `RB2610 / 2026-08-07` 样例已移除，采集器改为按交易日逐所拉取并持久化 `FUTURES_MEMBER_POSITION_DAILY` 的原始方向排名；真实 `2026-08-28` 采集获得 CFFEX 880、CZCE 4,856、SHFE/INE 3,272、GFEX 480 条排名，但 DCE 端点返回 `BadZipFile: File is not a zip file`。2026-08-30 对同一大商所官方 `batchDownload` 入口以 HTTPS、官方 Referer 和浏览器 User-Agent 做只读直连探针，仍无响应至请求超时，不能把无效 HTML/超时响应作为 ZIP 解析或改用未审计的第三方镜像。因此商品范围仍不完整，并且本任务继承 R4-T004 未决的唯一 `priceBasis`；两项证据未齐前不得生产或展示席位市值序列。
 
 #### 指标公式与方向
 
@@ -295,7 +295,7 @@
 - `type`：期货席位数据工程与网页图表；`priority`：P1；`state`：BLOCKED；`failure_count`：0。
 - `目标`：在“席位持仓分布”模块展示交易所已公布排名覆盖范围内各会员席位的持仓量结构，支持方向切换并保留公布覆盖边界。
 - `依赖`：`FUTURES_MEMBER_POSITION_DAILY` 的真实全合约采集、席位规范名、来源覆盖探针和本共享契约；真实多交易所覆盖未通过前保持 `ANALYSIS`。
-- `实现与阻塞证据（2026-08-29）`：已建立 `FUTURES_MEMBER_POSITION_DAILY`、按多/空方向保留原始席位名、规范键、名次、增减、来源与交易所；`futures-member-structure` 分方向生成 `long / short / gross / net-long / net-short` 的 `FUTURES_STRUCTURE_DAILY`，净方向只在同一交易所、合约、席位两侧均已公布时计算，其余保持缺失。`/api/futures/member-positions` 要求先筛选才返回明细，并显式列出缺失交易所；网页已提供方向、范围、其他下钻和具体月份合约席位表。真实 2026-08-28 只有四个商品交易所可用，DCE 反爬响应使 8,608 条商品排名均标记部分覆盖，五个方向均拒绝建立正式基准；不能以此生产完整席位持仓堆叠图或伪造全市场覆盖。
+- `实现与阻塞证据（2026-08-29、2026-08-30）`：已建立 `FUTURES_MEMBER_POSITION_DAILY`、按多/空方向保留原始席位名、规范键、名次、增减、来源与交易所；`futures-member-structure` 分方向生成 `long / short / gross / net-long / net-short` 的 `FUTURES_STRUCTURE_DAILY`，净方向只在同一交易所、合约、席位两侧均已公布时计算，其余保持缺失。`/api/futures/member-positions` 要求先筛选才返回明细，并显式列出缺失交易所；网页已提供方向、范围、其他下钻和具体月份合约席位表。真实 2026-08-28 只有四个商品交易所可用，DCE 反爬响应使 8,608 条商品排名均标记部分覆盖，五个方向均拒绝建立正式基准；2026-08-30 直连官方入口同样请求超时，未接入任何未审计镜像。不能以此生产完整席位持仓堆叠图或伪造全市场覆盖。
 
 #### 指标公式与方向
 
