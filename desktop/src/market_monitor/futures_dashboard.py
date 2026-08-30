@@ -179,7 +179,7 @@ def build_open_interest_leaderboard(
             short_position_change=sum(row.short_position_change for row in group),
             net_position=sum(row.net_position for row in group),
             net_position_change=sum(row.net_position_change for row in group),
-            member_count=len(group),
+            member_count=len({row.member for row in group}),
             source=";".join(sorted({row.source for row in group})),
         )
         for instrument_id, group in groups.items()

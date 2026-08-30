@@ -27,6 +27,9 @@ EXPECTED_IDS = {
     "STRATEGY_SIGNAL",
     "FUTURES_BREADTH",
     "FUTURES_LONG_SHORT_HEAT",
+    "FUTURES_STRUCTURE_DAILY",
+    "FUTURES_STRUCTURE_BASELINE",
+    "FUTURES_MEMBER_POSITION_DAILY",
     "FUTURES_OI_LEADERBOARD",
     "CN_MARGIN",
     "A_SHARE_BREADTH",
@@ -97,6 +100,10 @@ def test_futures_breadth_and_leaderboard_are_registered():
     assert leaderboard.primary_key == ("instrument_id", "trading_day")
     for field in ("long_position", "short_position", "net_position", "net_position_change"):
         assert field in leaderboard.fields
+    ranks = dataset_index()["FUTURES_MEMBER_POSITION_DAILY"]
+    assert ranks.primary_key == ("trading_day", "exchange", "contract_code", "side", "rank", "source")
+    for field in ("member_name", "position", "position_change", "collected_at"):
+        assert field in ranks.fields
 
 
 def test_futures_long_short_heat_registers_replayable_gold_without_user_total():
@@ -113,6 +120,17 @@ def test_futures_long_short_heat_registers_replayable_gold_without_user_total():
     ):
         assert field in heat.fields
     assert "total_score_10d" not in heat.fields
+
+
+def test_futures_structure_datasets_keep_fixed_baseline_and_price_provenance():
+    daily = dataset_index()["FUTURES_STRUCTURE_DAILY"]
+    assert daily.primary_key == ("chart_id", "direction", "formula_version", "trade_date", "member_key")
+    for field in ("value", "data_quality_status", "price_basis", "source", "calculated_at"):
+        assert field in daily.fields
+    baseline = dataset_index()["FUTURES_STRUCTURE_BASELINE"]
+    assert baseline.primary_key == ("chart_id", "direction", "formula_version")
+    for field in ("baseline_day", "threshold", "stack_order", "other_members", "price_basis"):
+        assert field in baseline.fields
 
 
 def test_from_dict_rejects_missing_primary_key_or_fields():

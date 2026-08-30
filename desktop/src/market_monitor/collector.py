@@ -26,6 +26,10 @@ from .futures_dashboard import (
     build_open_interest_leaderboard,
     compute_futures_breadth,
 )
+from .futures_member_positions import (
+    MemberPositionRank,
+    collect_exchange_member_position_ranks,
+)
 from .macro_series import MacroPoint, derive_series, macro_series_index, normalise_macro_point
 from .storage import MarketStore, PartitionKey
 
@@ -51,6 +55,7 @@ class PersistPlan:
 
     bar_writes: list[BarWrite] = field(default_factory=list)
     gold_metrics: list[dict[str, Any]] = field(default_factory=list)
+    member_position_ranks: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -238,7 +243,7 @@ def _persist_results(data_root: Path, results: Sequence[CollectionTaskResult]) -
         store.register_default_datasets()
         for result in results:
             plan = result.persist
-            if not plan.bar_writes and not plan.gold_metrics:
+            if not plan.bar_writes and not plan.gold_metrics and not plan.member_position_ranks:
                 continue
             run_id = store.begin_run(f"collector:{result.source}")
             try:
@@ -246,6 +251,8 @@ def _persist_results(data_root: Path, results: Sequence[CollectionTaskResult]) -
                     store.write_silver_bars(write.key, write.bars, write.data_cutoff, run_id)
                 if plan.gold_metrics:
                     store.upsert_gold_metrics(plan.gold_metrics)
+                if plan.member_position_ranks:
+                    store.upsert_futures_member_position_ranks(plan.member_position_ranks)
                 if result.status == "PASS":
                     store.finish_run(run_id, "COMPLETE", result.detail)
                 else:
@@ -940,51 +947,17 @@ def _collect_futures_index() -> CollectionTaskResult:
 
 def _collect_oi_leaderboard() -> CollectionTaskResult:
     api = _ak()
-    contract = "RB2610"
-    day = "20260807"
-    trading_day = "2026-08-07"
-    errors: list[str] = []
-    rows: list[MemberPositionRow] = []
-    try:
-        long_frame = api.futures_hold_pos_sina(symbol="\u591a\u5355\u6301\u4ed3", contract=contract, date=day)
-    except Exception as error:
-        errors.append(f"long:{type(error).__name__}")
-        long_frame = None
-    try:
-        short_frame = api.futures_hold_pos_sina(symbol="\u7a7a\u5355\u6301\u4ed3", contract=contract, date=day)
-    except Exception as error:
-        errors.append(f"short:{type(error).__name__}")
-        short_frame = None
-    instrument_id = f"CN.SHFE.FUTURE.{contract}"
-    if long_frame is not None:
-        for record in long_frame.to_dict(orient="records"):
-            rows.append(
-                MemberPositionRow(
-                    member=str(record["\u4f1a\u5458\u7b80\u79f0"]),
-                    instrument_id=instrument_id,
-                    trading_day=trading_day,
-                    long_position=_num(record.get("\u591a\u5355\u6301\u4ed3"), 0.0) or 0.0,
-                    long_position_change=_num(record.get("\u6bd4\u4e0a\u4ea4\u6613\u589e\u51cf"), 0.0) or 0.0,
-                    short_position=0.0,
-                    short_position_change=0.0,
-                    source="sina-member-ranking",
-                )
-            )
-    if short_frame is not None:
-        for record in short_frame.to_dict(orient="records"):
-            rows.append(
-                MemberPositionRow(
-                    member=str(record["\u4f1a\u5458\u7b80\u79f0"]),
-                    instrument_id=instrument_id,
-                    trading_day=trading_day,
-                    long_position=0.0,
-                    long_position_change=0.0,
-                    short_position=_num(record.get("\u7a7a\u5355\u6301\u4ed3"), 0.0) or 0.0,
-                    short_position_change=_num(record.get("\u6bd4\u4e0a\u4ea4\u6613\u589e\u51cf"), 0.0) or 0.0,
-                    source="sina-member-ranking",
-                )
-            )
+    day = _last_trading_day_compact()
+    trading_day = f"{day[:4]}-{day[4:6]}-{day[6:]}"
+    ranks, coverage = collect_exchange_member_position_ranks(
+        api,
+        day_compact=day,
+        trading_day=trading_day,
+        collected_at=_now(),
+    )
+    rows = _leaderboard_rows_from_member_ranks(ranks)
     plan = PersistPlan()
+    plan.member_position_ranks.extend(rank.to_dict() for rank in ranks)
     if rows:
         leaderboard = build_open_interest_leaderboard(rows, trading_day=trading_day)
         for leader in leaderboard:
@@ -1013,12 +986,49 @@ def _collect_oi_leaderboard() -> CollectionTaskResult:
         "FUTURES_OI_LEADERBOARD",
         "\u671f\u8d27\u6301\u4ed3\u9f99\u864e\u699c",
         "akshare",
-        "PASS" if rows and not errors else "PARTIAL_FAILURE",
-        len(rows),
-        f"{contract} \u4f1a\u5458\u6301\u4ed3\u660e\u7ec6={len(rows)}\uff1b\u9519\u8bef={'; '.join(errors) or '无'}",
-        "; ".join(errors) or None,
+        "PASS" if ranks and all(item.status == "PASS" for item in coverage)
+        else "PARTIAL_FAILURE" if ranks else "FAILED",
+        len(ranks),
+        f"\u4ea4\u6613\u65e5={trading_day}\uff1b\u516c\u5f00\u6392\u540d={len(ranks)}\uff1b"
+        + "; ".join(
+            f"{item.exchange}={item.status}({item.contract_count}\u5408\u7ea6/{item.record_count}\u6392\u540d)"
+            for item in coverage
+        ),
+        "; ".join(
+            f"{item.exchange}:{item.error or item.status}"
+            for item in coverage
+            if item.status != "PASS"
+        ) or None,
         plan,
     )
+
+
+def _leaderboard_rows_from_member_ranks(ranks: Sequence[MemberPositionRank]) -> list[MemberPositionRow]:
+    """Adapt rank rows to the legacy contract aggregate without inventing member detail."""
+
+    rows: list[MemberPositionRow] = []
+    for rank in ranks:
+        rows.append(
+            MemberPositionRow(
+                member=rank.member_name,
+                instrument_id=f"CN.{rank.exchange}.FUTURE.{rank.contract_code}",
+                trading_day=rank.trading_day,
+                long_position=rank.position if rank.side == "LONG" else 0.0,
+                long_position_change=(
+                    rank.position_change
+                    if rank.side == "LONG" and rank.position_change is not None
+                    else 0.0
+                ),
+                short_position=rank.position if rank.side == "SHORT" else 0.0,
+                short_position_change=(
+                    rank.position_change
+                    if rank.side == "SHORT" and rank.position_change is not None
+                    else 0.0
+                ),
+                source=rank.source,
+            )
+        )
+    return rows
 
 
 def _collect_margin() -> CollectionTaskResult:
@@ -1195,14 +1205,40 @@ def _collect_macro() -> CollectionTaskResult:
         money = api.macro_china_money_supply().to_dict(orient="records")
         for row in money:
             month = _parse_cn_month(row["\u6708\u4efd"])
+            m0 = _num(row.get("\u6d41\u901a\u4e2d\u7684\u73b0\u91d1(M0)-\u540c\u6bd4\u589e\u957f"))
             m1 = _num(row.get("\u8d27\u5e01(M1)-\u540c\u6bd4\u589e\u957f"))
             m2 = _num(row.get("\u8d27\u5e01\u548c\u51c6\u8d27\u5e01(M2)-\u540c\u6bd4\u589e\u957f"))
+            if m0 is not None:
+                points.append(normalise_macro_point("M0_MONEY_SUPPLY", available_time=month, value=m0))
             if m1 is not None:
                 points.append(normalise_macro_point("M1_MONEY_SUPPLY", available_time=month, value=m1))
             if m2 is not None:
                 points.append(normalise_macro_point("M2_MONEY_SUPPLY", available_time=month, value=m2))
     except Exception as error:
         errors.append(f"money_supply:{type(error).__name__}")
+
+    for series_id, label, fetcher in (
+        ("CN_IMPORT_USD_YOY", "cn_import_usd_yoy", lambda: api.macro_china_imports_yoy()),
+        ("CN_EXPORT_USD_YOY", "cn_export_usd_yoy", lambda: api.macro_china_exports_yoy()),
+        ("CN_TRADE_BALANCE_USD", "cn_trade_balance_usd", lambda: api.macro_china_trade_balance()),
+        ("CN_FOREX_RESERVES", "cn_forex_reserves", lambda: api.macro_china_fx_reserves_yearly()),
+    ):
+        for row in _fetch_rows(fetcher, label):
+            value = _num(row.get("今值"))
+            if value is not None and row.get("日期") is not None:
+                points.append(normalise_macro_point(series_id, available_time=row["日期"], value=value))
+
+    for row in _fetch_rows(
+        lambda: api.macro_china_consumer_goods_retail(),
+        "cn_consumer_goods_retail",
+    ):
+        month = _parse_cn_month(row.get("月份"))
+        yoy = _num(row.get("同比增长"))
+        mom = _num(row.get("环比增长"))
+        if yoy is not None:
+            points.append(normalise_macro_point("CN_RETAIL_SALES_YOY", available_time=month, value=yoy))
+        if mom is not None:
+            points.append(normalise_macro_point("CN_RETAIL_SALES_MOM", available_time=month, value=mom))
 
     try:
         for row in api.macro_china_cpi_yearly().to_dict(orient="records"):
@@ -1272,6 +1308,17 @@ def _collect_macro() -> CollectionTaskResult:
     except Exception as error:
         errors.append(f"fed_rate:{type(error).__name__}")
 
+    for row in _fetch_rows(lambda: api.macro_usa_non_farm(), "us_nonfarm_payrolls"):
+        value = _num(row.get("今值"))
+        if value is not None and row.get("日期") is not None:
+            points.append(
+                normalise_macro_point(
+                    "US_NONFARM_PAYROLLS_SA",
+                    available_time=row["日期"],
+                    value=value * 10.0,
+                )
+            )
+
     cpi = [point for point in points if point.series_id == "CPI"]
     ppi = [point for point in points if point.series_id == "PPI"]
     if cpi and ppi:
@@ -1290,7 +1337,7 @@ def _collect_macro() -> CollectionTaskResult:
         "akshare",
         "PASS" if metrics and not errors else "PARTIAL_FAILURE",
         len(metrics),
-        f"M1/M2/CPI/PPI/PMI/DR007/\u4e2d\u7f8e10Y/\u7f8e\u8054\u50a8\u5229\u7387\uff0c\u5171{len(metrics)}\u6761\uff1b\u9519\u8bef={'; '.join(errors) or '无'}",
+        f"M0/M1/M2/CPI/PPI/PMI/DR007/\u4e2d\u7f8e10Y/\u7f8e\u8054\u50a8\u5229\u7387\uff0c\u5171{len(metrics)}\u6761\uff1b\u9519\u8bef={'; '.join(errors) or '无'}",
         "; ".join(errors) or None,
         plan,
     )

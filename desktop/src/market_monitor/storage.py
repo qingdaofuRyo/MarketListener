@@ -317,6 +317,202 @@ class MarketStore:
             raise
         return len(values)
 
+    def replace_futures_structure_daily(
+        self,
+        rows: Sequence[Mapping[str, Any]],
+        *,
+        chart_id: str,
+        direction: str,
+        formula_version: str,
+        start_day: str | None = None,
+        end_day: str | None = None,
+    ) -> int:
+        """Atomically replace one precomputed futures-structure date slice."""
+
+        if not chart_id or not direction or not formula_version:
+            raise ValueError("chart_id, direction and formula_version are required")
+        if start_day is not None and end_day is not None and start_day > end_day:
+            raise ValueError("start_day must not be after end_day")
+        for row in rows:
+            _validate_futures_structure_row(row)
+            if (
+                row["chart_id"] != chart_id
+                or row["direction"] != direction
+                or row["formula_version"] != formula_version
+            ):
+                raise ValueError("structure replacement rows must share chart, direction and formula version")
+        clauses = ["chart_id = ?", "direction = ?", "formula_version = ?"]
+        parameters: list[Any] = [chart_id, direction, formula_version]
+        if start_day is not None:
+            clauses.append("trade_date >= ?")
+            parameters.append(start_day)
+        if end_day is not None:
+            clauses.append("trade_date <= ?")
+            parameters.append(end_day)
+        values = [[row[column] for column in _FUTURES_STRUCTURE_DAILY_COLUMNS] for row in rows]
+        placeholders = ", ".join("?" for _ in _FUTURES_STRUCTURE_DAILY_COLUMNS)
+        try:
+            self.connection.execute("BEGIN TRANSACTION")
+            self.connection.execute(
+                f"DELETE FROM futures_structure_daily WHERE {' AND '.join(clauses)}", parameters
+            )
+            if values:
+                self.connection.executemany(
+                    f"INSERT INTO futures_structure_daily ({', '.join(_FUTURES_STRUCTURE_DAILY_COLUMNS)}) "
+                    f"VALUES ({placeholders})",
+                    values,
+                )
+            self.connection.commit()
+        except Exception:
+            self.connection.rollback()
+            raise
+        return len(values)
+
+    def upsert_futures_structure_baseline(self, row: Mapping[str, Any]) -> None:
+        """Persist immutable stack ordering metadata for one chart direction."""
+
+        _validate_futures_structure_baseline(row)
+        values = [
+            row["chart_id"], row["direction"], row["baseline_version"], row["baseline_day"],
+            row["threshold"], json.dumps(row["stack_order"], ensure_ascii=False),
+            json.dumps(row["primary_members"], ensure_ascii=False),
+            json.dumps(row["other_members"], ensure_ascii=False), row["formula_version"],
+            row["price_basis"], row["source"], row["created_at"],
+        ]
+        self.connection.execute(
+            """INSERT INTO futures_structure_baseline
+            (chart_id, direction, baseline_version, baseline_day, threshold, stack_order_json,
+             primary_members_json, other_members_json, formula_version, price_basis, source, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(chart_id, direction, formula_version) DO NOTHING""",
+            values,
+        )
+        self.connection.commit()
+
+    def get_futures_structure_baseline(
+        self, *, chart_id: str, direction: str, formula_version: str
+    ) -> dict[str, Any] | None:
+        """Read fixed baseline metadata for an exact formula version."""
+
+        row = self.connection.execute(
+            """SELECT chart_id, direction, baseline_version, baseline_day, threshold, stack_order_json,
+            primary_members_json, other_members_json, formula_version, price_basis, source, created_at
+            FROM futures_structure_baseline
+            WHERE chart_id=? AND direction=? AND formula_version=?""",
+            [chart_id, direction, formula_version],
+        ).fetchone()
+        return _futures_structure_baseline_dict(row) if row else None
+
+    def delete_futures_structure_baseline(
+        self, *, chart_id: str, direction: str, formula_version: str
+    ) -> None:
+        """Remove one baseline only for an explicitly requested rebuild."""
+
+        self.connection.execute(
+            "DELETE FROM futures_structure_baseline WHERE chart_id=? AND direction=? AND formula_version=?",
+            [chart_id, direction, formula_version],
+        )
+        self.connection.commit()
+
+    def list_futures_structure_daily(
+        self,
+        *,
+        chart_id: str,
+        direction: str,
+        formula_version: str,
+        start_day: str | None = None,
+        end_day: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Read stored structure rows; this method never scans Silver."""
+
+        clauses = ["chart_id = ?", "direction = ?", "formula_version = ?"]
+        parameters: list[Any] = [chart_id, direction, formula_version]
+        if start_day is not None:
+            clauses.append("trade_date >= ?")
+            parameters.append(start_day)
+        if end_day is not None:
+            clauses.append("trade_date <= ?")
+            parameters.append(end_day)
+        cursor = self.connection.execute(
+            f"SELECT {', '.join(_FUTURES_STRUCTURE_DAILY_COLUMNS)} FROM futures_structure_daily "
+            f"WHERE {' AND '.join(clauses)} ORDER BY trade_date, member_key",
+            parameters,
+        )
+        return [
+            dict(zip(_FUTURES_STRUCTURE_DAILY_COLUMNS, row, strict=True))
+            for row in cursor.fetchall()
+        ]
+
+    def upsert_futures_member_position_ranks(self, rows: Sequence[Mapping[str, Any]]) -> int:
+        """Persist exchange-published rank rows without inventing absent directions."""
+
+        if not rows:
+            return 0
+        for row in rows:
+            _validate_futures_member_position_rank(row)
+        columns = _FUTURES_MEMBER_POSITION_RANK_COLUMNS
+        placeholders = ", ".join("?" for _ in columns)
+        updates = ", ".join(
+            f"{column}=excluded.{column}"
+            for column in columns
+            if column not in {"trading_day", "exchange", "contract_code", "side", "rank", "source"}
+        )
+        self.connection.executemany(
+            f"""INSERT INTO futures_member_position_ranks ({', '.join(columns)}) VALUES ({placeholders})
+            ON CONFLICT(trading_day, exchange, contract_code, side, rank, source) DO UPDATE SET {updates}""",
+            [[row[column] for column in columns] for row in rows],
+        )
+        self.connection.commit()
+        return len(rows)
+
+    def latest_futures_member_position_day(self, *, commodity_only: bool = True) -> str | None:
+        """Return the latest persisted ranking date, not a calendar approximation."""
+
+        clause = " WHERE exchange <> 'CFFEX'" if commodity_only else ""
+        row = self.connection.execute(
+            f"SELECT max(trading_day) FROM futures_member_position_ranks{clause}"
+        ).fetchone()
+        return str(row[0]) if row and row[0] is not None else None
+
+    def list_futures_member_position_ranks(
+        self,
+        *,
+        trading_day: str | None = None,
+        exchange: str | None = None,
+        contract_code: str | None = None,
+        product_code: str | None = None,
+        commodity_only: bool = True,
+    ) -> list[dict[str, Any]]:
+        """Read raw published rank rows; this never derives missing rankings as zero."""
+
+        clauses: list[str] = []
+        parameters: list[str] = []
+        if trading_day is not None:
+            clauses.append("trading_day = ?")
+            parameters.append(trading_day)
+        if exchange is not None:
+            clauses.append("exchange = ?")
+            parameters.append(exchange)
+        if contract_code is not None:
+            clauses.append("contract_code = ?")
+            parameters.append(contract_code)
+        if product_code is not None:
+            clauses.append("product_code = ?")
+            parameters.append(product_code)
+        if commodity_only:
+            clauses.append("exchange <> 'CFFEX'")
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        cursor = self.connection.execute(
+            f"SELECT {', '.join(_FUTURES_MEMBER_POSITION_RANK_COLUMNS)} "
+            f"FROM futures_member_position_ranks{where} "
+            "ORDER BY trading_day, exchange, contract_code, side, rank, member_key",
+            parameters,
+        )
+        return [
+            dict(zip(_FUTURES_MEMBER_POSITION_RANK_COLUMNS, row, strict=True))
+            for row in cursor.fetchall()
+        ]
+
     def _atomic_json(self, target: Path, data: Any) -> None:
         staging = target.with_suffix(f".{uuid4().hex}.json")
         try:
@@ -352,6 +548,8 @@ class MarketStore:
             )"""
         )
         self._ensure_futures_long_short_heat_schema()
+        self._ensure_futures_structure_schema()
+        self._ensure_futures_member_position_rank_schema()
 
     def _ensure_futures_long_short_heat_schema(self) -> None:
         table_name = "futures_long_short_heat_daily"
@@ -389,6 +587,62 @@ class MarketStore:
         except Exception:
             self.connection.execute("ROLLBACK")
             raise
+
+    def _ensure_futures_structure_schema(self) -> None:
+        self.connection.execute(
+            """CREATE TABLE IF NOT EXISTS futures_structure_daily (
+                chart_id VARCHAR NOT NULL,
+                direction VARCHAR NOT NULL,
+                trade_date VARCHAR NOT NULL,
+                member_key VARCHAR NOT NULL,
+                member_name VARCHAR NOT NULL,
+                value DOUBLE NOT NULL,
+                input_row_count INTEGER NOT NULL,
+                missing_row_count INTEGER NOT NULL,
+                data_quality_status VARCHAR NOT NULL,
+                formula_version VARCHAR NOT NULL,
+                price_basis VARCHAR,
+                source VARCHAR NOT NULL,
+                calculated_at VARCHAR NOT NULL,
+                PRIMARY KEY(chart_id, direction, formula_version, trade_date, member_key)
+            )"""
+        )
+        self.connection.execute(
+            """CREATE TABLE IF NOT EXISTS futures_structure_baseline (
+                chart_id VARCHAR NOT NULL,
+                direction VARCHAR NOT NULL,
+                baseline_version VARCHAR NOT NULL,
+                baseline_day VARCHAR NOT NULL,
+                threshold DOUBLE NOT NULL,
+                stack_order_json VARCHAR NOT NULL,
+                primary_members_json VARCHAR NOT NULL,
+                other_members_json VARCHAR NOT NULL,
+                formula_version VARCHAR NOT NULL,
+                price_basis VARCHAR,
+                source VARCHAR NOT NULL,
+                created_at VARCHAR NOT NULL,
+                PRIMARY KEY(chart_id, direction, formula_version)
+            )"""
+        )
+
+    def _ensure_futures_member_position_rank_schema(self) -> None:
+        self.connection.execute(
+            """CREATE TABLE IF NOT EXISTS futures_member_position_ranks (
+                trading_day VARCHAR NOT NULL,
+                exchange VARCHAR NOT NULL,
+                contract_code VARCHAR NOT NULL,
+                product_code VARCHAR NOT NULL,
+                side VARCHAR NOT NULL,
+                rank INTEGER NOT NULL,
+                member_key VARCHAR NOT NULL,
+                member_name VARCHAR NOT NULL,
+                position DOUBLE NOT NULL,
+                position_change DOUBLE,
+                source VARCHAR NOT NULL,
+                collected_at VARCHAR NOT NULL,
+                PRIMARY KEY(trading_day, exchange, contract_code, side, rank, source)
+            )"""
+        )
 
 
 _FUTURES_LONG_SHORT_HEAT_COLUMNS = (
@@ -508,6 +762,132 @@ def _futures_heat_table_ddl(table_name: str) -> str:
         calculated_at VARCHAR NOT NULL,
         PRIMARY KEY(formula_version, trade_date)
     )"""
+
+
+_FUTURES_STRUCTURE_DAILY_COLUMNS = (
+    "chart_id",
+    "direction",
+    "trade_date",
+    "member_key",
+    "member_name",
+    "value",
+    "input_row_count",
+    "missing_row_count",
+    "data_quality_status",
+    "formula_version",
+    "price_basis",
+    "source",
+    "calculated_at",
+)
+
+
+def _validate_futures_structure_row(row: Mapping[str, Any]) -> None:
+    missing = [column for column in _FUTURES_STRUCTURE_DAILY_COLUMNS if column not in row]
+    if missing:
+        raise ValueError(f"futures structure row missing columns: {missing}")
+    for field in (
+        "chart_id", "direction", "trade_date", "member_key", "member_name", "formula_version",
+        "source", "calculated_at",
+    ):
+        if not isinstance(row[field], str) or not row[field].strip():
+            raise ValueError(f"{field} must be a non-empty string")
+    _finite_number(row["value"], "value")
+    for field in ("input_row_count", "missing_row_count"):
+        value = row[field]
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(f"{field} must be a non-negative integer")
+    if row["missing_row_count"] > row["input_row_count"]:
+        raise ValueError("missing_row_count must not exceed input_row_count")
+    if row["data_quality_status"] not in {"PASS", "PARTIAL"}:
+        raise ValueError("unsupported futures structure data_quality_status")
+    if row["price_basis"] is not None and (
+        not isinstance(row["price_basis"], str) or not row["price_basis"].strip()
+    ):
+        raise ValueError("price_basis must be a non-empty string or null")
+
+
+def _validate_futures_structure_baseline(row: Mapping[str, Any]) -> None:
+    required = (
+        "chart_id", "direction", "baseline_version", "baseline_day", "threshold", "stack_order",
+        "primary_members", "other_members", "formula_version", "price_basis", "source", "created_at",
+    )
+    missing = [field for field in required if field not in row]
+    if missing:
+        raise ValueError(f"futures structure baseline missing columns: {missing}")
+    for field in (
+        "chart_id", "direction", "baseline_version", "baseline_day", "formula_version", "source", "created_at",
+    ):
+        if not isinstance(row[field], str) or not row[field].strip():
+            raise ValueError(f"{field} must be a non-empty string")
+    threshold = _finite_number(row["threshold"], "threshold")
+    if not 0 < threshold < 1:
+        raise ValueError("threshold must be between 0 and 1")
+    for field in ("stack_order", "primary_members", "other_members"):
+        if not isinstance(row[field], list):
+            raise ValueError(f"{field} must be a list")
+    if row["price_basis"] is not None and (
+        not isinstance(row["price_basis"], str) or not row["price_basis"].strip()
+    ):
+        raise ValueError("price_basis must be a non-empty string or null")
+
+
+def _futures_structure_baseline_dict(row: Sequence[Any]) -> dict[str, Any]:
+    fields = (
+        "chart_id", "direction", "baseline_version", "baseline_day", "threshold", "stack_order_json",
+        "primary_members_json", "other_members_json", "formula_version", "price_basis", "source", "created_at",
+    )
+    value = dict(zip(fields, row, strict=True))
+    return {
+        "chart_id": value["chart_id"],
+        "direction": value["direction"],
+        "baseline_version": value["baseline_version"],
+        "baseline_day": value["baseline_day"],
+        "threshold": value["threshold"],
+        "stack_order": json.loads(value["stack_order_json"]),
+        "primary_members": json.loads(value["primary_members_json"]),
+        "other_members": json.loads(value["other_members_json"]),
+        "formula_version": value["formula_version"],
+        "price_basis": value["price_basis"],
+        "source": value["source"],
+        "created_at": value["created_at"],
+    }
+
+
+_FUTURES_MEMBER_POSITION_RANK_COLUMNS = (
+    "trading_day",
+    "exchange",
+    "contract_code",
+    "product_code",
+    "side",
+    "rank",
+    "member_key",
+    "member_name",
+    "position",
+    "position_change",
+    "source",
+    "collected_at",
+)
+
+
+def _validate_futures_member_position_rank(row: Mapping[str, Any]) -> None:
+    missing = [column for column in _FUTURES_MEMBER_POSITION_RANK_COLUMNS if column not in row]
+    if missing:
+        raise ValueError(f"member position rank row missing columns: {missing}")
+    for field in (
+        "trading_day", "exchange", "contract_code", "product_code", "side", "member_key",
+        "member_name", "source", "collected_at",
+    ):
+        if not isinstance(row[field], str) or not row[field].strip():
+            raise ValueError(f"{field} must be a non-empty string")
+    if row["side"] not in {"LONG", "SHORT"}:
+        raise ValueError("member position rank side must be LONG or SHORT")
+    rank = row["rank"]
+    if isinstance(rank, bool) or not isinstance(rank, int) or rank <= 0:
+        raise ValueError("member position rank must be a positive integer")
+    if _finite_number(row["position"], "position") < 0:
+        raise ValueError("position must be non-negative")
+    if row["position_change"] is not None:
+        _finite_number(row["position_change"], "position_change")
 
 
 def _now() -> str:

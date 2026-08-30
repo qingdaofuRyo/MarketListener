@@ -67,6 +67,157 @@ export interface LongShortHeatDisplayPoint extends LongShortHeatPoint {
   totalScore10: number | null;
 }
 
+export type FuturesStructureRange = "1y" | "3y" | "5y" | "all";
+
+export interface FuturesStructureMember {
+  memberKey: string;
+  memberName: string;
+}
+
+export interface FuturesStructureSeries extends FuturesStructureMember {
+  memberCount?: number;
+  values: Array<number | null>;
+}
+
+export interface FuturesStructureCoverage {
+  tradeDate: string;
+  inputRowCount: number;
+  missingRowCount: number;
+  dataQualityStatus: "PASS" | "PARTIAL";
+}
+
+export interface FuturesStructureResponse {
+  available: boolean;
+  chartId: string;
+  metric: string | null;
+  direction: string;
+  unit: string | null;
+  baselineDay: string | null;
+  baselineVersion: string | null;
+  threshold: number | null;
+  stackOrder: string[];
+  primaryMembers: FuturesStructureMember[];
+  otherMembers: FuturesStructureMember[];
+  unclassifiedMembers: FuturesStructureMember[];
+  dates: string[];
+  series: FuturesStructureSeries[];
+  totals: number[];
+  unclassifiedTotals: number[];
+  coverage: FuturesStructureCoverage[];
+  formulaVersion: string | null;
+  priceBasis: string | null;
+  source: string | null;
+  updatedAt: string | null;
+  limitations: string[];
+}
+
+export interface FuturesMemberPositionContract {
+  exchange: string;
+  productCode: string;
+  contractCode: string;
+}
+
+export interface FuturesMemberPositionRow {
+  exchange: string;
+  contractCode: string;
+  productCode: string;
+  memberKey: string;
+  memberName: string;
+  longPosition: number | null;
+  longPositionChange: number | null;
+  longRank: number | null;
+  shortPosition: number | null;
+  shortPositionChange: number | null;
+  shortRank: number | null;
+  netPosition: number | null;
+  netLongPosition: number | null;
+  netShortPosition: number | null;
+  sources: string[];
+}
+
+export interface FuturesMemberPositionResponse {
+  available: boolean;
+  tradingDay: string | null;
+  filters: {
+    exchange: string | null;
+    contractCode: string | null;
+    productCode: string | null;
+    commodityOnly: boolean;
+  };
+  contracts: FuturesMemberPositionContract[];
+  rows: FuturesMemberPositionRow[];
+  coverage: {
+    publishedDirectionRankCount: number;
+    memberCount: number;
+    exchangeCount: number;
+    exchanges: string[];
+    missingExchanges: string[];
+    isComplete: boolean;
+  };
+  limitations: string[];
+}
+
+export type FuturesContractSeriesKind = "CONTRACT" | "WEIGHTED";
+
+export interface FuturesContractOption {
+  instrumentId: string;
+  exchange: string;
+  productCode: string;
+  contractCode: string;
+  name: string;
+  seriesKind: FuturesContractSeriesKind;
+  lastTradingDay: string | null;
+  actualSource: string | null;
+  qualityStatus: string | null;
+}
+
+export interface FuturesContractListResponse {
+  available: boolean;
+  tradingDay: string | null;
+  filters: {
+    exchange: string | null;
+    product: string | null;
+    seriesKind: FuturesContractSeriesKind | null;
+  };
+  items: FuturesContractOption[];
+  limitations: string[];
+}
+
+export interface FuturesContractSeriesPoint {
+  tradingDay: string;
+  open: number | null;
+  high: number | null;
+  low: number | null;
+  close: number | null;
+  settlement: number | null;
+  openInterest: number | null;
+  notionalRmb: number | null;
+  basisRmb: number | null;
+  basisPercent: number | null;
+  unavailable: {
+    notional: string;
+    basis: string;
+  };
+}
+
+export interface FuturesContractSeriesResponse {
+  available: boolean;
+  instrument: FuturesContractOption;
+  seriesKind: FuturesContractSeriesKind;
+  priceBasis: string | null;
+  units: {
+    price: string;
+    openInterest: string;
+    notional: string;
+    basis: string | null;
+  };
+  availability: Record<string, { available: boolean; render: string; reason: string | null }>;
+  points: FuturesContractSeriesPoint[];
+  source: string;
+  updatedAt: string | null;
+  limitations: string[];
+}
+
 export function finiteScore(value: number | null | undefined): number | null {
   return typeof value === "number" && Number.isFinite(value) ? Math.max(-100, Math.min(100, value)) : null;
 }

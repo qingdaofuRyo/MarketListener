@@ -191,7 +191,7 @@ DEFAULT_DATASETS: tuple[DatasetDefinition, ...] = (
         "akshare/国家统计局/央行/外部数据源", "AS_AVAILABLE", ("series_id", "available_time"),
         ("series_id", "name", "frequency", "unit", "source", "available_time", "quality_status", "value", "definition", "calculation_method"),
         "SYNC_ALL", "缺失数据禁止填 0；记录 source/available_time/quality_status",
-        "M1/M2/DR007/CPI/PPI/PMI/国债收益率/美元指数/VIX 等宏观序列",
+        "M0/M1/M2/DR007/CPI/PPI/PMI/国债收益率/美元指数/VIX 等宏观序列",
     ),
     DatasetDefinition(
         "DERIVED_METRIC", "派生指标（Gold 层）", "GLOBAL", "GENERAL", "AS_COMPUTED",
@@ -229,6 +229,43 @@ DEFAULT_DATASETS: tuple[DatasetDefinition, ...] = (
         "SYNC_ALL",
         "排除中金所；缺失不补零；沉淀资金覆盖率未达阈值时资金热度保持 null；保留热身与质量状态",
         "商品期货品种宽度、沉淀资金及其 10 个有效交易日指数衰减热度；用户组合权重不入库",
+    ),
+    DatasetDefinition(
+        "FUTURES_STRUCTURE_DAILY", "中国商品期货结构日度", "CN", "FUTURE", "DAILY",
+        "本地计算（商品期货固定月份合约 Silver 日线）", "DAILY",
+        ("chart_id", "direction", "formula_version", "trade_date", "member_key"),
+        (
+            "chart_id", "direction", "trade_date", "member_key", "member_name", "value",
+            "input_row_count", "missing_row_count", "data_quality_status", "formula_version",
+            "price_basis", "source", "calculated_at",
+        ),
+        "SYNC_ALL",
+        "有效月份合约、质量 PASS、缺失不补零；价格相关图必须声明唯一 price_basis",
+        "期货品种或席位结构的逐日真实成员值；当前只生产不依赖价格的品种单边持仓量。",
+    ),
+    DatasetDefinition(
+        "FUTURES_STRUCTURE_BASELINE", "中国商品期货结构固定基准", "CN", "FUTURE", "AS_COMPUTED",
+        "本地计算（最新完整交易日固定顺序）", "ON_CHANGE",
+        ("chart_id", "direction", "formula_version"),
+        (
+            "chart_id", "direction", "baseline_version", "baseline_day", "threshold", "stack_order",
+            "primary_members", "other_members", "formula_version", "price_basis", "source", "created_at",
+        ),
+        "SYNC_ONCE_PER_FORMULA",
+        "基准日必须完整；固定顺序与其他集合不得随每日排名自动漂移",
+        "每张期货结构图、指标与方向独立保存的固定堆叠顺序及其他成员集合。",
+    ),
+    DatasetDefinition(
+        "FUTURES_MEMBER_POSITION_DAILY", "期货交易所会员持仓排名明细", "CN", "FUTURE", "DAILY",
+        "交易所公开会员排名（经 akshare 适配）", "DAILY",
+        ("trading_day", "exchange", "contract_code", "side", "rank", "source"),
+        (
+            "trading_day", "exchange", "contract_code", "product_code", "side", "rank", "member_key",
+            "member_name", "position", "position_change", "source", "collected_at",
+        ),
+        "SYNC_ALL",
+        "仅保存交易所实际公布的方向排名；会员未出现在另一方向排名时保持缺失，严禁按 0 推断。",
+        "国内期货具体月份合约的会员多头/空头排名及增减，记录交易所、名次和来源覆盖边界。",
     ),
     DatasetDefinition(
         "FUTURES_OI_LEADERBOARD", "期货品种持仓龙虎榜", "CN", "FUTURE", "DAILY",
