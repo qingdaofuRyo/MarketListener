@@ -361,3 +361,8 @@
 - 新增 `fetch --dataset <ID>`，任务会先完成本地选择再访问 Provider，避免为刷新单一数据集启动全市场采集。本次只执行 `FUTURES_OI_LEADERBOARD`：2026-08-28 写入 9,488 条公开方向排名及 6 条逐交易所覆盖记录。
 - 覆盖结果为 CFFEX `22/880`、CZCE `123/4,856`、SHFE `75/2,951`、INE `9/321`、GFEX `12/480` 均 `PASS`；DCE 为 `FAILED(0/0)`，错误为 `BadZipFile: File is not a zip file`。商品 API 因而返回该日期、`PARTIAL` 和唯一缺失交易所 DCE；单日席位结构派生保留 8,608 条商品原始排名的各方向部分记录，但五个方向均为 `NO_COMPLETE_COVERAGE`，未生成固定基准。
 - 为核验是否存在官方回退源，针对同一交易日向旧的 DCE `memberDealPosiQuotes.html` 只发送一条逐合约查询。服务返回 HTTP `412` 防自动化 HTML（3,261 字节），不是排名表；该入口与 `batchDownload` 超时一样不能成为生产采集回退，未使用第三方镜像。
+
+## 2026-08-30 - R4 行情待分类缓存失效修复
+
+- 本机页面曾显示已从正式 API 排除的加密资产和期货通原始标的；实时 `/api/market/instruments` 已正确返回 16,738 个正式标的，而 5,644 个待确认项只在 `/api/market/unclassified`。根因是 R4-T010 上线前的 IndexedDB 列表响应仍使用相同展示版本。
+- 行情展示版本已提升至 `market-categories-r4-v2`，使所有旧 v1 持久缓存失效。定向 Playwright 在真实 IndexedDB 中注入 v1 未分类响应后，验证页面改为请求 v2 并仅渲染正式分类标的；未运行全套验证。

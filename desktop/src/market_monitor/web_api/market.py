@@ -86,7 +86,10 @@ _SOURCE_MINUTES = {"1m": 1, "5m": 5, "15m": 15, "30m": 30}
 _DAILY_WINDOW_FACTORS = {"1w": 6, "1mo": 24, "1q": 70, "3mo": 70, "6mo": 140, "1y": 270}
 _MARKET_CAP_CACHE: dict[str, dict[str, tuple[float | None, float | None]]] = {}
 _CONTINUOUS_LABELS = {"SECONDARY": "次连", "MAIN": "主连", "WEIGHTED": "加权"}
-_PRESENTATION_SCHEMA_VERSION = "market-categories-r4-v1"
+# The v2 presentation revision follows the removal of unclassified instruments
+# from the public list.  It deliberately invalidates persisted v1 list payloads
+# that were created before that visibility rule existed.
+_PRESENTATION_SCHEMA_VERSION = "market-categories-r4-v2"
 _TDX_SECURITY_NAMES_PATH = Path(__file__).resolve().parents[1] / "config" / "tdx_security_names.json"
 _TDX_COMMODITY_INDEX_NAMES_PATH = Path(__file__).resolve().parents[1] / "config" / "tdx_commodity_index_names.json"
 _TDX_SECURITY_NAMES: dict[str, str] | None = None
