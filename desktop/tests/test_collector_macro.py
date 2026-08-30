@@ -45,6 +45,12 @@ class _MacroApi:
             "环比增长": "-8.5",
         }])
 
+    def macro_china_society_electricity(self) -> _Frame:
+        return _Frame([{
+            "统计时间": "2026.7",
+            "全社会用电量": "613990000",
+        }])
+
     def macro_china_ppi_yearly(self) -> _Frame:
         return _Frame([])
 
@@ -77,7 +83,7 @@ def test_macro_collection_persists_registered_m0_yoy(monkeypatch) -> None:
     result = collector._collect_macro()
 
     assert result.status == "PASS"
-    assert result.rows == 10
+    assert result.rows == 11
     values = {row["instrument_id"]: row["value"] for row in result.persist.gold_metrics}
     assert values == {
         "M0_MONEY_SUPPLY": 11.8,
@@ -89,5 +95,6 @@ def test_macro_collection_persists_registered_m0_yoy(monkeypatch) -> None:
         "CN_FOREX_RESERVES": 32920.0,
         "CN_RETAIL_SALES_YOY": 0.6,
         "CN_RETAIL_SALES_MOM": -8.5,
+        "CN_ELECTRICITY_CONSUMPTION": 61399.0,
         "US_NONFARM_PAYROLLS_SA": 73.0,
     }

@@ -40,6 +40,7 @@ _CN_IDS = (
     "DR007", "CN10Y_YIELD",
 )
 _US_IDS = ("US_CORE_PCE_QOQ_SAAR_FINAL", "US_IMPORTS_SA", "US_NONFARM_PAYROLLS_SA", "FED_FUNDS_RATE")
+_US_MACRO_SERIES_IDS = frozenset(_US_IDS)
 _SOURCE_DATE_MACRO_IDS = frozenset({
     "CN_IMPORT_USD_YOY",
     "CN_EXPORT_USD_YOY",
@@ -60,7 +61,7 @@ _HK_OVERVIEW_LOCK = threading.Lock()
 def _macro_metadata(series_id: str) -> dict[str, str]:
     definition = macro_series_index().get(series_id)
     if definition is not None:
-        country = "US" if series_id == "FED_FUNDS_RATE" else "CN"
+        country = "US" if series_id in _US_MACRO_SERIES_IDS else "CN"
         metadata = {
             "seriesId": series_id,
             "country": country,

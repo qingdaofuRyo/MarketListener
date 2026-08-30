@@ -84,6 +84,11 @@ DEFAULT_MACRO_SERIES: tuple[MacroSeriesDefinition, ...] = (
         "采用来源公布的亿美元数值；日期为来源公布日",
     ),
     MacroSeriesDefinition(
+        "CN_ELECTRICITY_CONSUMPTION", "中国全社会用电量（年内累计）", "MONTHLY", "亿千瓦时",
+        "国家能源局（新浪财经 / AkShare 转发）", "截至当月的全社会用电量年内累计值",
+        "来源原始数值以万千瓦时计，除以 10000 转为亿千瓦时；不得将累计值当作单月值",
+    ),
+    MacroSeriesDefinition(
         "DR007", "银行间 7 天质押式回购利率", "DAILY", "%",
         "中国外汇交易中心/akshare", "存款类金融机构质押式回购加权利率 DR007",
         "按交易日官方发布值，不使用盘中估算",

@@ -96,6 +96,12 @@ def test_macro_catalog_and_series_expose_only_local_gold_observations(tmp_path: 
     assert next(item for item in catalog["items"] if item["seriesId"] == "M0_MONEY_SUPPLY")["available"] is False
     assert next(item for item in catalog["items"] if item["seriesId"] == "M2_MONEY_SUPPLY")["timeBasis"] == "OBSERVATION_PERIOD"
     assert next(item for item in catalog["items"] if item["seriesId"] == "CN_IMPORT_USD_YOY")["timeBasis"] == "SOURCE_DATE"
+    electricity = next(item for item in catalog["items"] if item["seriesId"] == "CN_ELECTRICITY_CONSUMPTION")
+    assert electricity["name"] == "中国全社会用电量（年内累计）"
+    assert electricity["unit"] == "亿千瓦时"
+
+    us_catalog = client.get("/api/data/macro/catalog", params={"country": "US"}).json()
+    assert {item["country"] for item in us_catalog["items"]} == {"US"}
 
     timeline = client.get("/api/data/macro/series", params={"seriesId": "M2_MONEY_SUPPLY"}).json()
     assert timeline["available"] is True

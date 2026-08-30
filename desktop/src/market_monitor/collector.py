@@ -507,7 +507,15 @@ def _macro_metrics(points: Sequence[MacroPoint]) -> list[dict[str, Any]]:
 
 
 def _parse_cn_month(value: Any) -> str:
-    text = str(value).replace("年", "-").replace("月份", "").replace("月", "")
+    text = (
+        str(value)
+        .strip()
+        .replace("年", "-")
+        .replace("月份", "")
+        .replace("月", "")
+        .replace("/", "-")
+        .replace(".", "-")
+    )
     parts = text.split("-")
     if len(parts) >= 2:
         try:
@@ -1239,6 +1247,21 @@ def _collect_macro() -> CollectionTaskResult:
             points.append(normalise_macro_point("CN_RETAIL_SALES_YOY", available_time=month, value=yoy))
         if mom is not None:
             points.append(normalise_macro_point("CN_RETAIL_SALES_MOM", available_time=month, value=mom))
+
+    for row in _fetch_rows(api.macro_china_society_electricity, "cn_society_electricity"):
+        month = _parse_cn_month(row.get("统计时间"))
+        raw_total = _num(row.get("全社会用电量"))
+        if raw_total is not None and month:
+            # The local AkShare adapter relays Sina's table in 10,000 kWh.
+            # NEA's 2026-07 bulletin gives the independent scale check:
+            # 613,990,000 / 10,000 = 61,399 亿千瓦时 (January–July cumulative).
+            points.append(
+                normalise_macro_point(
+                    "CN_ELECTRICITY_CONSUMPTION",
+                    available_time=month,
+                    value=raw_total / 10_000.0,
+                )
+            )
 
     try:
         for row in api.macro_china_cpi_yearly().to_dict(orient="records"):
