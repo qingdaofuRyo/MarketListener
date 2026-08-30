@@ -259,3 +259,61 @@ test("horizontal, vertical, and text drawings keep independent 80-colour default
     await deleteSelectedDrawing(page);
   }
 });
+
+test.describe("touch brush gesture", () => {
+  test.use({ hasTouch: true, isMobile: true, viewport: { width: 390, height: 844 } });
+
+  test("touch drag saves one valid brush path", async ({ page }) => {
+    test.setTimeout(60_000);
+    await mockMarket(page);
+    await page.goto("/market/");
+    await page.getByRole("button", { name: "卡片视图" }).click();
+    await page.locator(".quote-summary").first().click();
+    await expect(page.locator(".workbench-overlay")).toBeVisible();
+    await page.getByRole("button", { name: "笔刷" }).click();
+
+    const canvas = page.locator(".workbench-chart canvas").first();
+    await expect(page.locator(".workbench-chart .el-loading-mask")).toHaveCount(0);
+    await expect(canvas).toBeVisible();
+    const box = await canvas.boundingBox();
+    if (!box) throw new Error("K 线画布不可用");
+    const savedRequest = page.waitForRequest((request) =>
+      request.method() === "PUT"
+        && request.url().includes("/drawings")
+        && request.postDataJSON().items.some((item: { type?: string }) => item.type === "brush"),
+    );
+
+    await canvas.evaluate((node, bounds) => {
+      const canvasElement = node as HTMLCanvasElement;
+      const touchAt = (x: number, y: number): Touch => new Touch({
+        identifier: 7,
+        target: canvasElement,
+        clientX: bounds.left + x,
+        clientY: bounds.top + y,
+        pageX: bounds.left + x,
+        pageY: bounds.top + y,
+        screenX: bounds.left + x,
+        screenY: bounds.top + y,
+      });
+      const dispatch = (type: "touchstart" | "touchmove" | "touchend", x: number, y: number): void => {
+        const touch = touchAt(x, y);
+        const active = type === "touchend" ? [] : [touch];
+        canvasElement.dispatchEvent(new TouchEvent(type, {
+          bubbles: true,
+          cancelable: true,
+          touches: active,
+          targetTouches: active,
+          changedTouches: [touch],
+        }));
+      };
+      dispatch("touchstart", bounds.width * 0.20, bounds.height * 0.38);
+      dispatch("touchmove", bounds.width * 0.42, bounds.height * 0.48);
+      dispatch("touchmove", bounds.width * 0.68, bounds.height * 0.31);
+      dispatch("touchend", bounds.width * 0.76, bounds.height * 0.34);
+    }, { left: box.x, top: box.y, width: box.width, height: box.height });
+
+    const drawing = (await savedRequest).postDataJSON().items.find((item: Drawing) => item.type === "brush") as Drawing;
+    expect(drawing.points.length).toBeGreaterThanOrEqual(2);
+    await expect(page.locator(".drawing-popover")).toBeVisible();
+  });
+});

@@ -202,7 +202,7 @@
 
 - 已实现逻辑坐标采样（最小 2 CSS 像素）、收笔简化与超过 2,048 点时的自适应压缩；绘制过程只在收笔时写入一次，命中容差最小为 6 CSS 像素，笔刷独立复用 `DrawingColorPicker` 与 `market-drawing-preferences-v1.styles.brush`。
 - `KLineChart` 现在在有效笔刷起笔后捕获原生指针，`pointercancel` 对已有有效路径安全收笔、无效路径取消，`Escape`、工具切换和卸载时释放捕获；绘制期间忽略滚轮缩放，避免与笔刷手势竞争。
-- 已执行 `npm run build`，以及 `npx playwright test e2e/terminal.spec.ts --grep "brush drawing saves|coalesces 10k" --reporter=line`（2/2 通过）。前者覆盖中断指针后的收笔保存；后者在同一笔刷手势内同步派发 10,000 次移动，验证最多 2,048 点、仅一次 PUT 保存且派发耗时低于 5 秒。触摸手感和浅/深色人工验收尚未完成，因此维持 `VERIFYING`。
+- 已执行 `npm run build`，以及 `npx playwright test e2e/terminal.spec.ts --grep "brush drawing saves|coalesces 10k" --reporter=line`（2/2 通过）。前者覆盖中断指针后的收笔保存；后者在同一笔刷手势内同步派发 10,000 次移动，验证最多 2,048 点、仅一次 PUT 保存且派发耗时低于 5 秒。另以启用触摸能力的浏览器夹具派发 `touchstart/move/end`，验证触摸拖动生成一条有效笔刷并只在收笔后保存。真实设备手感和浅/深色人工验收尚未完成，因此维持 `VERIFYING`。
 
 ## 四张期货结构图共享契约（R4-T004～R4-T007）
 
