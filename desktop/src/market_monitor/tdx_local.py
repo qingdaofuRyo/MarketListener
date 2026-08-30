@@ -81,11 +81,22 @@ def financial_ds_metadata(filename: str) -> dict[str, str] | None:
         return None
     if prefix in {"12", "16", "17", "18"} and not re.fullmatch(r"[A-Z0-9_]+", code):
         return None
-    return {
+    metadata = {
         **{str(key): str(value) for key, value in base.items()},
         "symbol": code,
         "period": "1d" if match.group("kind").lower() == "day" else "5m",
     }
+    # The user-confirmed TDX financial-terminal suffix contract is specific
+    # to COMEX/NYMEX/CBOT.  The configured base type is a delivery-month
+    # contract; only these two explicit suffixes override it.  Currency and
+    # volume semantics remain deliberately raw/unknown, so this does not
+    # promote a foreign-futures amount into a tradable notional value.
+    if prefix in {"16", "17", "18"}:
+        if code.endswith("00W"):
+            metadata["series_kind"] = "MAIN"
+        elif code.endswith("00Y"):
+            metadata["series_kind"] = "CONTINUOUS"
+    return metadata
 
 
 def decode_minute_day(value: int) -> str:
@@ -684,13 +695,18 @@ def _cn_classification(prefix: str, code: str) -> tuple[str, str, str]:
             return "LOF", "", exchange
         if code.startswith("508"):
             return "REIT", "", exchange
-        if code.startswith(("510", "511", "512", "513", "514", "515", "516", "517", "518", "519", "520", "526", "530", "551", "560", "561", "562", "563", "581", "587", "588", "589")):
+        if code.startswith(("510", "511", "512", "513", "514", "515", "516", "517", "518", "519", "520", "526", "530", "550", "551", "560", "561", "562", "563", "580", "581", "587", "588", "589")):
             return "ETF", "", exchange
     elif prefix == "sz":
         exchange = "SZSE"
         if code.startswith("200"):
             return "B_SHARE", "B_SHARE", exchange
-        if code.startswith(("399", "980")):
+        if code.startswith((
+            "399", "470", "471", "472", "473", "474", "475", "476", "477", "478", "479",
+            "480", "481", "482", "483", "484", "485", "486", "487", "921", "922", "923",
+            "970", "971", "978", "980", "981", "982", "983", "984", "985", "986", "987",
+            "988", "989",
+        )):
             return "INDEX", "EQUITY_INDEX", exchange
         if code.startswith(("121", "123", "124", "127", "128")):
             return "CONVERTIBLE_BOND", "", exchange

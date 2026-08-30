@@ -50,9 +50,9 @@
   },
   "tdxFinancialDsPrefixes": {
     "12": {"market": "GLOBAL", "asset_type": "INDEX", "series_kind": "EQUITY_INDEX", "exchange": "GLOBAL_INDEX", "currency": "INDEX_POINTS", "daily_price_format": "FLOAT32"},
-    "16": {"market": "GLOBAL", "asset_type": "FUTURE", "series_kind": "UNVERIFIED_CONTINUOUS", "exchange": "COMEX", "currency": "UNKNOWN", "daily_price_format": "FLOAT32", "volume_semantics": "RAW", "amount_semantics": "UNKNOWN"},
-    "17": {"market": "GLOBAL", "asset_type": "FUTURE", "series_kind": "UNVERIFIED_CONTINUOUS", "exchange": "NYMEX", "currency": "UNKNOWN", "daily_price_format": "FLOAT32", "volume_semantics": "RAW", "amount_semantics": "UNKNOWN"},
-    "18": {"market": "GLOBAL", "asset_type": "FUTURE", "series_kind": "UNVERIFIED_CONTINUOUS", "exchange": "CBOT", "currency": "UNKNOWN", "daily_price_format": "FLOAT32", "volume_semantics": "RAW", "amount_semantics": "UNKNOWN"},
+    "16": {"market": "GLOBAL", "asset_type": "FUTURE", "series_kind": "CONTRACT", "exchange": "COMEX", "currency": "UNKNOWN", "daily_price_format": "FLOAT32", "volume_semantics": "RAW", "amount_semantics": "UNKNOWN"},
+    "17": {"market": "GLOBAL", "asset_type": "FUTURE", "series_kind": "CONTRACT", "exchange": "NYMEX", "currency": "UNKNOWN", "daily_price_format": "FLOAT32", "volume_semantics": "RAW", "amount_semantics": "UNKNOWN"},
+    "18": {"market": "GLOBAL", "asset_type": "FUTURE", "series_kind": "CONTRACT", "exchange": "CBOT", "currency": "UNKNOWN", "daily_price_format": "FLOAT32", "volume_semantics": "RAW", "amount_semantics": "UNKNOWN"},
     "27": {"market": "HK", "asset_type": "INDEX", "series_kind": "EQUITY_INDEX", "exchange": "HKEX", "currency": "HKD", "daily_price_format": "FLOAT32"},
     "31": {"market": "HK", "asset_type": "STOCK", "series_kind": "", "exchange": "HKEX", "currency": "HKD", "daily_price_format": "FLOAT32"},
     "48": {"market": "HK", "asset_type": "STOCK", "series_kind": "", "exchange": "HKEX", "currency": "HKD", "daily_price_format": "FLOAT32"},
@@ -62,7 +62,7 @@
   },
   "aShare": {
     "etfPrefixes": {
-      "SSE": ["510", "511", "512", "513", "514", "515", "516", "517", "518", "519", "520", "526", "530", "551", "560", "561", "562", "563", "581", "587", "588", "589"],
+      "SSE": ["510", "511", "512", "513", "514", "515", "516", "517", "518", "519", "520", "526", "530", "550", "551", "560", "561", "562", "563", "580", "581", "587", "588", "589"],
       "SZSE": ["158", "159"]
     },
     "convertibleBondPrefixes": {
@@ -95,7 +95,7 @@
     },
     "indexPrefixes": {
       "SSE": ["000", "889", "930", "931", "932", "950", "999"],
-      "SZSE": ["399"],
+      "SZSE": ["399", "470", "471", "472", "473", "474", "475", "476", "477", "478", "479", "480", "481", "482", "483", "484", "485", "486", "487", "921", "922", "923", "970", "971", "978", "980", "981", "982", "983", "984", "985", "986", "987", "988", "989"],
       "BSE": ["899"]
     },
     "indexAllowlist": ["000001", "000300", "000688", "399001", "399006", "899050"],

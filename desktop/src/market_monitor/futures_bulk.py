@@ -31,17 +31,17 @@ _EXCHANGES = {"28": "CZCE", "29": "DCE", "30": "SHFE", "47": "CFFEX", "66": "GFE
 _INE_PRODUCTS = {"SC", "NR", "LU", "BC", "EC"}
 _LOCAL_TDX_MINUTE_START = "2018-01-02"
 _GLOBAL_CONTINUOUS = (
-    ("GC00Y", "COMEX黄金主连", "COMEX"), ("SI00Y", "COMEX白银主连", "COMEX"),
-    ("HG00Y", "COMEX铜主连", "COMEX"), ("PL00Y", "NYMEX铂金主连", "NYMEX"),
-    ("PA00Y", "NYMEX钯金主连", "NYMEX"), ("CL00Y", "WTI原油主连", "NYMEX"),
-    ("HO00Y", "NYMEX燃油主连", "NYMEX"), ("NG00Y", "NYMEX天然气主连", "NYMEX"),
-    ("YM00Y", "道琼斯期货主连", "CBOT"), ("NQ00Y", "纳斯达克100期货主连", "CME"),
-    ("ES00Y", "标普500期货主连", "CME"), ("RT00Y", "罗素2000期货主连", "CME"),
-    ("CN00Y", "富时中国A50期货主连", "SGX"), ("TU00Y", "美国2年期国债期货主连", "CBOT"),
-    ("FV00Y", "美国5年期国债期货主连", "CBOT"), ("TY00Y", "美国10年期国债期货主连", "CBOT"),
-    ("US00Y", "美国30年期国债期货主连", "CBOT"), ("ZS00Y", "CBOT大豆主连", "CBOT"),
-    ("ZC00Y", "CBOT玉米主连", "CBOT"), ("ZM00Y", "CBOT豆粕主连", "CBOT"),
-    ("ZL00Y", "CBOT豆油主连", "CBOT"), ("ZW00Y", "CBOT小麦主连", "CBOT"),
+    ("GC00Y", "COMEX黄金连续", "COMEX"), ("SI00Y", "COMEX白银连续", "COMEX"),
+    ("HG00Y", "COMEX铜连续", "COMEX"), ("PL00Y", "NYMEX铂金连续", "NYMEX"),
+    ("PA00Y", "NYMEX钯金连续", "NYMEX"), ("CL00Y", "WTI原油连续", "NYMEX"),
+    ("HO00Y", "NYMEX燃油连续", "NYMEX"), ("NG00Y", "NYMEX天然气连续", "NYMEX"),
+    ("YM00Y", "道琼斯期货连续", "CBOT"), ("NQ00Y", "纳斯达克100期货连续", "CME"),
+    ("ES00Y", "标普500期货连续", "CME"), ("RT00Y", "罗素2000期货连续", "CME"),
+    ("CN00Y", "富时中国A50期货连续", "SGX"), ("TU00Y", "美国2年期国债期货连续", "CBOT"),
+    ("FV00Y", "美国5年期国债期货连续", "CBOT"), ("TY00Y", "美国10年期国债期货连续", "CBOT"),
+    ("US00Y", "美国30年期国债期货连续", "CBOT"), ("ZS00Y", "CBOT大豆连续", "CBOT"),
+    ("ZC00Y", "CBOT玉米连续", "CBOT"), ("ZM00Y", "CBOT豆粕连续", "CBOT"),
+    ("ZL00Y", "CBOT豆油连续", "CBOT"), ("ZW00Y", "CBOT小麦连续", "CBOT"),
 )
 _GLOBAL_SINA = (("AHD", "LME铝", "LME"), ("OIL", "布伦特原油（现金）", "ICE"))
 _GLOBAL_EQUITY = {"YM00Y", "NQ00Y", "ES00Y", "RT00Y", "CN00Y"}

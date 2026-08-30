@@ -83,6 +83,8 @@ def test_cn_classification_covers_bond_repo_fund_and_reit_codes() -> None:
     assert _cn_classification("sh", "501001")[0] == "LOF"
     assert _cn_classification("sh", "508000")[0] == "REIT"
     assert _cn_classification("sh", "526001")[0] == "ETF"
+    assert _cn_classification("sh", "550001")[0] == "ETF"
+    assert _cn_classification("sh", "580001")[0] == "ETF"
     assert _cn_classification("sh", "589001")[0] == "ETF"
     assert _cn_classification("sh", "880001")[:2] == ("INDEX", "TDX_BOARD_INDEX")
     assert _cn_classification("sh", "881048")[:2] == ("INDEX", "TDX_INDUSTRY_INDEX")
@@ -96,6 +98,9 @@ def test_cn_classification_covers_bond_repo_fund_and_reit_codes() -> None:
     assert _cn_classification("sz", "180101")[0] == "REIT"
     assert _cn_classification("sz", "181001")[0] == "REIT"
     assert _cn_classification("sz", "158001")[0] == "ETF"
+    assert _cn_classification("sz", "470001")[:2] == ("INDEX", "EQUITY_INDEX")
+    assert _cn_classification("sz", "970001")[:2] == ("INDEX", "EQUITY_INDEX")
+    assert _cn_classification("sz", "988001")[:2] == ("INDEX", "EQUITY_INDEX")
     assert _cn_classification("sh", "900901")[:2] == ("B_SHARE", "B_SHARE")
     assert _cn_classification("sz", "200002")[:2] == ("B_SHARE", "B_SHARE")
 
@@ -131,7 +136,9 @@ def test_verified_financial_ds_prefixes_keep_float_prices_and_raw_future_units(t
         "market": "HK", "asset_type": "STOCK", "series_kind": "", "exchange": "HKEX",
         "currency": "HKD", "daily_price_format": "FLOAT32", "symbol": "00700", "period": "1d",
     }
-    assert financial_ds_metadata("16#GC00W.day")["series_kind"] == "UNVERIFIED_CONTINUOUS"  # type: ignore[index]
+    assert financial_ds_metadata("16#GC00W.day")["series_kind"] == "MAIN"  # type: ignore[index]
+    assert financial_ds_metadata("17#CL00Y.day")["series_kind"] == "CONTINUOUS"  # type: ignore[index]
+    assert financial_ds_metadata("18#ZS2609.day")["series_kind"] == "CONTRACT"  # type: ignore[index]
     assert financial_ds_metadata("10#AUDUSD.day") is None
     assert financial_ds_metadata("38#1_GDP.day") is None
     assert financial_ds_metadata("49#00001.day") is None
@@ -163,7 +170,7 @@ def test_verified_financial_ds_prefixes_keep_float_prices_and_raw_future_units(t
     assert global_future["amount"] is None
     assert global_future["volume"] == 12.0
     assert global_future["volumeUnit"] == "TDX_FOREIGN_FUTURE_RAW"
-    assert global_future["seriesKind"] == "UNVERIFIED_CONTINUOUS"
+    assert global_future["seriesKind"] == "MAIN"
     assert hk_index["close"] == 24000.25
     assert hk_gem["close"] == 0.067
     assert csi["close"] == 309.327515
