@@ -223,13 +223,24 @@ async function loadHeatmap(): Promise<void> {
 
 async function loadR4Sections(): Promise<void> {
   try {
-    const payload = await apiGet<{ sections: R4Section[] }>("/api/data/sections", undefined, { ttlMs: 5 * 60_000, persist: true });
+    // Market/macro availability changes when a local collector writes Gold.
+    // Do not render a stale IndexedDB snapshot while a background refresh is
+    // in flight: it would leave a newly imported series marked unavailable.
+    const payload = await apiGet<{ sections: R4Section[] }>(
+      "/api/data/sections",
+      undefined,
+      { ttlMs: 5 * 60_000, persist: true, force: true },
+    );
     r4Sections.value = payload.sections;
   } catch { r4Sections.value = []; }
 }
 async function loadMacroCatalog(): Promise<void> {
   try {
-    const payload = await apiGet<{ items: MacroCatalogItem[] }>("/api/data/macro/catalog", { country: macroCountry.value }, { ttlMs: 5 * 60_000, persist: true });
+    const payload = await apiGet<{ items: MacroCatalogItem[] }>(
+      "/api/data/macro/catalog",
+      { country: macroCountry.value },
+      { ttlMs: 5 * 60_000, persist: true, force: true },
+    );
     macroCatalog.value = payload.items;
     const firstAvailable = payload.items.find(item => item.available);
     if (!selectedMacroId.value || !payload.items.some(item => item.seriesId === selectedMacroId.value)) selectedMacroId.value = firstAvailable?.seriesId || "";
@@ -239,7 +250,13 @@ async function loadMacroCatalog(): Promise<void> {
 async function loadMacroSeries(): Promise<void> {
   if (!selectedMacroId.value) return;
   macroLoading.value = true;
-  try { macroSeries.value = await apiGet<MacroSeriesPayload>("/api/data/macro/series", { seriesId: selectedMacroId.value, view: macroView.value }, { ttlMs: 5 * 60_000, persist: true }); }
+  try {
+    macroSeries.value = await apiGet<MacroSeriesPayload>(
+      "/api/data/macro/series",
+      { seriesId: selectedMacroId.value, view: macroView.value },
+      { ttlMs: 5 * 60_000, persist: true, force: true },
+    );
+  }
   catch { macroSeries.value = undefined; }
   finally { macroLoading.value = false; }
 }
@@ -280,7 +297,7 @@ async function loadEquityOverview(): Promise<void> {
     equityOverview.value = await apiGet<EquityOverviewPayload>(
       `/api/data/equities/${market}/overview`,
       undefined,
-      { ttlMs: 5 * 60_000, persist: true },
+      { ttlMs: 5 * 60_000, persist: true, force: true },
     );
     if (market === "hk") {
       // HK history is intentionally derived on demand.  Reload the compact
@@ -298,7 +315,7 @@ async function loadEquityStatusList(): Promise<void> {
     equityStatusList.value = await apiGet<EquityStatusListPayload>(
       "/api/data/equities/cn/lists",
       { type: equityListType.value, page: 1, pageSize: 50 },
-      { ttlMs: 5 * 60_000, persist: true },
+      { ttlMs: 5 * 60_000, persist: true, force: true },
     );
   } catch { equityStatusList.value = undefined; }
   finally { equityStatusListLoading.value = false; }
