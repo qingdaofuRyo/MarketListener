@@ -120,9 +120,10 @@ test("market card paging and drawing preferences persist with stable rectangle d
 
   await page.getByRole("button", { name: "线条颜色" }).click();
   const linePicker = page.locator(".drawing-color-popover:visible");
-  await expect(linePicker.locator(".preset-grid button")).toHaveCount(24);
-  await linePicker.locator('button[title="#d500f9"]').click();
+  await expect(linePicker.locator(".preset-grid button")).toHaveCount(80);
+  await linePicker.locator('button[title="#9C27B0"]').click();
   await page.keyboard.press("Escape");
+  await expect(page.locator(".drawing-color-popover:visible")).toHaveCount(0);
   await page.getByLabel("选择线宽").click();
   await page.getByRole("button", { name: "3像素线宽" }).click();
   await page.getByLabel("选择线型").click();
@@ -130,20 +131,21 @@ test("market card paging and drawing preferences persist with stable rectangle d
 
   await page.getByRole("button", { name: "箱体填充颜色" }).click();
   const fillPicker = page.locator(".drawing-color-popover:visible");
-  await expect(fillPicker.locator(".preset-grid button")).toHaveCount(24);
-  await fillPicker.locator('button[title="#00e676"]').click();
+  await expect(fillPicker.locator(".preset-grid button")).toHaveCount(80);
+  await fillPicker.locator('button[title="#4CAF50"]').click();
   const opacity = fillPicker.getByRole("slider", { name: "不透明度" });
   await opacity.fill("0.2");
   await expect(opacity).toHaveCSS("opacity", "1");
-  expect(await opacity.evaluate(element => getComputedStyle(element).getPropertyValue("--alpha-thumb-color"))).toContain("rgba(0,230,118,0.200)");
+  expect(await opacity.evaluate(element => getComputedStyle(element).getPropertyValue("--alpha-thumb-color"))).toContain("rgba(76,175,80,0.200)");
   await page.keyboard.press("Escape");
+  await expect(page.locator(".drawing-color-popover:visible")).toHaveCount(0);
 
   await page.getByRole("button", { name: "吸附" }).click();
   await page.getByRole("button", { name: "连续画线" }).click();
   const stored = await page.evaluate(() => JSON.parse(localStorage.getItem("market-drawing-preferences-v1") || "{}"));
   expect(stored).toMatchObject({ magnet: true, crossPeriod: true, keepDrawing: true });
-  expect(stored.styles.rectangle).toMatchObject({ color: "rgba(213,0,249,1.000)", fillColor: "rgba(0,230,118,0.200)", width: 3, lineStyle: "dashed" });
-  await expect.poll(() => state.drawings()[0]?.style?.fillColor).toBe("rgba(0,230,118,0.200)");
+  expect(stored.styles.rectangle).toMatchObject({ color: "rgba(156,39,176,1.000)", fillColor: "rgba(76,175,80,0.200)", width: 3, lineStyle: "dashed" });
+  await expect.poll(() => state.drawings()[0]?.style?.fillColor).toBe("rgba(76,175,80,0.200)");
 
   const canvas = page.locator(".workbench-chart canvas").first();
   const box = await canvas.boundingBox();
@@ -164,7 +166,7 @@ test("market card paging and drawing preferences persist with stable rectangle d
   await page.getByRole("button", { name: "删除", exact: true }).click();
   await deleteRequest;
   const recreated = await drawRectangle(page, 0.58, 0.7);
-  expect(recreated.style).toMatchObject({ color: "rgba(213,0,249,1.000)", fillColor: "rgba(0,230,118,0.200)", width: 3, lineStyle: "dashed" });
+  expect(recreated.style).toMatchObject({ color: "rgba(156,39,176,1.000)", fillColor: "rgba(76,175,80,0.200)", width: 3, lineStyle: "dashed" });
   await page.getByRole("button", { name: "光标" }).click();
   await page.mouse.click(box.x + box.width * 0.9, box.y + box.height * 0.68);
   await expect(page.locator(".drawing-popover")).toHaveCount(0);
@@ -180,6 +182,6 @@ test("market card paging and drawing preferences persist with stable rectangle d
   await expect(page.getByRole("button", { name: "连续画线" })).toHaveClass(/active/);
   const next = await drawRectangle(page, 0.72, 0.88);
   expect(next.crossPeriod).toBe(true);
-  expect(next.style).toMatchObject({ color: "rgba(213,0,249,1.000)", fillColor: "rgba(0,230,118,0.200)", width: 3, lineStyle: "dashed" });
+  expect(next.style).toMatchObject({ color: "rgba(156,39,176,1.000)", fillColor: "rgba(76,175,80,0.200)", width: 3, lineStyle: "dashed" });
   await expect.poll(() => state.drawings().length).toBe(2);
 });

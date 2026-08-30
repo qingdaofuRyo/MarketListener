@@ -78,7 +78,7 @@ function checkerboardColor(index: number): string {
         <span v-else class="plain-swatch" :style="{ backgroundColor: modelValue }" />
       </button>
     </template>
-    <div class="color-picker-body">
+    <div class="color-picker-body" @keydown.esc.stop="open = false">
       <div v-if="presets.length" class="preset-grid" role="group" :aria-label="`${title}预置颜色`">
         <button
           v-for="color in presets"
