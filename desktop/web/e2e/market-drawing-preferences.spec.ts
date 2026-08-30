@@ -99,6 +99,48 @@ async function drawRectangle(page: Page, leftRatio: number, rightRatio: number):
   return (request.postDataJSON() as { items: Drawing[] }).items.at(-1)!;
 }
 
+async function drawSingle(
+  page: Page,
+  tool: "horizontal" | "vertical" | "text",
+  xRatio: number,
+  yRatio: number,
+): Promise<Drawing> {
+  const label = { horizontal: "水平线", vertical: "垂直线", text: "文本框" }[tool];
+  await page.getByRole("button", { name: label }).click();
+  const canvas = page.locator(".workbench-chart canvas").first();
+  await expect(page.locator(".workbench-chart .el-loading-mask")).toHaveCount(0);
+  await expect(canvas).toBeVisible();
+  await page.waitForTimeout(100);
+  const box = await canvas.boundingBox();
+  if (!box) throw new Error("K 线画布不可用");
+  const requestPromise = page.waitForRequest(request => request.method() === "PUT" && request.url().includes("/drawings"));
+  await page.mouse.click(box.x + box.width * xRatio, box.y + box.height * yRatio);
+  if (tool === "text") {
+    const input = page.getByRole("textbox", { name: "图表文字" });
+    await input.fill("R4 文本");
+    await input.press("Enter");
+  }
+  const request = await requestPromise;
+  return (request.postDataJSON() as { items: Drawing[] }).items.at(-1)!;
+}
+
+async function setSelectedColor(page: Page, label: "线条颜色" | "文字颜色", color: string): Promise<void> {
+  await page.getByRole("button", { name: label }).click();
+  const picker = page.locator(".drawing-color-popover:visible");
+  await expect(picker.locator(".preset-grid button")).toHaveCount(80);
+  const request = page.waitForRequest(candidate => candidate.method() === "PUT" && candidate.url().includes("/drawings"));
+  await picker.locator(`button[title="${color}"]`).click();
+  await request;
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".drawing-color-popover:visible")).toHaveCount(0);
+}
+
+async function deleteSelectedDrawing(page: Page): Promise<void> {
+  const request = page.waitForRequest(candidate => candidate.method() === "PUT" && candidate.url().includes("/drawings"));
+  await page.getByRole("button", { name: "删除", exact: true }).click();
+  await request;
+}
+
 test("market card paging and drawing preferences persist with stable rectangle dragging", async ({ page }) => {
   const state = await mockMarket(page);
   await page.goto("/market/");
@@ -184,4 +226,36 @@ test("market card paging and drawing preferences persist with stable rectangle d
   expect(next.crossPeriod).toBe(true);
   expect(next.style).toMatchObject({ color: "rgba(156,39,176,1.000)", fillColor: "rgba(76,175,80,0.200)", width: 3, lineStyle: "dashed" });
   await expect.poll(() => state.drawings().length).toBe(2);
+});
+
+test("horizontal, vertical, and text drawings keep independent 80-colour defaults after reload", async ({ page }) => {
+  test.setTimeout(60_000);
+  await mockMarket(page);
+  await page.goto("/market/");
+  await page.getByRole("button", { name: "卡片视图" }).click();
+  await page.locator(".quote-summary").first().click();
+  await expect(page.locator(".workbench-overlay")).toBeVisible();
+
+  const firstPass: Array<["horizontal" | "vertical" | "text", string, string]> = [
+    ["horizontal", "#FF9800", "rgba(255,152,0,1.000)"],
+    ["vertical", "#2962FF", "rgba(41,98,255,1.000)"],
+    ["text", "#F23645", "rgba(242,54,69,1.000)"],
+  ];
+  for (const [tool, preset, expected] of firstPass) {
+    const created = await drawSingle(page, tool, 0.25, 0.36);
+    await setSelectedColor(page, tool === "text" ? "文字颜色" : "线条颜色", preset);
+    await deleteSelectedDrawing(page);
+    const stored = await page.evaluate(() => JSON.parse(localStorage.getItem("market-drawing-preferences-v1") || "{}"));
+    expect(stored.styles[tool].color).toBe(expected);
+    expect(created.type).toBe(tool);
+  }
+
+  await page.reload();
+  await page.locator(".quote-summary").first().click();
+  await expect(page.locator(".workbench-overlay")).toBeVisible();
+  for (const [tool, _preset, expected] of firstPass) {
+    const recreated = await drawSingle(page, tool, 0.62, 0.45);
+    expect(recreated.style?.color).toBe(expected);
+    await deleteSelectedDrawing(page);
+  }
 });
