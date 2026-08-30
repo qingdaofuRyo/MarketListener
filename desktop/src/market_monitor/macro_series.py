@@ -159,6 +159,16 @@ DEFAULT_MACRO_SERIES: tuple[MacroSeriesDefinition, ...] = (
         "来源值以万人表示时乘以 10 转为千人；日期为来源公布日",
     ),
     MacroSeriesDefinition(
+        "US_IMPORTS_SA", "美国季调后商品和服务进口", "MONTHLY", "百万美元",
+        "美国经济分析局 / 人口普查局", "美国商品和服务进口总额（季调后）",
+        "读取 BEA《U.S. International Trade in Goods and Services》Table 1 的 Imports/Total；保留百万美元原值",
+    ),
+    MacroSeriesDefinition(
+        "US_CORE_PCE_QOQ_SAAR_FINAL", "美国核心 PCE 物价指数年化季率终值", "QUARTERLY", "%",
+        "美国经济分析局", "剔除食品和能源的 PCE 价格指数季度环比年化变动",
+        "以 BEA NIPA 2.3.4 的 DPCCRG 季调指数计算 ((本季/上季)^4-1)×100；仅保留当前 GDP 页面已达到第三次估计的季度，历史值使用 BEA 当前修订口径",
+    ),
+    MacroSeriesDefinition(
         "GOLD_SILVER_RATIO", "金银比", "DAILY", "比值",
         "本地派生（黄金、白银）", "黄金价格 / 白银价格",
         "derived = AU / AG；使用同一交易日同一币种价格",

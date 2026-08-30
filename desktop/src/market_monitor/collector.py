@@ -8,8 +8,11 @@ Gold 指标表，并把任务级进展写入 ``data_root/control_summary.json``�
 from __future__ import annotations
 
 import concurrent.futures
+import csv
+from io import BytesIO, StringIO
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -20,6 +23,8 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Sequence
 from uuid import uuid4
+
+from openpyxl import load_workbook
 
 from .futures_dashboard import (
     MemberPositionRow,
@@ -38,6 +43,20 @@ _TDX_SERVERS: tuple[tuple[str, int], ...] = (
     ("218.75.126.9", 7709),
     ("115.238.56.198", 7709),
 )
+_BEA_TRADE_PAGE_URL = "https://www.bea.gov/data/intl-trade-investment/international-trade-goods-and-services"
+_BEA_TRADE_XLSX_RE = re.compile(r'href=["\'](?P<url>[^"\']*trad\d{4}-time-series\.xlsx)["\']', re.IGNORECASE)
+_BEA_MONTH_RE = re.compile(r"^(?P<year>\d{4})\s+(?P<month>[A-Za-z]{3})")
+_BEA_GDP_PAGE_URL = "https://www.bea.gov/data/gdp/gross-domestic-product"
+_BEA_NIPA_QUARTERLY_URL = "https://apps.bea.gov/national/Release/TXT/NipaDataQ.txt"
+_BEA_GDP_RELEASE_RE = re.compile(
+    r"(?P<stage>Advance|Second Estimate|Third Estimate).*?(?P<quarter>[1-4])(?:st|nd|rd|th) Quarter (?P<year>\d{4})",
+    re.IGNORECASE,
+)
+_BEA_NIPA_CORE_PCE_CODE = "DPCCRG"
+_MONTHS_BY_ABBREVIATION = {
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+    "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+}
 
 
 @dataclass
@@ -523,6 +542,163 @@ def _parse_cn_month(value: Any) -> str:
         except ValueError:
             pass
     return str(value)[:7]
+
+
+def _discover_bea_trade_xlsx_url(page_html: str) -> str:
+    """Find the current BEA time-series workbook without hard-coding a release month."""
+
+    match = _BEA_TRADE_XLSX_RE.search(page_html)
+    if match is None:
+        raise ValueError("BEA trade time-series workbook link was not found")
+    return urllib.parse.urljoin(_BEA_TRADE_PAGE_URL, match.group("url"))
+
+
+def _parse_bea_trade_imports_xlsx(workbook_bytes: bytes) -> list[tuple[str, float]]:
+    """Read BEA Table 1's seasonally adjusted monthly total imports.
+
+    The official workbook distinguishes the total goods-and-services import
+    column from goods-only and services-only columns.  Validate both header
+    rows before consuming numeric values so a spreadsheet layout change cannot
+    silently substitute an adjacent measure.
+    """
+
+    workbook = load_workbook(BytesIO(workbook_bytes), read_only=True, data_only=True)
+    try:
+        if "Table 1" not in workbook.sheetnames:
+            raise ValueError("BEA trade workbook is missing Table 1")
+        sheet = workbook["Table 1"]
+        rows = sheet.iter_rows(values_only=True)
+        header: tuple[Any, ...] | None = None
+        subheader: tuple[Any, ...] | None = None
+        import_total_index: int | None = None
+        result: list[tuple[str, float]] = []
+        for row in rows:
+            cells = tuple(row)
+            if header is None:
+                imports_heading_index = next(
+                    (
+                        index
+                        for index, cell in enumerate(cells)
+                        if isinstance(cell, str) and cell.strip() == "Imports"
+                    ),
+                    None,
+                )
+                if imports_heading_index is None or imports_heading_index == 0:
+                    continue
+                # In the official sheet the merged Imports heading is stored
+                # one cell to the right of its three-column group.  Its left
+                # edge is the Total column used for the requested series.
+                import_total_index = imports_heading_index - 1
+                header = cells
+                continue
+            if header is not None and subheader is None:
+                if import_total_index is not None and len(cells) > import_total_index and cells[import_total_index] == "Total":
+                    subheader = cells
+                continue
+            if subheader is None or not cells or not isinstance(cells[0], str):
+                continue
+            match = _BEA_MONTH_RE.match(cells[0].strip())
+            if match is None:
+                continue
+            month_number = _MONTHS_BY_ABBREVIATION.get(match.group("month").lower())
+            total_imports = _num(cells[import_total_index] if import_total_index is not None and len(cells) > import_total_index else None)
+            if month_number is not None and total_imports is not None:
+                result.append((f"{match.group('year')}-{month_number:02d}", total_imports))
+        if header is None or subheader is None:
+            raise ValueError("BEA trade workbook headers do not identify total imports")
+        if not result:
+            raise ValueError("BEA trade workbook contains no monthly total-import observations")
+        return result
+    finally:
+        workbook.close()
+
+
+def _fetch_bea_us_imports_rows() -> list[tuple[str, float]]:
+    """Fetch official BEA seasonally adjusted goods-and-services imports."""
+
+    request_headers = {"User-Agent": "MarketListener/0.1 (+local research terminal)"}
+    with _direct_network():
+        page_request = urllib.request.Request(_BEA_TRADE_PAGE_URL, headers=request_headers)
+        with urllib.request.urlopen(page_request, timeout=30) as response:  # noqa: S310 - fixed official BEA URL
+            workbook_url = _discover_bea_trade_xlsx_url(response.read().decode("utf-8", errors="replace"))
+        workbook_request = urllib.request.Request(workbook_url, headers=request_headers)
+        with urllib.request.urlopen(workbook_request, timeout=30) as response:  # noqa: S310 - parsed from official BEA page
+            return _parse_bea_trade_imports_xlsx(response.read())
+
+
+def _parse_bea_gdp_final_cutoff(page_html: str) -> tuple[int, int]:
+    """Return the latest quarter with a BEA GDP third (final) estimate."""
+
+    match = _BEA_GDP_RELEASE_RE.search(page_html)
+    if match is None:
+        raise ValueError("BEA GDP release stage and quarter were not found")
+    year = int(match.group("year"))
+    quarter = int(match.group("quarter"))
+    if match.group("stage").lower() == "third estimate":
+        return year, quarter
+    if quarter == 1:
+        return year - 1, 4
+    return year, quarter - 1
+
+
+def _parse_bea_core_pce_final_rows(
+    nipa_text: str,
+    *,
+    final_through: tuple[int, int],
+) -> list[tuple[str, float]]:
+    """Calculate core-PCE annualized QoQ changes through BEA's final cutoff.
+
+    ``DPCCRG`` is the quarterly NIPA 2.3.4 index for PCE excluding food and
+    energy.  The official GDP release explains that quarterly percentage
+    changes are annual rates; derive that rate from the consecutive published
+    seasonal index levels and discard the in-progress quarter until a third
+    estimate exists.
+    """
+
+    levels: list[tuple[int, int, float]] = []
+    for row in csv.reader(StringIO(nipa_text)):
+        if len(row) != 3 or row[0] != _BEA_NIPA_CORE_PCE_CODE:
+            continue
+        period_match = re.fullmatch(r"(?P<year>\d{4})Q(?P<quarter>[1-4])", row[1])
+        if period_match is None:
+            continue
+        try:
+            level = float(row[2].replace(",", ""))
+        except ValueError:
+            continue
+        if level > 0:
+            levels.append((int(period_match.group("year")), int(period_match.group("quarter")), level))
+    levels.sort()
+    if len(levels) < 2:
+        raise ValueError("BEA NIPA data contains too few core-PCE index observations")
+
+    result: list[tuple[str, float]] = []
+    previous_year, previous_quarter, previous_level = levels[0]
+    for year, quarter, level in levels[1:]:
+        expected_previous = (year, quarter - 1) if quarter > 1 else (year - 1, 4)
+        if (previous_year, previous_quarter) == expected_previous and (year, quarter) <= final_through:
+            annualized_change = ((level / previous_level) ** 4 - 1.0) * 100.0
+            result.append((f"{year}-Q{quarter}", annualized_change))
+        previous_year, previous_quarter, previous_level = year, quarter, level
+    if not result:
+        raise ValueError("BEA NIPA data contains no core-PCE observations through the final cutoff")
+    return result
+
+
+def _fetch_bea_core_pce_final_rows() -> list[tuple[str, float]]:
+    """Fetch the BEA core-PCE SAAR series only through the latest final GDP quarter."""
+
+    request_headers = {"User-Agent": "MarketListener/0.1 (+local research terminal)"}
+    with _direct_network():
+        gdp_request = urllib.request.Request(_BEA_GDP_PAGE_URL, headers=request_headers)
+        with urllib.request.urlopen(gdp_request, timeout=30) as response:  # noqa: S310 - fixed official BEA URL
+            final_through = _parse_bea_gdp_final_cutoff(response.read().decode("utf-8", errors="replace"))
+        nipa_request = urllib.request.Request(_BEA_NIPA_QUARTERLY_URL, headers=request_headers)
+        with urllib.request.urlopen(nipa_request, timeout=60) as response:  # noqa: S310 - fixed official BEA URL
+            return _parse_bea_core_pce_final_rows(
+                response.read().decode("utf-8", errors="replace"),
+                final_through=final_through,
+            )
 
 
 def _tdx_bars(
@@ -1341,6 +1517,32 @@ def _collect_macro() -> CollectionTaskResult:
                     value=value * 10.0,
                 )
             )
+
+    try:
+        for month, value in _fetch_bea_us_imports_rows():
+            points.append(
+                normalise_macro_point(
+                    "US_IMPORTS_SA",
+                    available_time=month,
+                    value=value,
+                    source="美国经济分析局 / 人口普查局",
+                )
+            )
+    except Exception as error:  # noqa: BLE001 - remote release availability is non-deterministic
+        errors.append(f"us_imports_sa:{type(error).__name__}")
+
+    try:
+        for quarter, value in _fetch_bea_core_pce_final_rows():
+            points.append(
+                normalise_macro_point(
+                    "US_CORE_PCE_QOQ_SAAR_FINAL",
+                    available_time=quarter,
+                    value=value,
+                    source="美国经济分析局",
+                )
+            )
+    except Exception as error:  # noqa: BLE001 - remote release availability is non-deterministic
+        errors.append(f"us_core_pce_qoq_saar_final:{type(error).__name__}")
 
     cpi = [point for point in points if point.series_id == "CPI"]
     ppi = [point for point in points if point.series_id == "PPI"]

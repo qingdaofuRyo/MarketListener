@@ -99,7 +99,14 @@ test("data workbench is read-only, bounded and shows real dashboards", async ({ 
   expect(cnOverview.status()).toBe(200);
   const hkOverview = await page.request.get("/api/data/equities/hk/overview");
   expect(hkOverview.status()).toBe(200);
-  expect((await hkOverview.json()) as { available: boolean }).toMatchObject({ available: false });
+  const hkPayload = (await hkOverview.json()) as {
+    available: boolean;
+    points: unknown[];
+    limitations: string[];
+  };
+  expect(typeof hkPayload.available).toBe("boolean");
+  if (hkPayload.available) expect(hkPayload.points.length).toBeGreaterThan(0);
+  else expect(hkPayload.limitations.length).toBeGreaterThan(0);
   const statusList = await page.request.get("/api/data/equities/cn/lists?type=st_warning&page=1&pageSize=50");
   expect(statusList.status()).toBe(200);
   expect((await statusList.json()) as { available: boolean; items: unknown[] }).toMatchObject({ available: false, items: [] });
@@ -116,6 +123,10 @@ test("data workbench is read-only, bounded and shows real dashboards", async ({ 
   await r4Sections.getByText("其他数据", { exact: true }).click();
   await expect(r4Sections.getByText("中国", { exact: true })).toBeVisible();
   await expect(r4Sections.getByText("美国", { exact: true })).toBeVisible();
+  await expect(r4Sections.getByText("货币与利率", { exact: true })).toBeVisible();
+  await expect(r4Sections.getByText("物价", { exact: true })).toBeVisible();
+  await expect(r4Sections.getByText("贸易", { exact: true })).toBeVisible();
+  await expect(r4Sections.getByText("消费与生产", { exact: true })).toBeVisible();
   const m2Seasonal = r4Sections.getByText("季节图", { exact: true });
   await expect(m2Seasonal).toBeVisible();
   await m2Seasonal.click();

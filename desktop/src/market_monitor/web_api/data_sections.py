@@ -18,21 +18,8 @@ from market_monitor.macro_series import macro_series_index
 router = APIRouter(prefix="/api/data", tags=["data-sections"])
 _PERIOD_RE = re.compile(r"^\d{4}-(?:0[1-9]|1[0-2])(?:-\d{2})?$")
 
-# This is a display contract, not a claim that every requested public series
-# has been downloaded.  Availability is always derived from local Gold rows.
-_CATALOG_OVERRIDES: dict[str, dict[str, str]] = {
-    "M0_MONEY_SUPPLY": {"country": "CN", "topic": "货币金融", "name": "M0 货币供应量同比", "frequency": "MONTHLY", "unit": "%", "source": "中国人民银行"},
-    "CN_IMPORT_USD_YOY": {"country": "CN", "topic": "外贸", "name": "中国以美元计进口同比", "frequency": "MONTHLY", "unit": "%", "source": "海关总署"},
-    "CN_EXPORT_USD_YOY": {"country": "CN", "topic": "外贸", "name": "中国以美元计出口同比", "frequency": "MONTHLY", "unit": "%", "source": "海关总署"},
-    "CN_TRADE_BALANCE_USD": {"country": "CN", "topic": "外贸", "name": "中国以美元计贸易差额", "frequency": "MONTHLY", "unit": "亿美元", "source": "海关总署"},
-    "CN_RETAIL_SALES_YOY": {"country": "CN", "topic": "实体经济", "name": "中国社会消费品零售总额同比", "frequency": "MONTHLY", "unit": "%", "source": "国家统计局"},
-    "CN_RETAIL_SALES_MOM": {"country": "CN", "topic": "实体经济", "name": "中国社会消费品零售总额环比", "frequency": "MONTHLY", "unit": "%", "source": "国家统计局"},
-    "CN_FOREX_RESERVES": {"country": "CN", "topic": "外汇", "name": "中国外汇储备", "frequency": "MONTHLY", "unit": "亿美元", "source": "国家外汇管理局"},
-    "CN_ELECTRICITY_CONSUMPTION": {"country": "CN", "topic": "实体经济", "name": "中国全社会用电量", "frequency": "MONTHLY", "unit": "亿千瓦时", "source": "国家能源局"},
-    "US_CORE_PCE_QOQ_SAAR_FINAL": {"country": "US", "topic": "通胀", "name": "美国核心 PCE 物价指数年化季率终值", "frequency": "QUARTERLY", "unit": "%", "source": "BEA"},
-    "US_IMPORTS_SA": {"country": "US", "topic": "外贸", "name": "美国季调后商品和服务进口", "frequency": "MONTHLY", "unit": "百万美元", "source": "美国 Census / BEA"},
-    "US_NONFARM_PAYROLLS_SA": {"country": "US", "topic": "就业", "name": "美国季调后非农就业人口变动", "frequency": "MONTHLY", "unit": "千人", "source": "BLS"},
-}
+# Every requested R4 macro series is registered in ``macro_series``.  The
+# display catalogue derives availability only from persisted Gold rows.
 _CN_IDS = (
     "M2_MONEY_SUPPLY", "M1_MONEY_SUPPLY", "M0_MONEY_SUPPLY", "CN_IMPORT_USD_YOY",
     "CN_EXPORT_USD_YOY", "CN_TRADE_BALANCE_USD", "CN_RETAIL_SALES_YOY", "CN_RETAIL_SALES_MOM",
@@ -41,6 +28,27 @@ _CN_IDS = (
 )
 _US_IDS = ("US_CORE_PCE_QOQ_SAAR_FINAL", "US_IMPORTS_SA", "US_NONFARM_PAYROLLS_SA", "FED_FUNDS_RATE")
 _US_MACRO_SERIES_IDS = frozenset(_US_IDS)
+_MACRO_TOPIC_BY_ID = {
+    "M0_MONEY_SUPPLY": "货币与利率",
+    "M1_MONEY_SUPPLY": "货币与利率",
+    "M2_MONEY_SUPPLY": "货币与利率",
+    "DR007": "货币与利率",
+    "CN10Y_YIELD": "货币与利率",
+    "FED_FUNDS_RATE": "货币与利率",
+    "CN_IMPORT_USD_YOY": "贸易",
+    "CN_EXPORT_USD_YOY": "贸易",
+    "CN_TRADE_BALANCE_USD": "贸易",
+    "US_IMPORTS_SA": "贸易",
+    "CN_RETAIL_SALES_YOY": "消费与生产",
+    "CN_RETAIL_SALES_MOM": "消费与生产",
+    "CN_ELECTRICITY_CONSUMPTION": "消费与生产",
+    "PMI_MANUFACTURING": "消费与生产",
+    "PPI": "物价",
+    "CPI": "物价",
+    "US_CORE_PCE_QOQ_SAAR_FINAL": "物价",
+    "CN_FOREX_RESERVES": "外汇",
+    "US_NONFARM_PAYROLLS_SA": "就业",
+}
 _SOURCE_DATE_MACRO_IDS = frozenset({
     "CN_IMPORT_USD_YOY",
     "CN_EXPORT_USD_YOY",
@@ -65,7 +73,7 @@ def _macro_metadata(series_id: str) -> dict[str, str]:
         metadata = {
             "seriesId": series_id,
             "country": country,
-            "topic": "利率" if series_id in {"DR007", "CN10Y_YIELD", "FED_FUNDS_RATE"} else "宏观",
+            "topic": _MACRO_TOPIC_BY_ID.get(series_id, "其他宏观"),
             "name": definition.name,
             "frequency": definition.frequency,
             "unit": definition.unit,
@@ -76,13 +84,7 @@ def _macro_metadata(series_id: str) -> dict[str, str]:
             "SOURCE_DATE" if series_id in _SOURCE_DATE_MACRO_IDS else "OBSERVATION_PERIOD"
         )
         return metadata
-    override = _CATALOG_OVERRIDES[series_id]
-    return {
-        "seriesId": series_id,
-        **override,
-        "timeBasis": "OBSERVATION_PERIOD",
-        "definition": "R4 已登记，等待真实来源探针与本地 Gold 观测。",
-    }
+    raise ValueError(f"unknown registered macro series: {series_id}")
 
 
 def _macro_availability(root: Path) -> dict[str, dict[str, str]]:

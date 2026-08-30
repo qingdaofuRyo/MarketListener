@@ -146,6 +146,23 @@ const equityListTypeOptions: Array<{ value: EquityListType; label: string }> = [
   { value: "regulatory", label: "监管期" },
   { value: "suspension", label: "停牌期" },
 ];
+const macroTopicOrder = ["货币与利率", "物价", "贸易", "消费与生产", "就业", "外汇", "其他宏观"];
+const macroCatalogGroups = computed(() => {
+  const grouped = new Map<string, MacroCatalogItem[]>();
+  for (const item of macroCatalog.value) {
+    const group = grouped.get(item.topic) ?? [];
+    group.push(item);
+    grouped.set(item.topic, group);
+  }
+  return [...grouped.entries()]
+    .sort(([left], [right]) => {
+      const leftIndex = macroTopicOrder.indexOf(left);
+      const rightIndex = macroTopicOrder.indexOf(right);
+      return (leftIndex < 0 ? macroTopicOrder.length : leftIndex) - (rightIndex < 0 ? macroTopicOrder.length : rightIndex)
+        || left.localeCompare(right, "zh-CN");
+    })
+    .map(([topic, items]) => ({ topic, items }));
+});
 
 const categories = computed(() => [...new Set(definitions.value.map((item) => item.category))].sort());
 const availablePanels = computed(() =>
@@ -527,7 +544,10 @@ onBeforeUnmount(() => {
           </template>
           <template v-else>
             <div class="macro-controls"><el-radio-group v-model="macroCountry" size="small" aria-label="宏观国家地区"><el-radio-button value="CN">中国</el-radio-button><el-radio-button value="US">美国</el-radio-button></el-radio-group><el-select v-model="selectedMacroId" placeholder="选择已登记序列" :loading="macroLoading"><el-option v-for="item in macroCatalog" :key="item.seriesId" :label="`${item.name}${item.available ? '' : '（暂无数据）'}`" :value="item.seriesId" :disabled="!item.available" /></el-select><el-radio-group v-if="selectedMacroId === 'M2_MONEY_SUPPLY'" v-model="macroView" size="small" aria-label="M2图表视图"><el-radio-button value="timeline">时间序列</el-radio-button><el-radio-button value="seasonal">季节图</el-radio-button></el-radio-group></div>
-            <div class="macro-catalog"><article v-for="item in macroCatalog" :key="item.seriesId"><strong>{{ item.name }}</strong><span>{{ item.frequency }} · {{ item.unit }} · {{ item.source }}</span><small v-if="item.latestObservationPeriod">{{ item.timeBasis === 'SOURCE_DATE' ? '来源日期' : '观测期' }} {{ item.latestObservationPeriod }} · 本机取得 {{ item.latestFetchedAt }}</small><el-tag :type="item.available ? 'success' : 'info'">{{ item.available ? '可用' : 'UNAVAILABLE' }}</el-tag></article></div>
+            <section v-for="group in macroCatalogGroups" :key="group.topic" class="macro-topic-group">
+              <h3>{{ group.topic }}</h3>
+              <div class="macro-catalog"><article v-for="item in group.items" :key="item.seriesId"><strong>{{ item.name }}</strong><span>{{ item.frequency }} · {{ item.unit }} · {{ item.source }}</span><small v-if="item.latestObservationPeriod">{{ item.timeBasis === 'SOURCE_DATE' ? '来源日期' : '观测期' }} {{ item.latestObservationPeriod }} · 本机取得 {{ item.latestFetchedAt }}</small><el-tag :type="item.available ? 'success' : 'info'">{{ item.available ? '可用' : 'UNAVAILABLE' }}</el-tag></article></div>
+            </section>
             <SeriesChart v-if="macroTimeline.length" :title="macroSeries?.series.name || ''" :series="macroTimeline" :unit="macroSeries?.series.unit" :height="300" /><SeriesChart v-else-if="macroSeasonal.length" :title="`${macroSeries?.series.name || ''}季节图`" :series="macroSeasonal" :unit="macroSeries?.series.unit" :height="300" /><p v-else class="muted">当前地区没有可展示的本地宏观 Gold 序列。</p>
           </template>
         </el-tab-pane>
@@ -639,6 +659,8 @@ onBeforeUnmount(() => {
 .r4-status-list-pagination { margin-top: 12px; justify-content: flex-end; }
 .macro-controls { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 12px; }
 .macro-controls .el-select { min-width: 270px; }
+.macro-topic-group { margin: 14px 0; }
+.macro-topic-group h3 { margin: 0 0 8px; font-size: 14px; }
 .macro-catalog { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 8px; margin-bottom: 12px; }
 .macro-catalog article { display: grid; grid-template-columns: 1fr auto; gap: 5px 10px; padding: 9px 11px; border: 1px solid var(--ml-border); border-radius: 6px; }
 .macro-catalog span, .macro-catalog small { grid-column: 1 / -1; }

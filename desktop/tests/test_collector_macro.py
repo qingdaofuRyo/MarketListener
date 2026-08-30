@@ -79,11 +79,13 @@ class _MacroApi:
 
 def test_macro_collection_persists_registered_m0_yoy(monkeypatch) -> None:
     monkeypatch.setattr(collector, "_ak", lambda: _MacroApi())
+    monkeypatch.setattr(collector, "_fetch_bea_us_imports_rows", lambda: [("2026-07", 395_280.0)])
+    monkeypatch.setattr(collector, "_fetch_bea_core_pce_final_rows", lambda: [("2026-Q1", 4.4)])
 
     result = collector._collect_macro()
 
     assert result.status == "PASS"
-    assert result.rows == 11
+    assert result.rows == 13
     values = {row["instrument_id"]: row["value"] for row in result.persist.gold_metrics}
     assert values == {
         "M0_MONEY_SUPPLY": 11.8,
@@ -97,4 +99,6 @@ def test_macro_collection_persists_registered_m0_yoy(monkeypatch) -> None:
         "CN_RETAIL_SALES_MOM": -8.5,
         "CN_ELECTRICITY_CONSUMPTION": 61399.0,
         "US_NONFARM_PAYROLLS_SA": 73.0,
+        "US_IMPORTS_SA": 395280.0,
+        "US_CORE_PCE_QOQ_SAAR_FINAL": 4.4,
     }

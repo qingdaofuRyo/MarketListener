@@ -13,8 +13,8 @@ from market_monitor.macro_series import (
 
 def test_default_macro_series_have_complete_registration():
     index = macro_series_index()
-    assert len(DEFAULT_MACRO_SERIES) == 28
-    assert len(index) == 28
+    assert len(DEFAULT_MACRO_SERIES) == 30
+    assert len(index) == 30
     required = {
         "M0_MONEY_SUPPLY",
         "CN_IMPORT_USD_YOY",
@@ -35,6 +35,8 @@ def test_default_macro_series_have_complete_registration():
         "PMI_CAIXIN_SERVICES",
         "PMI_SERVICES",
         "US_NONFARM_PAYROLLS_SA",
+        "US_IMPORTS_SA",
+        "US_CORE_PCE_QOQ_SAAR_FINAL",
         "CN10Y_YIELD",
         "USD_INDEX",
         "US10Y_YIELD",

@@ -102,6 +102,8 @@ def test_macro_catalog_and_series_expose_only_local_gold_observations(tmp_path: 
 
     us_catalog = client.get("/api/data/macro/catalog", params={"country": "US"}).json()
     assert {item["country"] for item in us_catalog["items"]} == {"US"}
+    assert next(item for item in us_catalog["items"] if item["seriesId"] == "US_CORE_PCE_QOQ_SAAR_FINAL")["topic"] == "物价"
+    assert next(item for item in us_catalog["items"] if item["seriesId"] == "US_IMPORTS_SA")["topic"] == "贸易"
 
     timeline = client.get("/api/data/macro/series", params={"seriesId": "M2_MONEY_SUPPLY"}).json()
     assert timeline["available"] is True
