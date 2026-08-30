@@ -136,7 +136,7 @@ def run_fetch_session(
         raise ValueError("task_timeout_seconds must be positive")
     started_at = (now or datetime.now(timezone.utc)).isoformat(timespec="seconds")
     if tasks is None:
-        tasks = _build_tasks(limit_futures=limit_futures, limit_cn_stocks=limit_cn_stocks)
+        tasks = build_collection_tasks(limit_futures=limit_futures, limit_cn_stocks=limit_cn_stocks)
     results = _run_tasks(tasks, max_workers=max_workers, task_timeout_seconds=task_timeout_seconds)
     results.sort(key=lambda result: (result.dataset_id, result.started_at))
     _persist_results(data_root, results)
@@ -168,7 +168,14 @@ def run_fetch_session(
     return summary
 
 
-def _build_tasks(*, limit_futures: int, limit_cn_stocks: int) -> list[CollectionTask]:
+def build_collection_tasks(*, limit_futures: int, limit_cn_stocks: int) -> list[CollectionTask]:
+    """Return the supported real-data tasks without starting any provider call.
+
+    The CLI uses this public factory to offer a constrained ``fetch
+    --dataset`` path.  Keeping the selection here prevents a one-dataset
+    refresh from quietly starting the full market collection session.
+    """
+
     return [
         CollectionTask(
             "CN_STOCK_BAR",

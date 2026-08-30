@@ -16,6 +16,7 @@ from market_monitor.providers import (
 
 from market_monitor import __version__
 from market_monitor.cli import main
+from market_monitor.collector import CollectionTask
 from market_monitor.configuration import LocalConfiguration
 
 
@@ -162,3 +163,39 @@ def test_cli_fetch_rejects_non_positive_limits(monkeypatch, capsys) -> None:
     payload = json.loads(capsys.readouterr().out)
     assert payload["status"] == "ARGUMENT_ERROR"
     assert "limit-futures" in payload["message"]
+
+
+def test_cli_fetch_can_select_only_one_dataset_without_starting_the_full_session(monkeypatch, tmp_path, capsys) -> None:
+    requested: dict[str, object] = {}
+    tasks = [
+        CollectionTask("CN_STOCK_BAR", "股票", "fixture", lambda: None),
+        CollectionTask("FUTURES_OI_LEADERBOARD", "席位排名", "fixture", lambda: None),
+    ]
+
+    monkeypatch.setattr("market_monitor.cli.build_collection_tasks", lambda **_: tasks)
+
+    def fake_run(data_root, **kwargs):
+        requested["data_root"] = data_root
+        requested["tasks"] = kwargs["tasks"]
+        return {
+            "session_id": "session-one-task",
+            "status": "PASS",
+            "passed": 1,
+            "failed": 0,
+            "blocked": 0,
+            "total_rows": 99,
+        }
+
+    monkeypatch.setattr("market_monitor.cli.run_fetch_session", fake_run)
+    assert main(["fetch", "--data-root", str(tmp_path), "--dataset", "FUTURES_OI_LEADERBOARD"]) == 0
+
+    assert requested["data_root"] == tmp_path
+    assert [task.dataset_id for task in requested["tasks"]] == ["FUTURES_OI_LEADERBOARD"]
+    assert json.loads(capsys.readouterr().out)["status"] == "PASS"
+
+
+def test_cli_fetch_rejects_an_unknown_dataset(capsys) -> None:
+    assert main(["fetch", "--dataset", "NOT_A_DATASET"]) == 64
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "ARGUMENT_ERROR"
+    assert "NOT_A_DATASET" in payload["message"]

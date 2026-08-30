@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 from market_monitor import __version__
-from market_monitor.collector import run_fetch_session
+from market_monitor.collector import build_collection_tasks, run_fetch_session
 from market_monitor.full_market import run_full_etf_backfill, run_full_stock_backfill
 from market_monitor.futures_bulk import run_bulk_futures
 from market_monitor.futures_heat_pipeline import run_futures_heat_pipeline
@@ -78,6 +78,12 @@ def build_parser() -> argparse.ArgumentParser:
     fetch.add_argument("--limit-cn-stocks", type=int, default=5, help="number of CN stocks to fetch as samples")
     fetch.add_argument("--max-workers", type=int, default=4, help="concurrent fetch workers")
     fetch.add_argument("--task-timeout-seconds", type=float, default=90.0, help="per-task wall-clock timeout")
+    fetch.add_argument(
+        "--dataset",
+        action="append",
+        dest="datasets",
+        help="仅执行指定数据集 ID；可重复，例如 FUTURES_OI_LEADERBOARD",
+    )
     bulk_stocks = subcommands.add_parser("bulk-stocks", help="resumable full A/H-share daily-bar backfill")
     bulk_stocks.add_argument("--data-root", type=Path, default=Path("data_control"))
     bulk_stocks.add_argument("--market", choices=["CN", "HK", "BOTH"], default="BOTH")
@@ -313,8 +319,20 @@ def _fetch(args: argparse.Namespace) -> int:
         raise ValueError("--limit-futures must be positive")
     if args.limit_cn_stocks <= 0:
         raise ValueError("--limit-cn-stocks must be positive")
+    tasks = build_collection_tasks(
+        limit_futures=args.limit_futures,
+        limit_cn_stocks=args.limit_cn_stocks,
+    )
+    if args.datasets:
+        requested = set(args.datasets)
+        available = {task.dataset_id for task in tasks}
+        unknown = sorted(requested - available)
+        if unknown:
+            raise ValueError(f"unknown --dataset: {', '.join(unknown)}")
+        tasks = [task for task in tasks if task.dataset_id in requested]
     summary = run_fetch_session(
         args.data_root,
+        tasks=tasks,
         max_workers=args.max_workers,
         task_timeout_seconds=args.task_timeout_seconds,
         limit_futures=args.limit_futures,
