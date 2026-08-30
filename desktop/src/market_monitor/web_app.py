@@ -27,6 +27,7 @@ from .industry_graph.f10 import CompanyRepository
 from .package_builder import latest_package_info
 from .operations import OperationKind, OperationManager
 from .web_api import dashboard as dashboard_api
+from .web_api import data_sections as data_sections_api
 from .web_api import futures as futures_api
 from .web_api import market as market_api
 from .web_api import sources as sources_api
@@ -77,6 +78,7 @@ def create_web_app(
     app.include_router(strategy_api.router)
     app.include_router(stats_api.router)
     app.include_router(futures_api.router)
+    app.include_router(data_sections_api.router)
     app.include_router(dashboard_api.dashboard_router)
     app.include_router(dashboard_api.metrics_router)
 

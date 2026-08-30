@@ -44,9 +44,44 @@ DEFAULT_MACRO_SERIES: tuple[MacroSeriesDefinition, ...] = (
         "官方公布同比增速，禁止由余额自行推算；缺失禁止填 0",
     ),
     MacroSeriesDefinition(
+        "M0_MONEY_SUPPLY", "M0 货币供应量同比", "MONTHLY", "%",
+        "中国人民银行/akshare", "流通中现金 M0 期末余额同比增速",
+        "官方公布同比增速，禁止由余额自行推算；缺失禁止填 0",
+    ),
+    MacroSeriesDefinition(
         "M2_MONEY_SUPPLY", "M2 货币供应量同比", "MONTHLY", "%",
         "中国人民银行/akshare", "广义货币 M2 期末余额同比增速",
         "官方公布同比增速；口径变动时记录 definition_version",
+    ),
+    MacroSeriesDefinition(
+        "CN_IMPORT_USD_YOY", "中国以美元计进口同比", "MONTHLY", "%",
+        "海关总署/金十数据/akshare", "中国以美元计价进口额同比增速",
+        "采用来源公布值；日期为来源公布日，不能在缺少统计期字段时伪造月末观察期",
+    ),
+    MacroSeriesDefinition(
+        "CN_EXPORT_USD_YOY", "中国以美元计出口同比", "MONTHLY", "%",
+        "海关总署/金十数据/akshare", "中国以美元计价出口额同比增速",
+        "采用来源公布值；日期为来源公布日，不能在缺少统计期字段时伪造月末观察期",
+    ),
+    MacroSeriesDefinition(
+        "CN_TRADE_BALANCE_USD", "中国以美元计贸易差额", "MONTHLY", "亿美元",
+        "海关总署/金十数据/akshare", "中国以美元计价货物贸易差额",
+        "采用来源公布的亿美元数值；日期为来源公布日",
+    ),
+    MacroSeriesDefinition(
+        "CN_RETAIL_SALES_YOY", "社会消费品零售总额同比", "MONTHLY", "%",
+        "国家统计局/东方财富/akshare", "社会消费品零售总额当月同比增速",
+        "采用来源当月同比字段；缺失不以累计同比代替",
+    ),
+    MacroSeriesDefinition(
+        "CN_RETAIL_SALES_MOM", "社会消费品零售总额环比", "MONTHLY", "%",
+        "国家统计局/东方财富/akshare", "社会消费品零售总额当月环比增速",
+        "采用来源当月环比字段；禁止由累计额反推",
+    ),
+    MacroSeriesDefinition(
+        "CN_FOREX_RESERVES", "中国外汇储备", "MONTHLY", "亿美元",
+        "国家外汇管理局/金十数据/akshare", "中国官方外汇储备余额",
+        "采用来源公布的亿美元数值；日期为来源公布日",
     ),
     MacroSeriesDefinition(
         "DR007", "银行间 7 天质押式回购利率", "DAILY", "%",
@@ -112,6 +147,11 @@ DEFAULT_MACRO_SERIES: tuple[MacroSeriesDefinition, ...] = (
         "FED_FUNDS_RATE", "美联储利率（目标区间上限）", "DAILY", "%",
         "美联储/akshare", "联邦基金目标利率区间上限",
         "决议日更新，非决议日沿用上一值并标记 as_of_date",
+    ),
+    MacroSeriesDefinition(
+        "US_NONFARM_PAYROLLS_SA", "美国季调后非农就业人口变动", "MONTHLY", "千人",
+        "BLS/金十数据/akshare", "美国非农就业人口月度变动（季调后）",
+        "来源值以万人表示时乘以 10 转为千人；日期为来源公布日",
     ),
     MacroSeriesDefinition(
         "GOLD_SILVER_RATIO", "金银比", "DAILY", "比值",

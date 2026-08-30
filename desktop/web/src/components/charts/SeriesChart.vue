@@ -5,7 +5,7 @@ import { useThemeStore } from "../../stores/theme";
 
 export interface SeriesPoint {
   t: string;
-  value: number;
+  value: number | null;
 }
 
 export interface NamedSeries {
@@ -50,7 +50,7 @@ const categories = computed(() => {
 });
 
 const hasData = computed(() =>
-  filteredSeries.value.some((item) => item.points.some((point) => Number.isFinite(point.value))),
+  filteredSeries.value.some((item) => item.points.some((point) => typeof point.value === "number" && Number.isFinite(point.value))),
 );
 
 const seriesColors = ["accent", "priceUp", "priceDown", "warning", "info", "highlight"] as const;

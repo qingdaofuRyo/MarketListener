@@ -95,10 +95,35 @@ test("data workbench is read-only, bounded and shows real dashboards", async ({ 
   expect([403, 405]).toContain((await page.request.post("/api/data/f10")).status());
   expect((await page.request.get("/api/data/not_sql")).status()).toBe(404);
   expect((await page.request.get("/api/data/f10?page_size=501")).status()).toBe(422);
+  const cnOverview = await page.request.get("/api/data/equities/cn/overview");
+  expect(cnOverview.status()).toBe(200);
+  const hkOverview = await page.request.get("/api/data/equities/hk/overview");
+  expect(hkOverview.status()).toBe(200);
+  expect((await hkOverview.json()) as { available: boolean }).toMatchObject({ available: false });
+  const statusList = await page.request.get("/api/data/equities/cn/lists?type=st_warning&page=1&pageSize=50");
+  expect(statusList.status()).toBe(200);
+  expect((await statusList.json()) as { available: boolean; items: unknown[] }).toMatchObject({ available: false, items: [] });
 
   await page.goto("/data/");
   await expect(page.locator('h1.page-title')).toContainText("数据");
   await expect(page.locator('[data-test="data-refresh"]')).toBeVisible();
+  const r4Sections = page.locator('[data-test="r4-data-sections"]');
+  await expect(r4Sections).toBeVisible();
+  await expect(r4Sections.getByText("A股", { exact: true })).toBeVisible();
+  await expect(r4Sections.getByText("高振幅且低涨幅家数", { exact: true })).toBeVisible();
+  await expect(page.locator('[data-test="r4-equity-status-list"]')).toContainText("ST 风险警示");
+  await expect(page.locator('[data-test="r4-equity-status-list"]')).toContainText("不会以当前名称、历史最后状态或空表代替事实。");
+  await r4Sections.getByText("其他数据", { exact: true }).click();
+  await expect(r4Sections.getByText("中国", { exact: true })).toBeVisible();
+  await expect(r4Sections.getByText("美国", { exact: true })).toBeVisible();
+  const m2Seasonal = r4Sections.getByText("季节图", { exact: true });
+  await expect(m2Seasonal).toBeVisible();
+  await m2Seasonal.click();
+  await expect(r4Sections.locator(".chart-title").filter({ hasText: "季节图" })).toBeVisible();
+  await expect(page).toHaveURL(/section=other/);
+  await page.goto("/data/?section=hk");
+  await expect(r4Sections.getByText("港股市值", { exact: true })).toBeVisible();
+  await expect(page).toHaveURL(/section=hk/);
   await expect(page.locator(".data-browser")).toBeVisible();
   await expectCleanTerminal(page);
 });
@@ -299,16 +324,153 @@ test("rectangle drawing previews hover, creates on two clicks, and drags endpoin
   expect(movedTimes[1] - createdTimes[1]).toBe(shift);
 
   await page.getByRole("button", { name: "线条颜色" }).click();
-  await expect(page.locator(".drawing-color-popover:visible .preset-grid button")).toHaveCount(24);
+  await expect(page.locator(".drawing-color-popover:visible .preset-grid button")).toHaveCount(80);
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "箱体填充颜色" }).click();
-  await expect(page.locator(".drawing-color-popover:visible .preset-grid button")).toHaveCount(24);
+  await expect(page.locator(".drawing-color-popover:visible .preset-grid button")).toHaveCount(80);
 
   const cleanupResponse = page.waitForResponse((response) =>
     response.request().method() === "PUT" && response.url().includes("/drawings"),
   );
   await page.getByRole("button", { name: "删除全部画线" }).click();
   await cleanupResponse;
+});
+
+test("brush drawing saves a simplified path and exposes the shared toolbar", async ({ page }) => {
+  test.setTimeout(60_000);
+  await page.goto("/market/");
+  await page.getByRole("button", { name: "卡片视图" }).click();
+  const firstQuote = page.locator(".quote-summary").first();
+  if (await firstQuote.count() === 0) return;
+  await firstQuote.click();
+  await expect(page.locator(".workbench-overlay")).toBeVisible({ timeout: 20_000 });
+  const clearResponse = page.waitForResponse((response) => response.request().method() === "PUT" && response.url().includes("/drawings"));
+  await page.getByRole("button", { name: "删除全部画线" }).click();
+  await clearResponse;
+  await page.getByRole("button", { name: "笔刷" }).click();
+  const canvas = page.locator(".workbench-chart canvas").first();
+  const box = await canvas.boundingBox();
+  expect(box).toBeTruthy();
+  if (!box) return;
+  const request = page.waitForRequest((candidate) => candidate.method() === "PUT" && candidate.url().includes("/drawings") && candidate.postDataJSON().items.some((item: { type?: string }) => item.type === "brush"));
+  await page.mouse.move(box.x + box.width * 0.25, box.y + box.height * 0.36);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width * 0.38, box.y + box.height * 0.42, { steps: 12 });
+  await page.mouse.move(box.x + box.width * 0.54, box.y + box.height * 0.30, { steps: 12 });
+  await page.mouse.up();
+  const drawing = (await request).postDataJSON().items.find((item: { type?: string }) => item.type === "brush") as { points: unknown[] };
+  expect(drawing.points.length).toBeGreaterThanOrEqual(2);
+  expect(drawing.points.length).toBeLessThanOrEqual(2048);
+  await expect(page.locator(".drawing-popover")).toBeVisible();
+  await expect(page.getByRole("button", { name: "线条颜色" })).toBeVisible();
+  await expect(page.getByRole("group", { name: "线宽" })).toBeVisible();
+  await expect(page.getByRole("group", { name: "线型" })).toBeVisible();
+  await page.getByRole("button", { name: "线条颜色" }).click();
+  await expect(page.locator(".drawing-color-popover:visible .preset-grid button")).toHaveCount(80);
+  const styleResponse = page.waitForResponse((response) => response.request().method() === "PUT" && response.url().includes("/drawings"));
+  const redPreset = page.locator(".drawing-color-popover:visible .preset-grid button").nth(10);
+  await redPreset.focus();
+  await expect(redPreset).toBeFocused();
+  await redPreset.press("Enter");
+  await styleResponse;
+  await expect(redPreset).toHaveAttribute("aria-pressed", "true");
+  await expect.poll(() => page.evaluate(() => {
+    const value = localStorage.getItem("market-drawing-preferences-v1");
+    return value ? JSON.parse(value).styles?.brush?.color : null;
+  })).toBe("#F23645");
+  const alphaSlider = page.getByRole("slider", { name: "不透明度" });
+  const setAlpha = async (value: string, label: string): Promise<void> => {
+    const alphaResponse = page.waitForResponse((response) => response.request().method() === "PUT" && response.url().includes("/drawings"));
+    await alphaSlider.evaluate((element, nextValue) => {
+      const input = element as HTMLInputElement;
+      input.value = nextValue;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    }, value);
+    await alphaResponse;
+    await expect(page.locator(".drawing-color-popover:visible .alpha-value")).toHaveText(label);
+  };
+  await setAlpha("0", "0%");
+  await setAlpha("0.2", "20%");
+  await setAlpha("1", "100%");
+  await page.getByRole("button", { name: "锁定" }).click();
+  await expect(page.getByRole("button", { name: "解除锁定" })).toBeVisible();
+  const brushPopover = page.locator(".drawing-popover");
+  await brushPopover.getByRole("button", { name: "跨周期" }).click();
+  await expect(brushPopover.getByRole("button", { name: "跨周期" })).toHaveClass(/active/);
+
+  await page.getByRole("button", { name: "笔刷" }).click();
+  const cancelledRequest = page.waitForRequest((candidate) =>
+    candidate.method() === "PUT"
+      && candidate.url().includes("/drawings")
+      && candidate.postDataJSON().items.some((item: { type?: string }) => item.type === "brush"),
+  );
+  await page.mouse.move(box.x + box.width * 0.32, box.y + box.height * 0.33);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width * 0.58, box.y + box.height * 0.40, { steps: 8 });
+  await page.locator(".workbench-chart .chart-root").dispatchEvent("pointercancel", { pointerId: 1, bubbles: true });
+  await page.mouse.up();
+  const cancelledDrawing = (await cancelledRequest).postDataJSON().items.filter((item: { type?: string }) => item.type === "brush").at(-1) as { points: unknown[] };
+  expect(cancelledDrawing.points.length).toBeGreaterThanOrEqual(2);
+});
+
+test("brush coalesces 10k pointer moves into one bounded save", async ({ page }) => {
+  test.setTimeout(60_000);
+  await page.goto("/market/");
+  await page.getByRole("button", { name: "卡片视图" }).click();
+  const firstQuote = page.locator(".quote-summary").first();
+  if (await firstQuote.count() === 0) return;
+  await firstQuote.click();
+  await expect(page.locator(".workbench-overlay")).toBeVisible({ timeout: 20_000 });
+  const clearResponse = page.waitForResponse((response) => response.request().method() === "PUT" && response.url().includes("/drawings"));
+  await page.getByRole("button", { name: "删除全部画线" }).click();
+  await clearResponse;
+  await page.getByRole("button", { name: "笔刷" }).click();
+  const canvas = page.locator(".workbench-chart canvas").first();
+  const box = await canvas.boundingBox();
+  expect(box).toBeTruthy();
+  if (!box) return;
+
+  let brushSaveCount = 0;
+  const countBrushSaves = (request: import("@playwright/test").Request): void => {
+    if (request.method() === "PUT" && request.url().includes("/drawings")) brushSaveCount += 1;
+  };
+  page.on("request", countBrushSaves);
+  const savedRequest = page.waitForRequest((request) =>
+    request.method() === "PUT"
+      && request.url().includes("/drawings")
+      && request.postDataJSON().items.some((item: { type?: string }) => item.type === "brush"),
+  );
+  const elapsedMs = await canvas.evaluate((node, bounds) => {
+    const canvasElement = node as HTMLCanvasElement;
+    const start = performance.now();
+    const dispatch = (type: "mousedown" | "mousemove" | "mouseup", x: number, y: number): void => {
+      canvasElement.dispatchEvent(new MouseEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        button: 0,
+        buttons: type === "mouseup" ? 0 : 1,
+        clientX: bounds.left + x,
+        clientY: bounds.top + y,
+      }));
+    };
+    dispatch("mousedown", bounds.width * 0.24, bounds.height * 0.34);
+    for (let index = 0; index < 10_000; index += 1) {
+      const progress = index / 9_999;
+      dispatch(
+        "mousemove",
+        bounds.width * (0.24 + progress * 0.52),
+        bounds.height * (0.36 + Math.sin(progress * Math.PI * 16) * 0.12),
+      );
+    }
+    dispatch("mouseup", bounds.width * 0.76, bounds.height * 0.36);
+    return performance.now() - start;
+  }, box);
+  const drawing = (await savedRequest).postDataJSON().items.find((item: { type?: string }) => item.type === "brush") as { points: unknown[] };
+  page.off("request", countBrushSaves);
+  expect(drawing.points.length).toBeGreaterThanOrEqual(2);
+  expect(drawing.points.length).toBeLessThanOrEqual(2048);
+  expect(brushSaveCount).toBe(1);
+  expect(elapsedMs).toBeLessThan(5_000);
 });
 
 test("strategy page separates chart indicators from Python strategy functions", async ({ page }) => {

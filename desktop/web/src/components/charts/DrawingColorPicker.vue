@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
+import { DRAWING_COLOR_PRESETS } from "./drawingPalette";
 
-const props = withDefaults(defineProps<{ modelValue?: string; checkerboard?: boolean; title?: string; presets?: string[] }>(), {
+const props = withDefaults(defineProps<{ modelValue?: string; checkerboard?: boolean; title?: string; presets?: readonly string[] }>(), {
   modelValue: "#2962ff",
   checkerboard: false,
   title: "",
-  presets: () => [],
+  presets: () => [...DRAWING_COLOR_PRESETS],
 });
 const emit = defineEmits<{ "update:modelValue": [value: string] }>();
 const open = ref(false);
@@ -65,7 +66,7 @@ function checkerboardColor(index: number): string {
   <el-popover
     v-model:visible="open"
     trigger="click"
-    :width="214"
+    :width="306"
     placement="bottom"
     :show-arrow="false"
     :popper-style="{ zIndex: 3200 }"
@@ -85,14 +86,15 @@ function checkerboardColor(index: number): string {
           type="button"
           :class="{ active: hexValue.toLowerCase() === color.toLowerCase() }"
           :style="{ backgroundColor: color }"
+          :aria-pressed="hexValue.toLowerCase() === color.toLowerCase()"
           :aria-label="`${title}颜色 ${color}`"
           :title="color"
           @click="emitColor(color, alphaValue)"
         />
       </div>
-      <input class="hue-input" type="color" :value="hexValue" aria-label="选择颜色" @input="emitColor(($event.target as HTMLInputElement).value, alphaValue)" />
+      <label class="custom-color" aria-label="自定义颜色"><span class="custom-swatch" :style="{ backgroundColor: modelValue }" /> <span aria-hidden="true">+</span><input class="hue-input" type="color" :value="hexValue" aria-label="自定义颜色选择器" @input="emitColor(($event.target as HTMLInputElement).value, alphaValue)" /></label>
       <div class="alpha-row">
-        <span class="alpha-track" :style="{ backgroundImage: alphaGradient }">
+        <span class="alpha-track" :style="{ '--alpha-gradient': alphaGradient }">
           <input type="range" min="0" max="1" step="0.01" :value="alphaValue" :style="{ '--alpha-thumb-color': modelValue }" aria-label="不透明度" @input="emitColor(hexValue, Number(($event.target as HTMLInputElement).value))" />
         </span>
         <span class="alpha-value">{{ Math.round(alphaValue * 100) }}%</span>
@@ -141,13 +143,13 @@ function checkerboardColor(index: number): string {
 }
 .preset-grid {
   display: grid;
-  grid-template-columns: repeat(8, 20px);
+  grid-template-columns: repeat(10, 24px);
   gap: 3px;
   justify-content: center;
 }
 .preset-grid button {
-  width: 20px;
-  height: 20px;
+  width: 24px;
+  height: 24px;
   padding: 0;
   border: 1px solid color-mix(in srgb, var(--ml-text-primary) 24%, transparent);
   border-radius: 3px;
@@ -156,14 +158,17 @@ function checkerboardColor(index: number): string {
 .preset-grid button.active {
   box-shadow: 0 0 0 2px var(--ml-accent), inset 0 0 0 1px #fff;
 }
+.preset-grid button:focus-visible,
+.color-trigger:focus-visible,
+.hue-input:focus-visible,
+.alpha-track input:focus-visible {
+  outline: 2px solid var(--ml-accent);
+  outline-offset: 2px;
+}
+.custom-color { display:flex; align-items:center; gap:6px; color:var(--ml-text-secondary); font-size:12px; }
+.custom-swatch { width:22px; height:22px; border:1px solid var(--ml-divider); border-radius:3px; }
 .hue-input {
-  width: 100%;
-  height: 28px;
-  padding: 2px;
-  border: 1px solid var(--ml-divider);
-  border-radius: 4px;
-  background: transparent;
-  cursor: pointer;
+  width: 100%; height: 28px; padding: 2px; border: 1px solid var(--ml-divider); border-radius: 4px; background: transparent; cursor: pointer;
 }
 .alpha-row {
   display: grid;
@@ -177,6 +182,9 @@ function checkerboardColor(index: number): string {
   height: 12px;
   border: 1px solid var(--ml-divider);
   border-radius: 6px;
+  background-color: #ffffff;
+  background-image: var(--alpha-gradient), repeating-conic-gradient(#ffffff 0 25%, #d8d8d8 0 50%);
+  background-size: 100% 100%, 8px 8px;
 }
 .alpha-track input {
   position: absolute;

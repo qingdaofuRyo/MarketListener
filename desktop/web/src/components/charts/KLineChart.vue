@@ -8,7 +8,7 @@ export interface KLineBar {
   volume?: number; amount?: number; turnoverRate?: number; openInterest?: number; settlement?: number;
   change?: number; pctChange?: number; amplitude?: number; capitalDeposit?: number; capitalDepositReason?: string;
 }
-export type DrawingTool = "cursor" | "horizontal" | "vertical" | "rectangle" | "text";
+export type DrawingTool = "cursor" | "horizontal" | "vertical" | "rectangle" | "text" | "brush";
 export type DrawingLineStyle = "solid" | "dashed" | "dotted" | "dashdot";
 export interface ChartDrawingStyle {
   color?: string; width?: number; lineStyle?: DrawingLineStyle; fillColor?: string; fillOpacity?: number;
@@ -33,19 +33,24 @@ interface RectangleDrag {
   originPoints: ChartDrawingPoint[];
   points: ChartDrawingPoint[];
 }
+interface BrushDraft { points: ChartDrawingPoint[]; lastX: number; lastY: number; anchor: DrawingAnchor }
+interface PointerCaptureTarget extends EventTarget {
+  setPointerCapture?: (pointerId: number) => void;
+  releasePointerCapture?: (pointerId: number) => void;
+}
 
 const props = withDefaults(defineProps<{
   bars: KLineBar[]; height?: number; indicators?: Record<string, Array<number | null | undefined>>;
   inverse?: boolean; swapColors?: boolean; drawings?: ChartDrawing[]; drawingTool?: DrawingTool;
   magnet?: boolean; defaultVisible?: number; compact?: boolean; selectedDrawingId?: string;
   showQuotePanel?: boolean; totalMarketCap?: number; floatMarketCap?: number; loadingEarlier?: boolean; period?: string; drawingsReadOnly?: boolean;
-  futureUnits?: boolean;
+  futureUnits?: boolean; brushStyle?: ChartDrawingStyle;
 }>(), {
   bars: () => [], height: 460, indicators: () => ({}), inverse: false, swapColors: false,
   drawings: () => [], drawingTool: "cursor", magnet: false, defaultVisible: 60, compact: false,
   selectedDrawingId: "", showQuotePanel: false, totalMarketCap: undefined, floatMarketCap: undefined,
   loadingEarlier: false, period: "1d", drawingsReadOnly: false,
-  futureUnits: false,
+  futureUnits: false, brushStyle: () => ({}),
 });
 const emit = defineEmits<{
   hover: [bar: KLineBar | null]; draw: [drawing: Omit<ChartDrawing, "id">, anchor?: DrawingAnchor];
@@ -64,6 +69,9 @@ const textInput = ref<HTMLInputElement>();
 let panStartX: number | undefined;
 let panOrigin: { start: number; end: number } | undefined;
 let rectangleDrag: RectangleDrag | undefined;
+let brushDraft: BrushDraft | undefined;
+let brushPointerId: number | undefined;
+let brushPointerTarget: PointerCaptureTarget | undefined;
 let rectangleRenderFrame: number | undefined;
 let textMeasureCanvas: HTMLCanvasElement | undefined;
 let requestedEarlierInGesture = false;
@@ -216,6 +224,25 @@ function dragOptions(item: ChartDrawing): object {
       emit("updateDrawing", shiftedDrawing(item, Number(dx), Number(dy)));
     },
   };
+}
+function simplifyBrush(points: ChartDrawingPoint[], tolerance = 1.5): ChartDrawingPoint[] {
+  if (points.length < 3) return points;
+  const pixels = points.map(drawingPoint);
+  const keep = new Set([0, points.length - 1]);
+  const simplify = (start: number, end: number): void => {
+    const first = pixels[start]; const last = pixels[end];
+    if (!first || !last || end - start < 2) return;
+    const dx = last[0] - first[0]; const dy = last[1] - first[1]; const length = Math.hypot(dx, dy) || 1;
+    let candidate = -1; let maximum = 0;
+    for (let index = start + 1; index < end; index += 1) {
+      const point = pixels[index]; if (!point) continue;
+      const distance = Math.abs(dy * point[0] - dx * point[1] + last[0] * first[1] - last[1] * first[0]) / length;
+      if (distance > maximum) { maximum = distance; candidate = index; }
+    }
+    if (candidate >= 0 && maximum > tolerance) { keep.add(candidate); simplify(start, candidate); simplify(candidate, end); }
+  };
+  simplify(0, points.length - 1);
+  return [...keep].sort((left, right) => left - right).map((index) => points[index]);
 }
 function shiftedRectanglePoints(points: ChartDrawingPoint[], dx: number): ChartDrawingPoint[] {
   if (!chart || points.length < 2) return points;
@@ -399,6 +426,13 @@ function drawingGraphics(): object[] {
         ondblclick: props.drawingsReadOnly ? undefined : () => beginTextEdit(item, first),
       }];
     }
+    if (item.type === "brush") {
+      const points = activeItem.points.map(drawingPoint).filter((point): point is number[] => point != null);
+      return points.length < 2 ? [] : [
+        { type: "polyline", ...common, shape: { points }, style: common.style },
+        ...(props.drawingsReadOnly ? [] : [{ id: `draw_${item.id}_hit`, type: "polyline", z: 119, shape: { points }, style: { stroke: "rgba(0,0,0,0)", lineWidth: Math.max(6, width + 4) }, onclick: selectAnchor, ...dragOptions(item) }]),
+      ];
+    }
     const layout = rectangleLayout(activeItem.points);
     if (!layout) return [];
     return [
@@ -441,6 +475,14 @@ function drawingGraphics(): object[] {
         }
       }
     }
+  }
+  if (props.drawingTool === "brush" && brushDraft?.points.length) {
+    const points = brushDraft.points.map(drawingPoint).filter((point): point is number[] => point != null);
+    const style = props.brushStyle ?? {};
+    if (points.length > 1) graphics.push({
+      id: "brush_preview", type: "polyline", silent: true, z: 150, shape: { points },
+      style: { stroke: style.color || DEFAULT_DRAWING_COLOR, lineWidth: style.width ?? 1.5, lineDash: lineDash(style.lineStyle), fill: "none" },
+    });
   }
   return graphics;
 }
@@ -575,10 +617,42 @@ function commitText(): void {
   } else emit("draw", { type: "text", points: [draft.point], text: value }, { left: draft.left, top: draft.top });
 }
 function cancelText(): void { textDraft.value = undefined; }
+function captureBrushPointer(payload: unknown): void {
+  const raw = payload as { event?: unknown };
+  const nested = raw.event as { event?: unknown; pointerId?: unknown; currentTarget?: unknown; target?: unknown } | undefined;
+  const native = (nested?.event ?? nested) as { pointerId?: unknown; currentTarget?: unknown; target?: unknown } | undefined;
+  const pointerId = Number(native?.pointerId);
+  const target = (native?.currentTarget ?? native?.target) as PointerCaptureTarget | undefined;
+  if (!Number.isInteger(pointerId) || !target?.setPointerCapture) return;
+  try {
+    target.setPointerCapture(pointerId);
+    brushPointerId = pointerId;
+    brushPointerTarget = target;
+  } catch {
+    // Mouse-only renderer events have no capturable PointerEvent.  ZRender's
+    // normal global-out path remains the safe fallback in that case.
+  }
+}
+function releaseBrushPointer(): void {
+  if (brushPointerId != null && brushPointerTarget?.releasePointerCapture) {
+    try { brushPointerTarget.releasePointerCapture(brushPointerId); } catch { /* capture may already be lost */ }
+  }
+  brushPointerId = undefined;
+  brushPointerTarget = undefined;
+}
 function pointerDown(event: unknown): void {
   const payload = event as { offsetX?: number; offsetY?: number; target?: { id?: string }; event?: { button?: number; preventDefault?: () => void } };
   if ((payload.event?.button ?? 0) !== 0 || typeof payload.offsetX !== "number") return;
   const item = drawingFromGraphicId(payload.target?.id);
+  if (props.drawingTool === "brush") {
+    const point = coordinateFromEvent({ event: { offsetX: payload.offsetX, offsetY: payload.offsetY } });
+    if (point && typeof payload.offsetY === "number") {
+      brushDraft = { points: [point], lastX: payload.offsetX, lastY: payload.offsetY, anchor: { left: payload.offsetX, top: payload.offsetY } };
+      captureBrushPointer(payload);
+      payload.event?.preventDefault?.();
+    }
+    return;
+  }
   if (props.drawingTool === "cursor" && item?.type === "rectangle" && !props.drawingsReadOnly && !item.style?.locked) {
     const graphicId = payload.target?.id;
     const mode: RectangleDrag["mode"] = graphicId === `draw_${item.id}_start` ? "resize-start" : graphicId === `draw_${item.id}_end` ? "resize-end" : "move";
@@ -594,6 +668,17 @@ function pointerDown(event: unknown): void {
 function pointerMove(event: unknown): void {
   const payload = event as { offsetX?: number; offsetY?: number; event?: { preventDefault?: () => void } };
   const x = payload.offsetX;
+  if (brushDraft && props.drawingTool === "brush" && typeof x === "number" && typeof payload.offsetY === "number") {
+    const distance = Math.hypot(x - brushDraft.lastX, payload.offsetY - brushDraft.lastY);
+    const point = distance >= 2 ? coordinateFromEvent({ event: { offsetX: x, offsetY: payload.offsetY } }) : null;
+    if (point) {
+      brushDraft.points.push(point); brushDraft.lastX = x; brushDraft.lastY = payload.offsetY;
+      if (brushDraft.points.length > 2048) brushDraft.points = brushDraft.points.filter((_item, index) => index % 2 === 0 || index === brushDraft!.points.length - 1);
+      scheduleGraphicsRender();
+    }
+    payload.event?.preventDefault?.();
+    return;
+  }
   if (rectangleDrag && props.drawingTool === "cursor" && typeof x === "number" && chart) {
     rectangleDrag.points = rectangleDrag.mode === "move"
       ? shiftedRectanglePoints(rectangleDrag.originPoints, x - rectangleDrag.startX)
@@ -642,6 +727,13 @@ function pointerMove(event: unknown): void {
   payload.event?.preventDefault?.();
 }
 function pointerUp(): void {
+  if (brushDraft) {
+    const draft = brushDraft; brushDraft = undefined;
+    releaseBrushPointer();
+    const points = simplifyBrush(draft.points);
+    if (points.length >= 2) emit("draw", { type: "brush", points }, draft.anchor);
+    scheduleGraphicsRender();
+  }
   if (rectangleDrag) {
     const item = props.drawings.find((drawing) => drawing.id === rectangleDrag?.drawingId);
     const points = rectangleDrag.points;
@@ -656,6 +748,16 @@ function pointerOut(): void {
     rectangleCursor.value = undefined;
     scheduleGraphicsRender();
   }
+  pointerUp();
+}
+function cancelBrushOnEscape(event: KeyboardEvent): void {
+  if (event.key !== "Escape" || !brushDraft) return;
+  brushDraft = undefined;
+  releaseBrushPointer();
+  scheduleGraphicsRender();
+}
+function pointerCancel(event: PointerEvent): void {
+  if (!brushDraft || (brushPointerId != null && event.pointerId !== brushPointerId)) return;
   pointerUp();
 }
 let lastDrawingClickSource: unknown;
@@ -678,7 +780,7 @@ function seriesCanvasClick(params: unknown): void {
   });
 }
 function wheelZoom(event: unknown): void {
-  if (!chart || props.bars.length < 2) return;
+  if (!chart || props.bars.length < 2 || brushDraft) return;
   const payload = event as { offsetX?: number; offsetY?: number; wheelDelta?: number; event?: { wheelDelta?: number; deltaY?: number; preventDefault?: () => void; stopPropagation?: () => void } };
   const cursor = [Number(payload.offsetX ?? 0), Number(payload.offsetY ?? 0)];
   if (!chart.containPixel({ gridIndex: 0 }, cursor) && !chart.containPixel({ gridIndex: 1 }, cursor)) return;
@@ -711,6 +813,8 @@ watch(() => props.drawingTool, () => {
   rectangleAnchor.value = undefined;
   rectangleCursor.value = undefined;
   rectangleDrag = undefined;
+  brushDraft = undefined;
+  releaseBrushPointer();
   textDraft.value = undefined;
 });
 watch(() => props.inverse, () => void nextTick(() => { render(); installHandlers(); }));
@@ -728,10 +832,15 @@ watch(() => [props.bars, props.indicators, props.inverse, props.swapColors, prop
 onMounted(() => {
   void nextTick(() => { render(); installHandlers(); });
   window.addEventListener("resize", resize);
+  window.addEventListener("keydown", cancelBrushOnEscape);
+  element.value?.addEventListener("pointercancel", pointerCancel);
   if (element.value && typeof ResizeObserver !== "undefined") { resizeObserver = new ResizeObserver(resize); resizeObserver.observe(element.value); }
 });
 onBeforeUnmount(() => {
   window.removeEventListener("resize", resize);
+  window.removeEventListener("keydown", cancelBrushOnEscape);
+  element.value?.removeEventListener("pointercancel", pointerCancel);
+  releaseBrushPointer();
   resizeObserver?.disconnect();
   if (rangeRenderTimer) clearTimeout(rangeRenderTimer);
   if (rectangleRenderFrame != null) cancelAnimationFrame(rectangleRenderFrame);

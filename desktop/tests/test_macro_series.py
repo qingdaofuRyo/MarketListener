@@ -13,9 +13,16 @@ from market_monitor.macro_series import (
 
 def test_default_macro_series_have_complete_registration():
     index = macro_series_index()
-    assert len(DEFAULT_MACRO_SERIES) == 19
-    assert len(index) == 19
+    assert len(DEFAULT_MACRO_SERIES) == 27
+    assert len(index) == 27
     required = {
+        "M0_MONEY_SUPPLY",
+        "CN_IMPORT_USD_YOY",
+        "CN_EXPORT_USD_YOY",
+        "CN_TRADE_BALANCE_USD",
+        "CN_RETAIL_SALES_YOY",
+        "CN_RETAIL_SALES_MOM",
+        "CN_FOREX_RESERVES",
         "M1_MONEY_SUPPLY",
         "M2_MONEY_SUPPLY",
         "DR007",
@@ -26,6 +33,7 @@ def test_default_macro_series_have_complete_registration():
         "PMI_CAIXIN_MANUFACTURING",
         "PMI_CAIXIN_SERVICES",
         "PMI_SERVICES",
+        "US_NONFARM_PAYROLLS_SA",
         "CN10Y_YIELD",
         "USD_INDEX",
         "US10Y_YIELD",
