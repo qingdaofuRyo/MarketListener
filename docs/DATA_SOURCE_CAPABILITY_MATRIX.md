@@ -1,6 +1,6 @@
 # 数据源能力矩阵
 
-审计日期：2026-08-29。这里的“已实现”仅指仓库存在 adapter/collector 代码；“当前存量”仅指 `data_control/silver` 已落库数据。两者都不等同于持续可用、实时更新或无缺口的全市场覆盖。2026-08-24 TickDB/通达信专项盘点是历史问题发现证据，当前通达信口径以 `tdx-cn-v2` 审计和迁移报告为准。
+审计日期：2026-08-30。这里的“已实现”仅指仓库存在 adapter/collector 代码；“当前存量”仅指 `data_control/silver` 已落库数据。两者都不等同于持续可用、实时更新或无缺口的全市场覆盖。2026-08-24 TickDB/通达信专项盘点是历史问题发现证据，当前通达信口径以 `tdx-cn-v2` 审计和迁移报告为准。
 
 ## 统一口径
 
@@ -11,7 +11,7 @@
 
 ## 当前本地存量（真实 Silver）
 
-2026-08-13 本机实测 `/api/market/overview` 返回 9,937 个标的、3,090,089 行，基础周期为 `1d` 和 `30m`。其中 CN 7,118、HK 2,807、GLOBAL 12；资产类型为 STOCK 8,343、ETF 1,559、INDEX 14、FUTURE 19、CRYPTO 2。计数会随增量采集变化，具体类别、字段完整度、来源和最后更新时间由 `/api/data-sources` 在运行时读取 parquet 后给出。
+2026-08-13 的历史快照曾为 9,937 个标的、3,090,089 行。2026-08-30 金融终端增量导入后，K 线查询缓存索引为 432,730,853 行；其总量包含既有多来源物理分区，不能直接等同于逻辑标的数或已去重行情行。库存默认不再截断为按代码排序的前 20,000 个标的，具体类别、字段完整度、来源和最后更新时间由 `/api/data-sources` 在运行时读取本地 Silver 后给出。
 
 | 数据类别 | 当前来源 | 实现/存量 | 当前周期 | 覆盖事实与限制 |
 | --- | --- | --- | --- | --- |
@@ -34,14 +34,14 @@ Each local inventory category also exposes `sourceDetails`: its stored source id
 | Provider | 获取方式与实际入口 | 已实现能力 | 认证/授权 | 当前验证状态与限制 |
 | --- | --- | --- | --- | --- |
 | pytdx（通达信） | TDX TCP/7709，`TdxHq_API.get_security_bars`，服务地址可由 `TDX_SERVERS` 配置 | CN 股票/ETF/指数清单、报价、1m/5m/15m/30m/1h/1d/1w/1mo | 无账户；公网服务稳定性非保证 | 2026-08-12 实测：证券清单、报价、600519 `1d/30m`、510300 `1d` PASS；000001 指数 `1d` 因上游非法日期失败。证据：`artifacts/r1-provider-probe-20260812-pytdx-fixed/`。 |
-| AKShare | Python SDK；collector 使用 `stock_hk_hist`、`futures_main_sina`、`futures_index_ccidx`、`futures_foreign_hist` 等 | HK/全球/期货日线、CN 指标与多种公共数据 | 当前调用无 token；上游可变 | 2026-08-12 在 30 秒限制内：健康检查、A 股涨跌家数、交易日历、600519 日线 PASS；涨停/跌停改由东财权威池采集，绝不以涨跌幅阈值近似；市场资金流因东方财富 endpoint 经代理连接被拒绝 FAILED。证据：`artifacts/r1-provider-probe-20260812-akshare-30s/`。 |
+| AKShare | Python SDK；collector 使用 `stock_hk_hist`、`futures_main_sina`、`futures_index_ccidx`、`futures_foreign_hist` 等 | HK/全球/期货日线、CN 指标与多种公共数据 | 当前调用无 token；上游可变 | 2026-08-12 在 30 秒限制内：健康检查、A 股涨跌家数、交易日历、600519 日线 PASS；涨停/跌停改由东财权威池采集，绝不以涨跌幅阈值近似；市场资金流因东方财富 endpoint 经代理连接被拒绝 FAILED。2026-08-30 宏观单任务采集 PASS，20,857 条观测已写入本地 Gold：除 M0/M1/M2、CPI/PPI、PMI、DR007、中美 10 年期和美联储利率外，还包括中国美元计进口/出口/贸易差额、社零同比/环比、外储和美国季调后非农。外贸、外储与非农仅记录来源日期，不能当作统计观察期；社会用电量、美国进口金额、核心 PCE 年化季率终值仍无同口径数据。每条数据的本机取得时间与权威发布日期分列，未提供发布日期时为 `null`。证据：`artifacts/r1-provider-probe-20260812-akshare-30s/`（历史）及本轮本地控制台输出（运行时，不纳入 Git）。 |
 | Baostock | `baostock.login`、`query_history_k_data_plus` | CN 股票 1d/30m | SDK 登录 | 2026-08-12 首次 10 秒超时；30 秒复测未在本任务运行时限内产出报告。当前没有可验证 PASS 结论，不能提升为可用来源。 |
 | JQData | `jqdatasdk.auth` 和价格接口 | CN 股票/ETF/指数/期货（以探测能力为准） | 用户名/密码、授权 | `BLOCKED_CONFIGURATION`，不能显示为当前可用。 |
 | Tushare Pro | `TUSHARE_TOKEN`、`pro_api`、`daily`/`stk_mins`/`stock_basic` | CN 股票日线/分钟、清单与财务（以积分权限为准） | token 与接口积分/权限 | `BLOCKED_CONFIGURATION`，不能显示为当前可用。 |
 | Binance | HTTPS JSON：`https://data-api.binance.vision/api/v3/klines` | BTC/ETH 日线 | 公共端点 | collector 已落库；网络可达性需每次会话实测。 |
 | 东财/CBOE/腾讯 | 东财 `push2his.eastmoney.com/api/qt/stock/kline/get`；CBOE VIX CSV；腾讯回退 | DXY/VIX 日线指标 | 公共端点 | collector 已实现，TLS/网络可能导致部分失败。 |
 | 同花顺行情中心 | `q.10jqka.com.cn` 市场页与指数页快照 | A 股涨跌家数、涨停/跌停家数、昨日涨停平均收益率、指数表格 | 网站会话/反爬策略 | 已实现 `ths-market` 可恢复快照任务；公开页可获取首批指数，翻页请求会返回登录/授权限制。使用已登录浏览器 Cookie 的自动化仍需在可用浏览器会话中另行验证。 |
-| 通达信金融终端本地证券文件 | `C:\tongdaxin\vipdoc` 的 `.day/.lc5` | 沪深北及港股日线/五分钟，含 A/B 股、指数、ETF、LOF、REIT、转债和回购分类 | 本机已下载文件；无网络认证 | `tdx-cn-v2` 已实现资产级价格精度、逐行成交量倍率、原始值追溯、隔离质量门、只读审计和可回滚来源替换；当前真实覆盖以最新迁移报告为准。 |
+| 通达信金融终端本地证券文件 | `C:\tongdaxin\vipdoc` 的 `.day/.lc5` | 沪深北及港股日线/五分钟，含 A/B 股、指数、ETF、LOF、REIT、转债和回购分类；代码亦识别 `ds` 的国际/港股/中证/华证/国证指数与外盘期货前缀 | 本机已下载文件；无网络认证 | `tdx-cn-v2` 已实现资产级价格精度、逐行成交量倍率、原始值追溯、隔离质量门、只读审计和可回滚来源替换。`12/16/17/18/27/31/48/62/69/102#` 的浮点日线已由只读审计后增量写入 4,043 个文件/38,663,985 根 PASS K 线；907 个文件/108,456 根记录隔离、138 个拒绝。该集合尚未另行执行新的全量来源替换。外盘期货金额/连续合约语义、汇率、宏观、基金及未知前缀仍不提升为正式 Silver。 |
 | TickDB | 无活动来源 | 无本地原始目录、无 Silver、无活动下载器 | 不适用 | **REMOVED**；只保留 2026-08-24 历史审计，不参与正式导入、回退或质量判定。 |
 
 ## R2 分层实测（2026-08-13）
@@ -52,7 +52,7 @@ Each local inventory category also exposes `sourceDetails`: its stored source id
 | --- | --- | --- | --- |
 | A 股个股日线 | AKShare 真实探针：A 股现货 5,543、600519 日线 5,981、日历 PASS；pytdx 600519 日线 PASS | A 股全量日线已入 Silver，市场 API 已验证 | **日线 PARTIAL→主要覆盖**；分钟仅 pytdx 600519 `30m` 样本 PASS，不是全市场分钟承诺。 |
 | A 股 ETF 日线 | pytdx 510300 日线 PASS | 1,559 ETF 已入 Silver；14 个 `530xxx` 缺上游日线 | **日线 PARTIAL**；ETF 分钟线未完成独立实测/批量/落库。 |
-| 港股个股 | AKShare 日线回填已使用；本轮未做港股分钟真实探针 | 2,807 标的日线入 Silver，1 个缺口 | **港股日线 PARTIAL**；港股分钟线 **BLOCKED**，缺连接/样本/批量/落库证据。 |
+| 港股个股 | AKShare 日线回填已使用；金融终端 `31#`/`48#` 浮点日线与 5 分钟布局已按 `tdx-cn-v2` 入库 | 本机港股数据页按需聚合本地 TDX 日线；2026-08-18 覆盖 2,706 个股票，成交额与涨跌家数可用并携带覆盖数 | **港股日线 PARTIAL**；不宣称全市场市值或完整上市名单。港股分钟线已存在本地文件但尚未完成独立市场时段/全量合理性验收。 |
 | A 股/港股/全球指数 | pytdx 上证指数日线探针因上游非法日期 FAILED；同花顺分页受登录限制 | 只有部分日线/快照 | **BLOCKED**，不能宣称指数全集或分钟线。 |
 | 国内期货主力/次连/加权 | 通达信期货通 `.day/.lc5` 本地文件，AKShare 主连备用 | `bulk-futures` 动态扫描品种，不以固定数量承诺覆盖 | **本地缓存覆盖范围内可用**；任务报告实际发现数、失败文件与更新时间。 |
 | 国内期货加权/连续 | 通达信期货通 `L9` 原生加权 | 与主连/次连物理隔离入库 | **可用（以本地客户端已下载文件为准）**；不把 AKShare `品种9` 误标为加权。 |
