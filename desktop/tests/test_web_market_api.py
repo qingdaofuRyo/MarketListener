@@ -212,7 +212,7 @@ def test_market_categories_expose_ordered_r3_filter_contract(tmp_path: Path) -> 
         "a-index", "tdx-board-index", "tdx-industry-index", "a-sh", "a-sz", "a-bse",
         "a-chinext", "a-star", "a-etf", "a-convertible", "a-exchangeable", "a-pledged-repo",
         "a-repo", "a-lof", "a-reit",
-        "hk-index", "hk-stock", "cn-future-index", "cn-future-cffex",
+        "hk-index", "hk-stock", "global-index", "global-future", "cn-future-index", "cn-future-cffex",
         "cn-future-commodity", "cn-future-night",
     }
     assert "other" not in {item["id"] for item in items}
@@ -587,6 +587,20 @@ def test_chart_bootstrap_returns_complete_drawing_document(tmp_path: Path) -> No
     assert saved.status_code == 200
     chart = client.get("/api/market/instruments/CN.SSE.STOCK.600519/chart", params={"period": "1d"})
     assert [item["id"] for item in chart.json()["drawings"]] == ["day", "week"]
+
+
+def test_brush_drawing_validates_points_without_migrating_legacy_items(tmp_path: Path) -> None:
+    _application, client = _app(tmp_path)
+    legacy = {"id": "line", "type": "horizontal", "points": [{"time": "2026-08-07T09:30:00", "price": 1500}]}
+    brush = {"id": "brush", "type": "brush", "points": [{"time": "2026-08-07T09:30:00", "price": 1500}, {"time": "2026-08-07T09:35:00", "price": 1501}]}
+    response = client.put("/api/market/instruments/CN.SSE.STOCK.600519/drawings", json={"items": [legacy, brush]})
+    assert response.status_code == 200
+    assert response.json()["items"] == [legacy, brush]
+    assert client.put("/api/market/instruments/CN.SSE.STOCK.600519/drawings", json={"items": [{**brush, "points": brush["points"][:1]}]}).status_code == 422
+    assert client.put("/api/market/instruments/CN.SSE.STOCK.600519/drawings", json={"items": [{**brush, "points": [{"time": "", "price": 1}, brush["points"][1]]}]}).status_code == 422
+    assert client.put("/api/market/instruments/CN.SSE.STOCK.600519/drawings", json={"items": [{**brush, "points": [{"time": "2026-08-07", "price": "NaN"}, brush["points"][1]]}]}).status_code == 422
+    too_many = [{"time": "2026-08-07T09:30:00", "price": 1500} for _ in range(2_049)]
+    assert client.put("/api/market/instruments/CN.SSE.STOCK.600519/drawings", json={"items": [{**brush, "points": too_many}]}).status_code == 422
 
 
 def test_drawings_index_and_batch_delete(tmp_path: Path) -> None:

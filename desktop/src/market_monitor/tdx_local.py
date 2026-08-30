@@ -1,10 +1,11 @@
-"""Offline importer for TongdaXin desktop A-share and Hong Kong market files.
+"""Offline importer for TongdaXin desktop securities and verified DS files.
 
 The ordinary TongdaXin terminal and TongdaXin Futures use different binary
-layouts.  This module deliberately handles only the ordinary terminal's
-``sh``/``sz``/``bj`` and Hong Kong ``31#`` files; futures remain owned by
-``futures_bulk`` so open interest and settlement can never be misread as
-stock turnover fields.
+layouts.  Domestic futures remain owned by ``futures_bulk`` so their open
+interest and settlement can never be read as stock turnover fields.  The
+ordinary terminal's verified ``ds`` prefixes are parsed separately because
+their daily OHLC values are float32 rather than the security ``.day`` integer
+format.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from uuid import uuid4
 import duckdb
 
 from .market_data_version import advance_market_data_version
+from .market_classification import market_classification_spec
 from .market_query_cache import rebuild_kline_query_cache
 from .storage import MarketStore, PartitionKey
 
@@ -32,13 +34,15 @@ _CN_DAY = struct.Struct("<IiiiifII")
 _HK_DAY = struct.Struct("<IfffffII")
 _MINUTE = struct.Struct("<HHfffffII")
 _CN_FILE = re.compile(r"^(?P<prefix>sh|sz|bj)(?P<code>\d{6})\.(?P<kind>day|lc5)$", re.IGNORECASE)
+_DS_FILE = re.compile(r"^(?P<prefix>\d+)#(?P<code>[A-Za-z0-9_]+)\.(?P<kind>day|lc5)$", re.IGNORECASE)
+# Kept for the raw-unclassified scanner and older callers that specifically
+# need the financial-terminal Hong Kong main-board filename shape.
 _HK_FILE = re.compile(r"^31#(?P<code>\d{5})\.(?P<kind>day|lc5)$", re.IGNORECASE)
 _SOURCE = "通达信金融终端（本地）"
 _NORMALIZATION_VERSION = "tdx-cn-v2"
 _VOLUME_MULTIPLIERS = (1.0, 10.0, 100.0)
 _DAILY_VWAP_TOLERANCE = 0.005
 _MINUTE_VWAP_TOLERANCE = 0.02
-
 
 def resolve_tdx_root(value: Path | None = None) -> Path | None:
     """Resolve an ordinary TongdaXin terminal installation, never a futures root."""
@@ -51,6 +55,37 @@ def resolve_tdx_root(value: Path | None = None) -> Path | None:
         if candidate and (candidate / "vipdoc" / "sh").is_dir() and (candidate / "vipdoc" / "ds").is_dir():
             return candidate
     return None
+
+
+def financial_ds_metadata(filename: str) -> dict[str, str] | None:
+    """Classify one verified ordinary-terminal ``vipdoc/ds`` filename.
+
+    The mapping intentionally omits FX (``10#``), macro (``38#``), legacy HK
+    funds (``49#``), and unknown prefixes.  Their Bar semantic/unit contract
+    has not been verified, so they remain visible to the review table instead
+    of being promoted to Silver by filename alone.
+    """
+
+    match = _DS_FILE.fullmatch(filename)
+    if match is None:
+        return None
+    prefix = match.group("prefix")
+    configured = market_classification_spec().get("tdxFinancialDsPrefixes", {})
+    base = configured.get(prefix) if isinstance(configured, dict) else None
+    if not isinstance(base, dict):
+        return None
+    code = match.group("code").upper()
+    if prefix in {"27", "31", "48"} and not re.fullmatch(r"\d{5}" if prefix != "27" else r"[A-Z0-9_]+", code):
+        return None
+    if prefix in {"62", "69", "102"} and not re.fullmatch(r"\d{6}", code):
+        return None
+    if prefix in {"12", "16", "17", "18"} and not re.fullmatch(r"[A-Z0-9_]+", code):
+        return None
+    return {
+        **{str(key): str(value) for key, value in base.items()},
+        "symbol": code,
+        "period": "1d" if match.group("kind").lower() == "day" else "5m",
+    }
 
 
 def decode_minute_day(value: int) -> str:
@@ -71,7 +106,12 @@ def read_tdx_local_file(
     start_offset: int = 0,
     price_scale: float = 100.0,
 ) -> list[dict[str, Any]]:
-    """Read one stable local TDX stock/HK file and retain its raw fields."""
+    """Read one stable local TDX file and retain its raw fields.
+
+    ``hong_kong`` is retained for compatibility; it selects the float32 daily
+    record layout used by verified financial-terminal DS prefixes as well as
+    Hong Kong files.
+    """
 
     size_before = path.stat().st_size
     if size_before % 32:
@@ -255,7 +295,7 @@ def _run_tdx_local_import(
                 )
                 records = read_tdx_local_file(
                     path,
-                    hong_kong=metadata["market"] == "HK",
+                    hong_kong=metadata["market"] == "HK" or metadata.get("daily_price_format") == "FLOAT32",
                     start_offset=start_offset,
                     price_scale=_price_scale(metadata),
                 )
@@ -615,13 +655,10 @@ def _files(root: Path) -> Iterable[tuple[Path, dict[str, str]]]:
         directory = root / "vipdoc" / "ds" / kind_folder
         if not directory.is_dir():
             continue
-        for path in sorted(directory.glob("31#*")):
-            match = _HK_FILE.match(path.name)
-            if match:
-                yield path, {
-                    "market": "HK", "asset_type": "STOCK", "series_kind": "", "exchange": "HKEX",
-                    "symbol": match.group("code"), "period": "1d" if match.group("kind").lower() == "day" else "5m",
-                }
+        for path in sorted(directory.glob("*")):
+            metadata = financial_ds_metadata(path.name)
+            if metadata is not None:
+                yield path, metadata
 
 
 def _cn_classification(prefix: str, code: str) -> tuple[str, str, str]:
@@ -677,7 +714,7 @@ def _cn_classification(prefix: str, code: str) -> tuple[str, str, str]:
 
 
 def _price_scale(metadata: Mapping[str, str]) -> float:
-    if metadata["market"] == "HK" or metadata["period"] != "1d":
+    if metadata.get("daily_price_format") == "FLOAT32" or metadata["market"] == "HK" or metadata["period"] != "1d":
         return 1.0
     asset_type = metadata["asset_type"]
     if asset_type in {"B_SHARE", "ETF", "LOF", "REIT"}:
@@ -691,6 +728,8 @@ def _volume_unit(metadata: Mapping[str, str]) -> str:
     asset_type = metadata["asset_type"]
     if asset_type == "INDEX":
         return "TDX_INDEX_RAW"
+    if asset_type == "FUTURE" and metadata.get("volume_semantics") == "RAW":
+        return "TDX_FOREIGN_FUTURE_RAW"
     if asset_type in {"PLEDGED_REPO", "REPO"}:
         return "REPO_LOT_1000_CNY"
     if asset_type in {"CONVERTIBLE_BOND", "EXCHANGEABLE_BOND"}:
@@ -705,6 +744,8 @@ def _volume_profile(
     asset_type = metadata["asset_type"]
     if asset_type == "INDEX":
         return [1.0] * len(records), "asset-rule:index-raw-volume", Counter({1.0: len(records)}), []
+    if asset_type == "FUTURE" and metadata.get("volume_semantics") == "RAW":
+        return [1.0] * len(records), "asset-rule:foreign-future-raw-volume", Counter({1.0: len(records)}), []
     is_repo = asset_type in {"PLEDGED_REPO", "REPO"}
     tolerance = _DAILY_VWAP_TOLERANCE if metadata["period"] == "1d" else _MINUTE_VWAP_TOLERANCE
     multipliers: list[float | None] = []
@@ -835,7 +876,7 @@ def _normalized_rows(
             "low": low,
             "close": close,
             "volume": (_number(record.get("raw_volume")) or 0.0) * volume_multiplier,
-            "amount": _number(record.get("raw_amount")),
+            "amount": None if metadata.get("amount_semantics") == "UNKNOWN" else _number(record.get("raw_amount")),
             "open_interest": None,
             "settlement": None,
             "source": _SOURCE,
@@ -879,6 +920,8 @@ def _normalized_rows(
 
 
 def _currency(metadata: Mapping[str, str]) -> str:
+    if metadata.get("currency"):
+        return str(metadata["currency"])
     if metadata["market"] == "HK":
         return "HKD"
     if metadata["asset_type"] == "B_SHARE":

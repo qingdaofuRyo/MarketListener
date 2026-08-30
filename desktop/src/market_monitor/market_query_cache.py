@@ -424,12 +424,19 @@ class KLineQueryStore:
                 rows = connection.execute(query, parameters).fetchall()
         return [str(row[0]) for row in rows if row and row[0]]
 
-    def inventory_snapshot(self, max_instruments: int) -> dict[str, Any]:
-        """Return the compact latest-bar index used by the market overview."""
+    def inventory_snapshot(self, max_instruments: int | None = None) -> dict[str, Any]:
+        """Return the latest-bar index used by local market discovery.
+
+        ``None`` intentionally means every local instrument.  The inventory is
+        also the canonical lookup used by chart routes and the pending-review
+        table, so silently taking the first N sorted identifiers can hide an
+        otherwise valid source merely because a large A-share universe sorts
+        before it.
+        """
 
         revision = self.ensure_ready()
-        safe_limit = max(1, int(max_instruments))
-        key = ("inventory", revision, safe_limit)
+        safe_limit = max(1, int(max_instruments)) if max_instruments is not None else None
+        key = ("inventory", revision, safe_limit or 0)
         cached = self._hot_get(key)
         if cached is not None:
             return cached
@@ -439,11 +446,15 @@ class KLineQueryStore:
                     "SELECT coalesce(sum(row_count), 0), max(latest_bar_at), list(DISTINCT period) "
                     "FROM instrument_period"
                 ).fetchone()
-                rows = connection.execute(
+                inventory_query = (
                     "SELECT instrument_id, market, asset_type, period, bar_open_time, bar_json "
-                    "FROM instrument_latest ORDER BY instrument_id LIMIT ?",
-                    [safe_limit],
-                ).fetchall()
+                    "FROM instrument_latest ORDER BY instrument_id"
+                )
+                rows = (
+                    connection.execute(f"{inventory_query} LIMIT ?", [safe_limit]).fetchall()
+                    if safe_limit is not None
+                    else connection.execute(inventory_query).fetchall()
+                )
         result = {
             "rows": int(summary[0] or 0) if summary else 0,
             "latestBarAt": _text(summary[1]) if summary else None,

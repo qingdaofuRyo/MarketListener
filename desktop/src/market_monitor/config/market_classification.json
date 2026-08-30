@@ -22,6 +22,8 @@
     {"id": "b-sz", "label": "B股-深市"},
     {"id": "hk-index", "label": "港股-指数"},
     {"id": "hk-stock", "label": "港股-个股"},
+    {"id": "global-index", "label": "全球-指数"},
+    {"id": "global-future", "label": "全球-期货"},
     {"id": "cn-future-index", "label": "国内期货-指数"},
     {"id": "cn-future-cffex", "label": "国内期货-中金所"},
     {"id": "cn-future-commodity", "label": "国内期货-商品期货"},
@@ -32,12 +34,31 @@
     "SZSE": ["SZSE", "SZ", "XSHE"],
     "BSE": ["BSE", "BJ"],
     "HKEX": ["HKEX", "HK", "XHKG"],
+    "GLOBAL_INDEX": ["GLOBAL_INDEX"],
+    "COMEX": ["COMEX"],
+    "NYMEX": ["NYMEX"],
+    "CBOT": ["CBOT"],
+    "CSI": ["CSI"],
+    "HUAZHENG": ["HUAZHENG"],
+    "CNI": ["CNI"],
     "CFFEX": ["CFFEX", "CFX"],
     "SHFE": ["SHFE", "SHF"],
     "INE": ["INE"],
     "DCE": ["DCE", "DCECOM"],
     "CZCE": ["CZCE", "CZC", "ZCE"],
     "GFEX": ["GFEX", "GFE"]
+  },
+  "tdxFinancialDsPrefixes": {
+    "12": {"market": "GLOBAL", "asset_type": "INDEX", "series_kind": "EQUITY_INDEX", "exchange": "GLOBAL_INDEX", "currency": "INDEX_POINTS", "daily_price_format": "FLOAT32"},
+    "16": {"market": "GLOBAL", "asset_type": "FUTURE", "series_kind": "UNVERIFIED_CONTINUOUS", "exchange": "COMEX", "currency": "UNKNOWN", "daily_price_format": "FLOAT32", "volume_semantics": "RAW", "amount_semantics": "UNKNOWN"},
+    "17": {"market": "GLOBAL", "asset_type": "FUTURE", "series_kind": "UNVERIFIED_CONTINUOUS", "exchange": "NYMEX", "currency": "UNKNOWN", "daily_price_format": "FLOAT32", "volume_semantics": "RAW", "amount_semantics": "UNKNOWN"},
+    "18": {"market": "GLOBAL", "asset_type": "FUTURE", "series_kind": "UNVERIFIED_CONTINUOUS", "exchange": "CBOT", "currency": "UNKNOWN", "daily_price_format": "FLOAT32", "volume_semantics": "RAW", "amount_semantics": "UNKNOWN"},
+    "27": {"market": "HK", "asset_type": "INDEX", "series_kind": "EQUITY_INDEX", "exchange": "HKEX", "currency": "HKD", "daily_price_format": "FLOAT32"},
+    "31": {"market": "HK", "asset_type": "STOCK", "series_kind": "", "exchange": "HKEX", "currency": "HKD", "daily_price_format": "FLOAT32"},
+    "48": {"market": "HK", "asset_type": "STOCK", "series_kind": "", "exchange": "HKEX", "currency": "HKD", "daily_price_format": "FLOAT32"},
+    "62": {"market": "CN", "asset_type": "INDEX", "series_kind": "EQUITY_INDEX", "exchange": "CSI", "currency": "INDEX_POINTS", "daily_price_format": "FLOAT32"},
+    "69": {"market": "CN", "asset_type": "INDEX", "series_kind": "EQUITY_INDEX", "exchange": "HUAZHENG", "currency": "INDEX_POINTS", "daily_price_format": "FLOAT32"},
+    "102": {"market": "CN", "asset_type": "INDEX", "series_kind": "EQUITY_INDEX", "exchange": "CNI", "currency": "INDEX_POINTS", "daily_price_format": "FLOAT32"}
   },
   "aShare": {
     "etfPrefixes": {
@@ -73,7 +94,7 @@
       "881": "tdx-industry-index"
     },
     "indexPrefixes": {
-      "SSE": ["000", "930", "931", "932"],
+      "SSE": ["000", "889", "930", "931", "932", "950", "999"],
       "SZSE": ["399"],
       "BSE": ["899"]
     },

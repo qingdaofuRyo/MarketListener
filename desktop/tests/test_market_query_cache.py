@@ -13,7 +13,7 @@ from market_monitor.market_query_cache import (
     KLineCacheUnavailable,
     KLineQueryStore,
 )
-from market_monitor.web_api.common import read_bars_before
+from market_monitor.web_api.common import load_inventory, read_bars_before
 from web_fixtures import silver_row, write_silver
 
 
@@ -79,6 +79,27 @@ def test_persistent_cache_is_a_file_manifest_not_a_full_json_copy(tmp_path: Path
     assert "bars" not in tables
     assert "instrument_file" in tables
     assert indexed_rows == 12
+
+
+def test_default_inventory_does_not_hide_instruments_after_the_legacy_cap(tmp_path: Path) -> None:
+    """Discovery must include the complete local universe, not only the first 20k IDs."""
+
+    data_root = tmp_path / "large-inventory"
+    last_instrument = "GLOBAL.GLOBAL_INDEX.INDEX.ZZ999999"
+    rows = [
+        silver_row(f"CN.SSE.STOCK.{index:06d}", "2026-08-10")
+        for index in range(20_000)
+    ]
+    rows.append(silver_row(last_instrument, "2026-08-10", market="GLOBAL", asset_type="INDEX"))
+    write_silver(data_root, rows)
+    store = KLineQueryStore(data_root)
+    store.rebuild()
+
+    inventory = load_inventory(data_root)
+
+    assert len(inventory.instruments) == 20_001
+    assert last_instrument in inventory.instruments
+    assert len(store.inventory_snapshot(20_000)["items"]) == 20_000
 
 
 def test_schema_one_full_json_cache_is_migrated_to_manifest_v2(tmp_path: Path) -> None:

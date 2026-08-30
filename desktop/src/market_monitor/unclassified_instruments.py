@@ -56,7 +56,7 @@ def _record_observation(path: Path) -> dict[str, Any] | None:
 
 
 def _recognized_by_financial_terminal(name: str) -> bool:
-    return tdx_local._HK_FILE.fullmatch(name) is not None
+    return tdx_local.financial_ds_metadata(name) is not None
 
 
 def _recognized_by_futures_terminal(name: str) -> bool:

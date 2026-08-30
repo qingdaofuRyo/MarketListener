@@ -197,7 +197,7 @@ _inventory_cache: dict[tuple[str, str], SilverInventory] = {}
 _INVENTORY_LOCK = threading.Lock()
 
 
-def load_inventory(data_root: Path, *, max_instruments: int = 20_000) -> SilverInventory:
+def load_inventory(data_root: Path, *, max_instruments: int | None = None) -> SilverInventory:
     """Read the silver parquet partitions and return a compact instrument index.
 
     The index is cached by the producer-maintained data revision and served
@@ -259,7 +259,10 @@ def load_inventory(data_root: Path, *, max_instruments: int = 20_000) -> SilverI
                     return SilverInventory({}, 0, {}, {}, [], None, now_iso())
                 except Exception:
                     return SilverInventory({}, 0, {}, {}, [], None, now_iso())
-        ordered = dict(sorted(instruments.items())[:max_instruments])
+        ordered_items = sorted(instruments.items())
+        if max_instruments is not None:
+            ordered_items = ordered_items[:max(1, int(max_instruments))]
+        ordered = dict(ordered_items)
         markets: dict[str, int] = {}
         asset_types: dict[str, int] = {}
         for item in ordered.values():

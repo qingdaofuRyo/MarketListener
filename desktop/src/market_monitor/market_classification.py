@@ -204,6 +204,13 @@ def classify_market(item: dict[str, Any]) -> str:
             return "hk-stock"
         return UNCLASSIFIED_CATEGORY
 
+    if market == "GLOBAL":
+        if asset_type == "INDEX":
+            return "global-index"
+        if asset_type == "FUTURE":
+            return "global-future"
+        return UNCLASSIFIED_CATEGORY
+
     is_future = asset_type == "FUTURE" or (
         not asset_type and (exchange in spec["futures"]["commodityProducts"] or exchange == "CFFEX")
     )

@@ -5,7 +5,14 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from market_monitor.tdx_local import _cn_classification, _load_tdx_names, decode_minute_day, read_tdx_local_file, run_tdx_local_import
+from market_monitor.tdx_local import (
+    _cn_classification,
+    _load_tdx_names,
+    decode_minute_day,
+    financial_ds_metadata,
+    read_tdx_local_file,
+    run_tdx_local_import,
+)
 from market_monitor.web_app import create_web_app
 
 
@@ -91,6 +98,75 @@ def test_cn_classification_covers_bond_repo_fund_and_reit_codes() -> None:
     assert _cn_classification("sz", "158001")[0] == "ETF"
     assert _cn_classification("sh", "900901")[:2] == ("B_SHARE", "B_SHARE")
     assert _cn_classification("sz", "200002")[:2] == ("B_SHARE", "B_SHARE")
+
+
+def test_verified_financial_ds_prefixes_keep_float_prices_and_raw_future_units(tmp_path: Path) -> None:
+    root = _root(tmp_path)
+    lday = root / "vipdoc" / "ds" / "lday"
+    for filename, close, amount, volume in (
+        ("12#A_CELS.day", 657.887, 0.0, 0),
+        ("16#GC00W.day", 3_350.5, 0.0, 12),
+        ("27#HSI.day", 24_000.25, 12_000.0, 120),
+        ("48#08003.day", 0.067, 402.0, 6_000),
+        ("62#000013.day", 309.3275, 11_195.0, 111),
+        ("69#992006.day", 8_550.836, 190_922.0, 10_192),
+        ("102#470006.day", 3_966.584, 275_369.0, 3_276),
+    ):
+        spread = max(abs(close) * 0.01, 0.001)
+        (lday / filename).write_bytes(
+            struct.pack(
+                "<IfffffII",
+                20260814,
+                close,
+                close + spread,
+                max(0.0001, close - spread),
+                close,
+                amount,
+                volume,
+                0,
+            )
+        )
+
+    assert financial_ds_metadata("31#00700.day") == {
+        "market": "HK", "asset_type": "STOCK", "series_kind": "", "exchange": "HKEX",
+        "currency": "HKD", "daily_price_format": "FLOAT32", "symbol": "00700", "period": "1d",
+    }
+    assert financial_ds_metadata("16#GC00W.day")["series_kind"] == "UNVERIFIED_CONTINUOUS"  # type: ignore[index]
+    assert financial_ds_metadata("10#AUDUSD.day") is None
+    assert financial_ds_metadata("38#1_GDP.day") is None
+    assert financial_ds_metadata("49#00001.day") is None
+    assert financial_ds_metadata("98#02261F.day") is None
+
+    summary = run_tdx_local_import(tmp_path / "data", tdx_root=root, batch_rows=1_000)
+
+    assert summary["状态"] == "完成"
+    client = TestClient(create_web_app(tmp_path / "data"), client=("127.0.0.1", 50000))
+    global_index = client.get(
+        "/api/market/instruments/GLOBAL.GLOBAL_INDEX.INDEX.A_CELS/bars", params={"period": "1d"}
+    ).json()["bars"][0]
+    global_future = client.get(
+        "/api/market/instruments/GLOBAL.COMEX.FUTURE.GC00W/bars", params={"period": "1d"}
+    ).json()["bars"][0]
+    hk_index = client.get(
+        "/api/market/instruments/HK.HKEX.INDEX.HSI/bars", params={"period": "1d"}
+    ).json()["bars"][0]
+    hk_gem = client.get(
+        "/api/market/instruments/HK.HKEX.STOCK.08003/bars", params={"period": "1d"}
+    ).json()["bars"][0]
+    csi = client.get(
+        "/api/market/instruments/CN.CSI.INDEX.000013/bars", params={"period": "1d"}
+    ).json()["bars"][0]
+
+    assert global_index["close"] == 657.887024
+    assert global_index["volumeUnit"] == "TDX_INDEX_RAW"
+    assert global_future["close"] == 3350.5
+    assert global_future["amount"] is None
+    assert global_future["volume"] == 12.0
+    assert global_future["volumeUnit"] == "TDX_FOREIGN_FUTURE_RAW"
+    assert global_future["seriesKind"] == "UNVERIFIED_CONTINUOUS"
+    assert hk_index["close"] == 24000.25
+    assert hk_gem["close"] == 0.067
+    assert csi["close"] == 309.327515
 
 
 def test_import_is_source_isolated_and_checkpointed(tmp_path: Path) -> None:

@@ -74,6 +74,9 @@ def test_a_share_boundaries_use_etf_index_and_board_priority() -> None:
     cases = [
         (instrument("000300", exchange="SSE", asset_type="INDEX"), "a-index"),
         (instrument("399006", exchange="SZSE", asset_type="INDEX"), "a-index"),
+        (instrument("889001", exchange="SSE"), "a-index"),
+        (instrument("950001", exchange="SSE"), "a-index"),
+        (instrument("999001", exchange="SSE"), "a-index"),
         (instrument("588000", exchange="SSE", asset_type="ETF"), "a-etf"),
         (instrument("159915", exchange="SZSE", asset_type="ETF"), "a-etf"),
         (instrument("688001", exchange="SSE", asset_type="STOCK"), "a-star"),

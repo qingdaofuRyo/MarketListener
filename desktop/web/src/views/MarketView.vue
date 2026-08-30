@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import KLineChart, { type ChartDrawing, type ChartDrawingStyle, type DrawingLineStyle, type DrawingTool, type KLineBar } from "../components/charts/KLineChart.vue";
 import MiniKLine from "../components/charts/MiniKLine.vue";
 import DrawingColorPicker from "../components/charts/DrawingColorPicker.vue";
+import { DRAWING_COLOR_PRESETS } from "../components/charts/drawingPalette";
 import { apiGet, apiPost, apiPut, formatAssetType, formatMarket, formatNumber, invalidateQuery } from "../domain/api";
 
 interface Instrument {
@@ -49,13 +50,10 @@ const drawingTools: Array<{ id: DrawingTool; label: string; path: string }> = [
   { id: "horizontal", label: "水平线", path: "M3 12h6M15 12h6M9 12a3 3 0 1 0 6 0a3 3 0 1 0-6 0" },
   { id: "vertical", label: "垂直线", path: "M12 3v6M12 15v6M9 12a3 3 0 1 0 6 0a3 3 0 1 0-6 0" },
   { id: "rectangle", label: "箱体线", path: "M4 5h16v14H4zM2 12a2 2 0 1 0 4 0a2 2 0 1 0-4 0M18 12a2 2 0 1 0 4 0a2 2 0 1 0-4 0" },
+  { id: "brush", label: "笔刷", path: "M5 18c4-1 5-7 9-9l3 3c-3 2-4 6-8 7H5zM16 6l2-2 3 3-2 2z" },
   { id: "text", label: "文本框", path: "M5 5h14M12 5v14M8 19h8" },
 ];
-const drawingColorPresets = [
-  "#ff1744", "#ff5722", "#ff9800", "#ffc107", "#cddc39", "#4caf50", "#00bcd4", "#2196f3",
-  "#3f51b5", "#9c27b0", "#e91e63", "#f44336", "#ff4081", "#ff6d00", "#ffee58", "#76ff03",
-  "#00e5ff", "#448aff", "#651fff", "#d500f9", "#ff3d00", "#00e676", "#18ffff", "#c6ff00",
-];
+const drawingColorPresets = DRAWING_COLOR_PRESETS;
 const lineStyles: Array<[DrawingLineStyle, string]> = [["solid", "实线"], ["dashed", "虚线"], ["dotted", "点线"], ["dashdot", "一长一短"]];
 const drawingPreferenceKey = "market-drawing-preferences-v1";
 const flagChoices: FlagChoice[] = [
@@ -83,6 +81,7 @@ const drawingStyleDefaults = ref<Record<DrawingKind, ChartDrawingStyle>>({
   horizontal: { ...baseDrawingStyle("horizontal"), ...storedDrawingOptions.styles.horizontal },
   vertical: { ...baseDrawingStyle("vertical"), ...storedDrawingOptions.styles.vertical },
   rectangle: { ...baseDrawingStyle("rectangle"), ...storedDrawingOptions.styles.rectangle },
+  brush: { ...baseDrawingStyle("brush"), ...storedDrawingOptions.styles.brush },
   text: { ...baseDrawingStyle("text"), ...storedDrawingOptions.styles.text },
 });
 
@@ -532,7 +531,7 @@ onBeforeUnmount(() => { if (searchTimer) clearTimeout(searchTimer); if (unclassi
           <button type="button" class="icon-action" :class="{ active: selectedDrawing.crossPeriod }" aria-label="跨周期" title="跨周期" @click="patchSelected('crossPeriod', !selectedDrawing.crossPeriod)"><svg viewBox="0 0 24 24"><path d="M4 20v-4h3v4M9 20v-7h3v7M14 20v-10h3v10M19 20V7h2v13M3 12c4-1 7-4 10-4s5-3 8-5" /></svg></button>
           <button type="button" class="icon-action danger" aria-label="删除" title="删除" @click="deleteSelectedDrawing"><svg viewBox="0 0 24 24"><path d="M5 7h14M9 7V4h6v3M8 10v8M12 10v8M16 10v8M7 7l1 14h8l1-14" /></svg></button>
         </div>
-        <KLineChart :bars="history.bars" :period="history.period" :height="detailChartHeight" :indicators="indicatorValues" :inverse="inverse" :swap-colors="swapColors" :drawings="visibleDrawings" :drawing-tool="tool" :magnet="magnet" :selected-drawing-id="selectedDrawingId" :total-market-cap="selected?.totalMarketCap" :float-market-cap="selected?.floatMarketCap" :future-units="selected?.assetType === 'FUTURE'" :loading-earlier="detailEarlierLoading" show-quote-panel @draw="createDrawing" @select-drawing="onSelectDrawing" @update-drawing="updateDrawing" @request-earlier="loadEarlierHistory" />
+        <KLineChart :bars="history.bars" :period="history.period" :height="detailChartHeight" :indicators="indicatorValues" :inverse="inverse" :swap-colors="swapColors" :drawings="visibleDrawings" :drawing-tool="tool" :brush-style="drawingStyleDefaults.brush" :magnet="magnet" :selected-drawing-id="selectedDrawingId" :total-market-cap="selected?.totalMarketCap" :float-market-cap="selected?.floatMarketCap" :future-units="selected?.assetType === 'FUTURE'" :loading-earlier="detailEarlierLoading" show-quote-panel @draw="createDrawing" @select-drawing="onSelectDrawing" @update-drawing="updateDrawing" @request-earlier="loadEarlierHistory" />
       </section>
     </div></Teleport>
   </main>

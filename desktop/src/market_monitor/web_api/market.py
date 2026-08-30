@@ -1133,6 +1133,20 @@ def market_drawings_batch(
 
 @router.put("/instruments/{instrument_id}/drawings")
 def market_save_drawings(instrument_id: str, request: Request, body: ChartDrawingsRequest) -> dict[str, Any]:
+    if len(json.dumps(body.items, ensure_ascii=False, separators=(",", ":"))) > 1_000_000:
+        raise HTTPException(status_code=422, detail="画线文档超过 1 MB 限制")
+    for item in body.items:
+        if item.get("type") != "brush":
+            continue
+        points = item.get("points")
+        if not isinstance(points, list) or not 2 <= len(points) <= 2_048:
+            raise HTTPException(status_code=422, detail="笔刷必须包含 2 至 2048 个点")
+        for point in points:
+            if not isinstance(point, dict) or not isinstance(point.get("time"), str) or not point["time"].strip():
+                raise HTTPException(status_code=422, detail="笔刷点必须包含有效时间")
+            price = point.get("price")
+            if not isinstance(price, (int, float)) or isinstance(price, bool) or not math.isfinite(price):
+                raise HTTPException(status_code=422, detail="笔刷点价格必须为有限数值")
     payload = {"schemaVersion": 1, "instrumentId": instrument_id, "updatedAt": datetime.now().astimezone().isoformat(timespec="seconds"), "items": body.items}
     save_json(_drawings_path(_data_root(request), instrument_id), payload)
     return clean(payload)
