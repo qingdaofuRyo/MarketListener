@@ -102,7 +102,11 @@ const memberPositionsPayload = {
   rows: [],
   coverage: {
     publishedDirectionRankCount: 40, memberCount: 20, exchangeCount: 1,
-    exchanges: ["SHFE"], missingExchanges: ["DCE"], isComplete: false,
+    exchanges: ["SHFE"], missingExchanges: ["DCE"], isComplete: false, dataQualityStatus: "PARTIAL",
+    exchangeCoverage: [
+      { exchange: "SHFE", status: "PASS", contractCount: 1, recordCount: 40, sources: ["fixture-shfe"], error: null, collectedAt: "2026-08-26T18:00:00+08:00" },
+      { exchange: "DCE", status: "FAILED", contractCount: 0, recordCount: 0, sources: ["fixture-dce"], error: "fixture DCE unavailable", collectedAt: "2026-08-26T18:00:00+08:00" },
+    ],
   },
   limitations: ["仅统计交易所实际公布的会员方向排名", "请选择交易所、品种或具体月份合约后再读取席位明细。"],
 };
@@ -407,6 +411,8 @@ test("member open-interest structure keeps published-ranking coverage and direct
 test("contract member rankings load only after a concrete monthly contract is selected", async ({ page }) => {
   await openFutures(page);
   const panel = page.locator('[data-test="futures-member-positions"]');
+  await expect(panel.locator('[data-test="member-position-source-coverage"]')).toContainText("DCE：FAILED");
+  await expect(panel.locator('[data-test="member-position-source-coverage"]')).toContainText("fixture DCE unavailable");
   await expect(panel).toContainText("请选择月份合约");
   await panel.getByText("月份合约", { exact: true }).click();
   await page.getByText("SHFE · RB2610", { exact: true }).last().click();

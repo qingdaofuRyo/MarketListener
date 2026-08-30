@@ -188,6 +188,7 @@ def run_member_open_interest_structure_pipeline(
     try:
         store.register_default_datasets()
         ranks = store.list_futures_member_position_ranks(commodity_only=True)
+        coverage_records = store.list_futures_member_position_coverage(commodity_only=True)
         result: dict[str, Any] = {
             "chartId": MEMBER_OPEN_INTEREST_CHART_ID,
             "formulaVersion": MEMBER_STRUCTURE_FORMULA_VERSION,
@@ -197,7 +198,11 @@ def run_member_open_interest_structure_pipeline(
             "calculatedAt": timestamp,
         }
         for direction in ("long", "short", STRUCTURE_DIRECTION_GROSS, "net-long", "net-short"):
-            values, names, sources, input_rows, missing_rows = _member_structure_values(ranks, direction)
+            values, names, sources, input_rows, missing_rows = _member_structure_values(
+                ranks,
+                direction,
+                coverage_records=coverage_records,
+            )
             selected_days = [
                 day for day in sorted(values)
                 if (start is None or day >= start.isoformat()) and (end is None or day <= end.isoformat())
@@ -270,7 +275,10 @@ def run_member_open_interest_structure_pipeline(
 
 
 def _member_structure_values(
-    ranks: list[Mapping[str, Any]], direction: str
+    ranks: list[Mapping[str, Any]],
+    direction: str,
+    *,
+    coverage_records: list[Mapping[str, Any]] | None = None,
 ) -> tuple[
     dict[str, dict[str, float]],
     dict[str, dict[str, str]],
@@ -291,9 +299,15 @@ def _member_structure_values(
     sources: dict[str, set[str]] = defaultdict(set)
     input_rows: dict[str, int] = defaultdict(int)
     missing_rows: dict[str, int] = defaultdict(int)
+    coverage_by_day = _member_coverage_status_by_day(coverage_records or [])
     for day, day_rows in by_day.items():
-        exchanges = {str(row["exchange"]) for row in day_rows}
-        missing_exchange_count = len(COMMODITY_EXCHANGES - exchanges)
+        exchange_statuses = coverage_by_day.get(day, {})
+        # Existing rank rows from before the coverage table was introduced do
+        # not demonstrate that every exchange was attempted.  Keep them
+        # queryable, but make the derived structure explicitly PARTIAL.
+        missing_exchange_count = sum(
+            exchange_statuses.get(exchange) != "PASS" for exchange in COMMODITY_EXCHANGES
+        )
         for row in day_rows:
             sources[day].add(str(row["source"]))
         if direction in {"long", "short", STRUCTURE_DIRECTION_GROSS}:
@@ -329,6 +343,30 @@ def _member_structure_values(
         missing_rows[day] += incomplete_contract_members
         input_rows[day] += incomplete_contract_members
     return values, names, sources, input_rows, missing_rows
+
+
+def _member_coverage_status_by_day(
+    coverage_records: list[Mapping[str, Any]],
+) -> dict[str, dict[str, str]]:
+    """Reduce one-or-more source probes to an exchange status for each day.
+
+    A successful source is sufficient to establish that exchange's published
+    rank coverage.  A failure of an alternate adapter remains preserved in the
+    raw table/API but does not erase an independently successful probe.
+    """
+
+    output: dict[str, dict[str, str]] = defaultdict(dict)
+    for row in coverage_records:
+        exchange = str(row.get("exchange") or "").upper()
+        if exchange not in COMMODITY_EXCHANGES:
+            continue
+        day = str(row.get("trading_day") or "")
+        if not day:
+            continue
+        status = str(row.get("status") or "").upper()
+        if status == "PASS" or exchange not in output[day]:
+            output[day][exchange] = status
+    return output
 
 
 def _member_structure_key(row: Mapping[str, Any]) -> str:

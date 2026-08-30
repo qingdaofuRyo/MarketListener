@@ -53,6 +53,19 @@ def _write(data_root: Path, rows: list[dict[str, object]]) -> None:
         store.close()
 
 
+def _coverage(exchange: str, *, status: str = "PASS") -> dict[str, object]:
+    return {
+        "trading_day": "2026-08-27",
+        "exchange": exchange,
+        "status": status,
+        "contract_count": 1 if status == "PASS" else 0,
+        "record_count": 2 if status == "PASS" else 0,
+        "source": "fixture-exchange",
+        "error": None if status == "PASS" else "fixture source unavailable",
+        "collected_at": "2026-08-29T00:00:00+00:00",
+    }
+
+
 def test_product_open_interest_pipeline_fixes_baseline_and_exposes_new_members(tmp_path: Path) -> None:
     data_root = tmp_path / "data"
     _write(
@@ -161,6 +174,9 @@ def test_member_structure_requires_both_direction_ranks_for_net_and_uses_fixed_b
                     }
                 )
         store.upsert_futures_member_position_ranks(rows)
+        store.upsert_futures_member_position_coverage(
+            [_coverage(exchange) for exchange in ("SHFE", "INE", "DCE", "CZCE", "GFEX")]
+        )
     finally:
         store.close()
 
@@ -180,3 +196,42 @@ def test_member_structure_requires_both_direction_ranks_for_net_and_uses_fixed_b
     ).json()
     assert net_long["available"] is True
     assert net_long["totals"] == [60.0]
+
+
+def test_member_structure_refuses_to_establish_a_baseline_when_exchange_coverage_failed(tmp_path: Path) -> None:
+    data_root = tmp_path / "data"
+    store = MarketStore(data_root)
+    try:
+        store.upsert_futures_member_position_ranks(
+            [
+                {
+                    "trading_day": "2026-08-27", "exchange": "SHFE", "contract_code": "RB2610",
+                    "product_code": "RB", "side": side, "rank": 1, "member_key": "甲",
+                    "member_name": "甲", "position": 100.0, "position_change": 0.0,
+                    "source": "fixture-exchange", "collected_at": "2026-08-29T00:00:00+00:00",
+                }
+                for side in ("LONG", "SHORT")
+            ]
+        )
+        store.upsert_futures_member_position_coverage(
+            [
+                _coverage("SHFE"),
+                _coverage("INE"),
+                _coverage("DCE", status="FAILED"),
+                _coverage("CZCE"),
+                _coverage("GFEX"),
+            ]
+        )
+    finally:
+        store.close()
+
+    summary = run_member_open_interest_structure_pipeline(data_root, calculated_at="2026-08-29T02:00:00+00:00")
+    assert summary["directions"]["gross"]["status"] == "NO_COMPLETE_COVERAGE"
+    client = TestClient(create_web_app(data_root), client=("127.0.0.1", 50000))
+    payload = client.get(
+        f"/api/futures/structures/{MEMBER_OPEN_INTEREST_CHART_ID}",
+        params={"direction": "gross", "range": "all"},
+    ).json()
+
+    assert payload["available"] is False
+    assert "固定堆叠基准" in payload["limitations"][0]

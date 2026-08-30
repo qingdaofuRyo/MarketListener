@@ -5,6 +5,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from market_monitor.collector import _collect_oi_leaderboard
 from market_monitor.futures_member_positions import (
     MemberPositionRank,
     collect_exchange_member_position_ranks,
@@ -55,6 +56,26 @@ def _rank(
     ).to_dict()
 
 
+def _coverage(
+    exchange: str,
+    status: str,
+    *,
+    contract_count: int = 0,
+    record_count: int = 0,
+    error: str | None = None,
+) -> dict[str, object]:
+    return {
+        "trading_day": "2026-08-27",
+        "exchange": exchange,
+        "status": status,
+        "contract_count": contract_count,
+        "record_count": record_count,
+        "source": f"fixture-{exchange.lower()}-member-ranking",
+        "error": error,
+        "collected_at": "2026-08-27T08:00:00+00:00",
+    }
+
+
 def test_normalise_keeps_separate_direction_coverage_and_maps_ine() -> None:
     rows = normalise_exchange_member_position_ranks(
         {
@@ -100,9 +121,42 @@ def test_collects_each_exchange_independently_when_dce_fails() -> None:
 
     assert len(rows) == 8
     assert {item.exchange: item.status for item in coverage} == {
-        "CFFEX": "PASS", "DCE": "FAILED", "CZCE": "PASS", "SHFE": "PASS", "GFEX": "PASS",
+        "CFFEX": "PASS", "DCE": "FAILED", "CZCE": "PASS", "SHFE": "PASS", "INE": "FAILED", "GFEX": "PASS",
     }
     assert "ValueError" in next(item.error for item in coverage if item.exchange == "DCE" if item.error)
+
+
+def test_oi_collection_persists_each_exchange_coverage_even_when_one_source_fails(monkeypatch) -> None:
+    class Api:
+        def get_cffex_rank_table(self, *, date: str):
+            assert date == "20260827"
+            return {"IF2609": _Frame([_record()])}
+
+        def futures_dce_position_rank(self, *, date: str):
+            raise ValueError("not a zip")
+
+        def get_rank_table_czce(self, *, date: str):
+            return {"AP2610": _Frame([_record()])}
+
+        def get_shfe_rank_table(self, *, date: str):
+            return {"RB2610": _Frame([_record()]), "SC2610": _Frame([_record()])}
+
+        def futures_gfex_position_rank(self, *, date: str):
+            return {"SI2610": _Frame([_record()])}
+
+    monkeypatch.setattr("market_monitor.collector._ak", lambda: Api())
+    monkeypatch.setattr("market_monitor.collector._last_trading_day_compact", lambda: "20260827")
+    monkeypatch.setattr("market_monitor.collector._now", lambda: "2026-08-27T08:00:00+00:00")
+
+    result = _collect_oi_leaderboard()
+
+    coverage = {item["exchange"]: item for item in result.persist.member_position_coverage}
+    assert result.status == "PARTIAL_FAILURE"
+    assert coverage["DCE"]["status"] == "FAILED"
+    assert coverage["DCE"]["error"] == "ValueError: not a zip"
+    assert coverage["INE"]["status"] == "PASS"
+    assert coverage["INE"]["contract_count"] == 1
+    assert {item["trading_day"] for item in coverage.values()} == {"2026-08-27"}
 
 
 def test_member_position_api_preserves_unpublished_direction_as_null(tmp_path: Path) -> None:
@@ -117,6 +171,16 @@ def test_member_position_api_preserves_unpublished_direction_as_null(tmp_path: P
                 _rank(exchange="CFFEX", contract="IF2609", member="金融", side="LONG"),
             ]
         )
+        store.upsert_futures_member_position_coverage(
+            [
+                _coverage("SHFE", "PASS", contract_count=1, record_count=3),
+                _coverage("DCE", "FAILED", error="fixture DCE unavailable"),
+                _coverage("CZCE", "FAILED", error="fixture CZCE unavailable"),
+                _coverage("INE", "FAILED", error="fixture INE unavailable"),
+                _coverage("GFEX", "FAILED", error="fixture GFEX unavailable"),
+                _coverage("CFFEX", "PASS", contract_count=1, record_count=1),
+            ]
+        )
     finally:
         store.close()
 
@@ -129,8 +193,37 @@ def test_member_position_api_preserves_unpublished_direction_as_null(tmp_path: P
     assert body["coverage"]["exchanges"] == ["SHFE"]
     assert body["coverage"]["missingExchanges"] == ["CZCE", "DCE", "GFEX", "INE"]
     assert body["coverage"]["isComplete"] is False
+    assert body["coverage"]["dataQualityStatus"] == "PARTIAL"
+    exchange_coverage = {item["exchange"]: item for item in body["coverage"]["exchangeCoverage"]}
+    assert exchange_coverage["SHFE"]["status"] == "PASS"
+    assert exchange_coverage["DCE"]["error"] == "fixture DCE unavailable"
     by_member = {item["memberName"]: item for item in body["rows"]}
     assert by_member["甲"]["netPosition"] == 30
     assert by_member["乙"]["shortPosition"] is None
     assert by_member["乙"]["netPosition"] is None
+    assert client.get("/api/futures/member-positions", params={"exchange": "INE"}).status_code == 200
     assert client.get("/api/futures/member-positions", params={"exchange": "UNKNOWN"}).status_code == 422
+
+
+def test_member_position_api_exposes_a_failed_coverage_run_without_fake_rank_rows(tmp_path: Path) -> None:
+    root = tmp_path / "data"
+    store = MarketStore(root)
+    try:
+        store.upsert_futures_member_position_coverage(
+            [
+                _coverage(exchange, "FAILED", error=f"fixture {exchange} unavailable")
+                for exchange in ("DCE", "CZCE", "SHFE", "INE", "GFEX")
+            ]
+        )
+    finally:
+        store.close()
+
+    client = TestClient(create_web_app(root), client=("127.0.0.1", 50000))
+    body = client.get("/api/futures/member-positions").json()
+
+    assert body["available"] is False
+    assert body["tradingDay"] == "2026-08-27"
+    assert body["coverage"]["publishedDirectionRankCount"] == 0
+    assert body["coverage"]["missingExchanges"] == ["CZCE", "DCE", "GFEX", "INE", "SHFE"]
+    assert body["coverage"]["dataQualityStatus"] == "PARTIAL"
+    assert body["coverage"]["exchangeCoverage"][0]["error"].startswith("fixture")

@@ -75,6 +75,7 @@ class PersistPlan:
     bar_writes: list[BarWrite] = field(default_factory=list)
     gold_metrics: list[dict[str, Any]] = field(default_factory=list)
     member_position_ranks: list[dict[str, Any]] = field(default_factory=list)
+    member_position_coverage: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -262,7 +263,12 @@ def _persist_results(data_root: Path, results: Sequence[CollectionTaskResult]) -
         store.register_default_datasets()
         for result in results:
             plan = result.persist
-            if not plan.bar_writes and not plan.gold_metrics and not plan.member_position_ranks:
+            if (
+                not plan.bar_writes
+                and not plan.gold_metrics
+                and not plan.member_position_ranks
+                and not plan.member_position_coverage
+            ):
                 continue
             run_id = store.begin_run(f"collector:{result.source}")
             try:
@@ -272,6 +278,8 @@ def _persist_results(data_root: Path, results: Sequence[CollectionTaskResult]) -
                     store.upsert_gold_metrics(plan.gold_metrics)
                 if plan.member_position_ranks:
                     store.upsert_futures_member_position_ranks(plan.member_position_ranks)
+                if plan.member_position_coverage:
+                    store.upsert_futures_member_position_coverage(plan.member_position_coverage)
                 if result.status == "PASS":
                     store.finish_run(run_id, "COMPLETE", result.detail)
                 else:
@@ -1133,15 +1141,19 @@ def _collect_oi_leaderboard() -> CollectionTaskResult:
     api = _ak()
     day = _last_trading_day_compact()
     trading_day = f"{day[:4]}-{day[4:6]}-{day[6:]}"
+    collected_at = _now()
     ranks, coverage = collect_exchange_member_position_ranks(
         api,
         day_compact=day,
         trading_day=trading_day,
-        collected_at=_now(),
+        collected_at=collected_at,
     )
     rows = _leaderboard_rows_from_member_ranks(ranks)
     plan = PersistPlan()
     plan.member_position_ranks.extend(rank.to_dict() for rank in ranks)
+    plan.member_position_coverage.extend(
+        item.to_dict(trading_day=trading_day, collected_at=collected_at) for item in coverage
+    )
     if rows:
         leaderboard = build_open_interest_leaderboard(rows, trading_day=trading_day)
         for leader in leaderboard:

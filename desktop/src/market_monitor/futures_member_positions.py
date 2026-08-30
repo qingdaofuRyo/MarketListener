@@ -15,7 +15,9 @@ from typing import Any, Mapping
 
 
 COMMODITY_EXCHANGES = frozenset({"SHFE", "INE", "DCE", "CZCE", "GFEX"})
-ALL_EXCHANGES = ("CFFEX", "DCE", "CZCE", "SHFE", "GFEX")
+# INE publishes through the SHFE ranking adapter, but remains a separate
+# exchange in every public contract, coverage record, and API filter.
+ALL_EXCHANGES = ("CFFEX", "DCE", "CZCE", "SHFE", "INE", "GFEX")
 _INE_PRODUCTS = frozenset({"BC", "EC", "LU", "NR", "SC"})
 _MEMBER_SUMMARY_MARKERS = ("合计", "总计", "total", "subtotal")
 
@@ -65,6 +67,20 @@ class ExchangeRankCoverage:
     source: str
     error: str | None = None
 
+    def to_dict(self, *, trading_day: str, collected_at: str) -> dict[str, Any]:
+        """Return the persistent evidence shape for one source/exchange probe."""
+
+        return {
+            "trading_day": trading_day,
+            "exchange": self.exchange,
+            "status": self.status,
+            "contract_count": self.contract_count,
+            "record_count": self.record_count,
+            "source": self.source,
+            "error": self.error,
+            "collected_at": collected_at,
+        }
+
 
 def collect_exchange_member_position_ranks(
     api: Any,
@@ -85,22 +101,27 @@ def collect_exchange_member_position_ranks(
     coverage: list[ExchangeRankCoverage] = []
     for exchange, function_name in _EXCHANGE_FUNCTIONS:
         source = f"akshare-{exchange.lower()}-member-ranking"
+        coverage_exchanges = _COVERAGE_EXCHANGES[exchange]
         fn = getattr(api, function_name, None)
         if not callable(fn):
-            coverage.append(
-                ExchangeRankCoverage(exchange, "UNSUPPORTED", 0, 0, source, f"missing {function_name}")
+            coverage.extend(
+                ExchangeRankCoverage(item, "UNSUPPORTED", 0, 0, source, f"missing {function_name}")
+                for item in coverage_exchanges
             )
             continue
         try:
             frames = fn(date=day_compact)
         except Exception as error:  # provider failures must remain visible per exchange
-            coverage.append(
-                ExchangeRankCoverage(exchange, "FAILED", 0, 0, source, f"{type(error).__name__}: {error}"[:300])
+            message = f"{type(error).__name__}: {error}"[:300]
+            coverage.extend(
+                ExchangeRankCoverage(item, "FAILED", 0, 0, source, message)
+                for item in coverage_exchanges
             )
             continue
         if not isinstance(frames, Mapping):
-            coverage.append(
-                ExchangeRankCoverage(exchange, "FAILED", 0, 0, source, "provider returned non-mapping result")
+            coverage.extend(
+                ExchangeRankCoverage(item, "FAILED", 0, 0, source, "provider returned non-mapping result")
+                for item in coverage_exchanges
             )
             continue
         normalised = normalise_exchange_member_position_ranks(
@@ -110,14 +131,31 @@ def collect_exchange_member_position_ranks(
             source=source,
             collected_at=collected_at,
         )
-        contracts = {row.contract_code for row in normalised}
         if not normalised:
-            coverage.append(
-                ExchangeRankCoverage(exchange, "FAILED", len(frames), 0, source, "no usable published ranking rows")
+            coverage.extend(
+                ExchangeRankCoverage(item, "FAILED", len(frames), 0, source, "no usable published ranking rows")
+                for item in coverage_exchanges
             )
             continue
         rows.extend(normalised)
-        coverage.append(ExchangeRankCoverage(exchange, "PASS", len(contracts), len(normalised), source))
+        for effective_exchange in coverage_exchanges:
+            exchange_rows = [row for row in normalised if row.exchange == effective_exchange]
+            contracts = {row.contract_code for row in exchange_rows}
+            if exchange_rows:
+                coverage.append(
+                    ExchangeRankCoverage(effective_exchange, "PASS", len(contracts), len(exchange_rows), source)
+                )
+            else:
+                coverage.append(
+                    ExchangeRankCoverage(
+                        effective_exchange,
+                        "FAILED",
+                        0,
+                        0,
+                        source,
+                        f"provider returned no usable {effective_exchange} ranking rows",
+                    )
+                )
     return rows, coverage
 
 
@@ -195,6 +233,13 @@ _EXCHANGE_FUNCTIONS: tuple[tuple[str, str], ...] = (
     ("SHFE", "get_shfe_rank_table"),
     ("GFEX", "futures_gfex_position_rank"),
 )
+_COVERAGE_EXCHANGES: Mapping[str, tuple[str, ...]] = {
+    "CFFEX": ("CFFEX",),
+    "DCE": ("DCE",),
+    "CZCE": ("CZCE",),
+    "SHFE": ("SHFE", "INE"),
+    "GFEX": ("GFEX",),
+}
 _SIDES = (
     ("LONG", "long_party_name", "long_open_interest", "long_open_interest_chg"),
     ("SHORT", "short_party_name", "short_open_interest", "short_open_interest_chg"),

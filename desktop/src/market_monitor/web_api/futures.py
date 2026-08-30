@@ -359,7 +359,7 @@ def futures_member_positions(
         return _unavailable_member_positions("尚未采集交易所会员持仓排名。")
     store = MarketStore(root)
     try:
-        effective_day = selected_day.isoformat() if selected_day else store.latest_futures_member_position_day(
+        effective_day = selected_day.isoformat() if selected_day else store.latest_futures_member_position_observation_day(
             commodity_only=commodity_only
         )
         if effective_day is None:
@@ -369,6 +369,10 @@ def futures_member_positions(
             exchange=selected_exchange,
             contract_code=selected_contract,
             product_code=selected_product,
+            commodity_only=commodity_only,
+        )
+        coverage_records = store.list_futures_member_position_coverage(
+            trading_day=effective_day,
             commodity_only=commodity_only,
         )
     finally:
@@ -381,6 +385,7 @@ def futures_member_positions(
         product_code=selected_product,
         commodity_only=commodity_only,
         include_rows=selected_contract is not None or selected_product is not None,
+        coverage_records=coverage_records,
     )
 
 
@@ -558,6 +563,7 @@ def _member_position_payload(
     product_code: str | None,
     commodity_only: bool,
     include_rows: bool,
+    coverage_records: list[Mapping[str, Any]],
 ) -> dict[str, Any]:
     groups: dict[tuple[str, str, str], dict[str, Any]] = {}
     contracts: set[tuple[str, str, str]] = set()
@@ -617,7 +623,11 @@ def _member_position_payload(
         for item in sorted(contracts)
     ]
     exchanges = sorted({str(item["exchange"]) for item in ranks})
-    missing_exchanges = sorted(COMMODITY_EXCHANGES - set(exchanges)) if commodity_only else []
+    coverage = _member_position_coverage_payload(
+        ranks,
+        coverage_records,
+        commodity_only=commodity_only,
+    )
     return {
         "available": bool(ranks),
         "tradingDay": trading_day,
@@ -634,15 +644,72 @@ def _member_position_payload(
             "memberCount": len(rows),
             "exchangeCount": len(exchanges),
             "exchanges": exchanges,
-            "missingExchanges": missing_exchanges,
-            "isComplete": not missing_exchanges,
+            **coverage,
         },
         "limitations": [
             "仅统计交易所实际公布的会员方向排名，覆盖总计不是全市场会员全部持仓。",
             "会员未出现在另一方向排名时以 null 表示未公布，不能据此推断持仓为 0 或计算净持仓。",
             "默认排除中金所金融期货；可通过 commodity_only=false 查看已采集的全部交易所。",
+            *( ["逐交易所采集覆盖未完整通过，失败详情保留在“来源采集覆盖”中；不得将已公布排名外推为全市场会员持仓。"] if not coverage["isComplete"] else []),
             *( [] if include_rows else ["请选择交易所、品种或具体月份合约后再读取席位明细，避免默认传输全市场大字段。"]),
         ],
+    }
+
+
+def _member_position_coverage_payload(
+    ranks: list[Mapping[str, Any]],
+    coverage_records: list[Mapping[str, Any]],
+    *,
+    commodity_only: bool,
+) -> dict[str, Any]:
+    """Expose source results independently from the rank rows they produced."""
+
+    expected = tuple(sorted(COMMODITY_EXCHANGES if commodity_only else ALL_EXCHANGES))
+    rank_exchanges = {str(item["exchange"]).upper() for item in ranks}
+    by_exchange: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+    for row in coverage_records:
+        exchange = str(row.get("exchange") or "").upper()
+        if exchange in expected:
+            by_exchange[exchange].append(row)
+    exchange_coverage: list[dict[str, Any]] = []
+    for exchange in expected:
+        records = by_exchange[exchange]
+        if records:
+            statuses = {str(item.get("status") or "").upper() for item in records}
+            status = "PASS" if "PASS" in statuses else "UNSUPPORTED" if statuses == {"UNSUPPORTED"} else "FAILED"
+            errors = sorted({str(item["error"]) for item in records if item.get("error")})
+            exchange_coverage.append(
+                {
+                    "exchange": exchange,
+                    "status": status,
+                    "contractCount": max(int(item["contract_count"]) for item in records),
+                    "recordCount": max(int(item["record_count"]) for item in records),
+                    "sources": sorted({str(item["source"]) for item in records}),
+                    "error": "；".join(errors) or None,
+                    "collectedAt": max(str(item["collected_at"]) for item in records),
+                }
+            )
+            continue
+        # Old databases may contain normalised ranking facts without the
+        # probe result.  Preserve the facts but never retroactively call their
+        # exchange coverage PASS.
+        exchange_coverage.append(
+            {
+                "exchange": exchange,
+                "status": "LEGACY_UNVERIFIED" if exchange in rank_exchanges else "NOT_COLLECTED",
+                "contractCount": 0,
+                "recordCount": 0,
+                "sources": [],
+                "error": "历史排名未保留逐交易所采集覆盖。" if exchange in rank_exchanges else "本交易日未记录该交易所采集结果。",
+                "collectedAt": None,
+            }
+        )
+    missing_exchanges = [item["exchange"] for item in exchange_coverage if item["status"] != "PASS"]
+    return {
+        "exchangeCoverage": exchange_coverage,
+        "missingExchanges": missing_exchanges,
+        "isComplete": not missing_exchanges,
+        "dataQualityStatus": "PASS" if not missing_exchanges else "PARTIAL" if ranks or coverage_records else "UNAVAILABLE",
     }
 
 
@@ -658,8 +725,10 @@ def _unavailable_member_positions(limitation: str) -> dict[str, Any]:
             "memberCount": 0,
             "exchangeCount": 0,
             "exchanges": [],
+            "exchangeCoverage": [],
             "missingExchanges": sorted(COMMODITY_EXCHANGES),
             "isComplete": False,
+            "dataQualityStatus": "UNAVAILABLE",
         },
         "limitations": [limitation],
     }

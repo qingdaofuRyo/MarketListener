@@ -474,6 +474,24 @@ class MarketStore:
         ).fetchone()
         return str(row[0]) if row and row[0] is not None else None
 
+    def latest_futures_member_position_observation_day(self, *, commodity_only: bool = True) -> str | None:
+        """Return the newest rank *or coverage* observation day.
+
+        A fully failed exchange collection intentionally has no rank rows.  It
+        must still be visible to the read API as a real, dated source failure
+        rather than being hidden behind the previous successful rank day.
+        """
+
+        clause = " WHERE exchange <> 'CFFEX'" if commodity_only else ""
+        row = self.connection.execute(
+            "SELECT max(trading_day) FROM ("
+            f"SELECT trading_day FROM futures_member_position_ranks{clause} "
+            "UNION ALL "
+            f"SELECT trading_day FROM futures_member_position_coverage{clause}"
+            ")"
+        ).fetchone()
+        return str(row[0]) if row and row[0] is not None else None
+
     def list_futures_member_position_ranks(
         self,
         *,
@@ -510,6 +528,64 @@ class MarketStore:
         )
         return [
             dict(zip(_FUTURES_MEMBER_POSITION_RANK_COLUMNS, row, strict=True))
+            for row in cursor.fetchall()
+        ]
+
+    def upsert_futures_member_position_coverage(self, rows: Sequence[Mapping[str, Any]]) -> int:
+        """Persist the source result for every exchange, including failures.
+
+        Rank rows alone cannot prove that a source attempted all requested
+        exchanges.  This table is therefore deliberately separate from the
+        published ranking facts and never fabricates a zero-position row.
+        """
+
+        if not rows:
+            return 0
+        for row in rows:
+            _validate_futures_member_position_coverage(row)
+        columns = _FUTURES_MEMBER_POSITION_COVERAGE_COLUMNS
+        placeholders = ", ".join("?" for _ in columns)
+        updates = ", ".join(
+            f"{column}=excluded.{column}"
+            for column in columns
+            if column not in {"trading_day", "exchange", "source"}
+        )
+        self.connection.executemany(
+            f"""INSERT INTO futures_member_position_coverage ({', '.join(columns)}) VALUES ({placeholders})
+            ON CONFLICT(trading_day, exchange, source) DO UPDATE SET {updates}""",
+            [[row[column] for column in columns] for row in rows],
+        )
+        self.connection.commit()
+        return len(rows)
+
+    def list_futures_member_position_coverage(
+        self,
+        *,
+        trading_day: str | None = None,
+        exchange: str | None = None,
+        commodity_only: bool = True,
+    ) -> list[dict[str, Any]]:
+        """Read source-level rank coverage without treating failures as absent."""
+
+        clauses: list[str] = []
+        parameters: list[str] = []
+        if trading_day is not None:
+            clauses.append("trading_day = ?")
+            parameters.append(trading_day)
+        if exchange is not None:
+            clauses.append("exchange = ?")
+            parameters.append(exchange)
+        if commodity_only:
+            clauses.append("exchange <> 'CFFEX'")
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        cursor = self.connection.execute(
+            f"SELECT {', '.join(_FUTURES_MEMBER_POSITION_COVERAGE_COLUMNS)} "
+            f"FROM futures_member_position_coverage{where} "
+            "ORDER BY trading_day, exchange, source",
+            parameters,
+        )
+        return [
+            dict(zip(_FUTURES_MEMBER_POSITION_COVERAGE_COLUMNS, row, strict=True))
             for row in cursor.fetchall()
         ]
 
@@ -550,6 +626,7 @@ class MarketStore:
         self._ensure_futures_long_short_heat_schema()
         self._ensure_futures_structure_schema()
         self._ensure_futures_member_position_rank_schema()
+        self._ensure_futures_member_position_coverage_schema()
 
     def _ensure_futures_long_short_heat_schema(self) -> None:
         table_name = "futures_long_short_heat_daily"
@@ -641,6 +718,21 @@ class MarketStore:
                 source VARCHAR NOT NULL,
                 collected_at VARCHAR NOT NULL,
                 PRIMARY KEY(trading_day, exchange, contract_code, side, rank, source)
+            )"""
+        )
+
+    def _ensure_futures_member_position_coverage_schema(self) -> None:
+        self.connection.execute(
+            """CREATE TABLE IF NOT EXISTS futures_member_position_coverage (
+                trading_day VARCHAR NOT NULL,
+                exchange VARCHAR NOT NULL,
+                status VARCHAR NOT NULL,
+                contract_count INTEGER NOT NULL,
+                record_count INTEGER NOT NULL,
+                source VARCHAR NOT NULL,
+                error VARCHAR,
+                collected_at VARCHAR NOT NULL,
+                PRIMARY KEY(trading_day, exchange, source)
             )"""
         )
 
@@ -868,6 +960,17 @@ _FUTURES_MEMBER_POSITION_RANK_COLUMNS = (
     "collected_at",
 )
 
+_FUTURES_MEMBER_POSITION_COVERAGE_COLUMNS = (
+    "trading_day",
+    "exchange",
+    "status",
+    "contract_count",
+    "record_count",
+    "source",
+    "error",
+    "collected_at",
+)
+
 
 def _validate_futures_member_position_rank(row: Mapping[str, Any]) -> None:
     missing = [column for column in _FUTURES_MEMBER_POSITION_RANK_COLUMNS if column not in row]
@@ -888,6 +991,24 @@ def _validate_futures_member_position_rank(row: Mapping[str, Any]) -> None:
         raise ValueError("position must be non-negative")
     if row["position_change"] is not None:
         _finite_number(row["position_change"], "position_change")
+
+
+def _validate_futures_member_position_coverage(row: Mapping[str, Any]) -> None:
+    missing = [column for column in _FUTURES_MEMBER_POSITION_COVERAGE_COLUMNS if column not in row]
+    if missing:
+        raise ValueError(f"member position coverage row missing columns: {missing}")
+    for field in ("trading_day", "exchange", "status", "source", "collected_at"):
+        if not isinstance(row[field], str) or not row[field].strip():
+            raise ValueError(f"{field} must be a non-empty string")
+    if row["status"] not in {"PASS", "FAILED", "UNSUPPORTED"}:
+        raise ValueError("member position coverage status must be PASS, FAILED or UNSUPPORTED")
+    for field in ("contract_count", "record_count"):
+        value = row[field]
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(f"{field} must be a non-negative integer")
+    error = row["error"]
+    if error is not None and (not isinstance(error, str) or not error.strip()):
+        raise ValueError("error must be a non-empty string or null")
 
 
 def _now() -> str:

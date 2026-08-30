@@ -378,27 +378,36 @@ onMounted(() => {
       </header>
       <el-alert v-if="memberPositionError" :title="memberPositionError" type="warning" :closable="false" />
       <el-skeleton v-else-if="memberPositionLoading && !memberPositionPayload" :rows="5" animated />
-      <template v-else-if="memberPositionPayload?.available">
+      <template v-else-if="memberPositionPayload">
         <div class="member-position-coverage">
           <span>交易日：{{ memberPositionPayload.tradingDay }}</span>
           <span>已公布方向排名：{{ memberPositionPayload.coverage.publishedDirectionRankCount.toLocaleString("zh-CN") }}</span>
           <span>覆盖交易所：{{ memberPositionPayload.coverage.exchanges.join("、") || "—" }}</span>
           <span v-if="memberPositionPayload.coverage.missingExchanges.length">缺失交易所：{{ memberPositionPayload.coverage.missingExchanges.join("、") }}</span>
         </div>
-        <el-table v-if="memberPositionPayload.rows.length" :data="memberPositionPayload.rows" size="small" max-height="440" class="member-position-table">
-          <el-table-column prop="exchange" label="交易所" width="74" />
-          <el-table-column prop="contractCode" label="合约" width="88" />
-          <el-table-column prop="memberName" label="席位" min-width="150" />
-          <el-table-column label="多头（名次）" min-width="130"><template #default="scope">{{ formatPosition(scope.row.longPosition) }}（{{ scope.row.longRank ?? "—" }}）</template></el-table-column>
-          <el-table-column label="空头（名次）" min-width="130"><template #default="scope">{{ formatPosition(scope.row.shortPosition) }}（{{ scope.row.shortRank ?? "—" }}）</template></el-table-column>
-          <el-table-column label="多头净" min-width="94"><template #default="scope">{{ formatPosition(scope.row.netLongPosition) }}</template></el-table-column>
-          <el-table-column label="空头净" min-width="94"><template #default="scope">{{ formatPosition(scope.row.netShortPosition) }}</template></el-table-column>
-          <el-table-column label="来源" min-width="190"><template #default="scope">{{ scope.row.sources.join("；") }}</template></el-table-column>
-        </el-table>
-        <div v-else class="structure-empty"><strong>请选择月份合约</strong><span>系统不会默认传输全市场全部席位明细。</span></div>
+        <ul v-if="memberPositionPayload.coverage.exchangeCoverage?.length" class="member-position-source-coverage" data-test="member-position-source-coverage">
+          <li v-for="item in memberPositionPayload.coverage.exchangeCoverage" :key="item.exchange">
+            {{ item.exchange }}：{{ item.status }} · {{ item.contractCount }} 个合约／{{ item.recordCount }} 条排名
+            <template v-if="item.sources.length"> · {{ item.sources.join("；") }}</template>
+            <template v-if="item.error"> · {{ item.error }}</template>
+          </li>
+        </ul>
+        <template v-if="memberPositionPayload.available">
+          <el-table v-if="memberPositionPayload.rows.length" :data="memberPositionPayload.rows" size="small" max-height="440" class="member-position-table">
+            <el-table-column prop="exchange" label="交易所" width="74" />
+            <el-table-column prop="contractCode" label="合约" width="88" />
+            <el-table-column prop="memberName" label="席位" min-width="150" />
+            <el-table-column label="多头（名次）" min-width="130"><template #default="scope">{{ formatPosition(scope.row.longPosition) }}（{{ scope.row.longRank ?? "—" }}）</template></el-table-column>
+            <el-table-column label="空头（名次）" min-width="130"><template #default="scope">{{ formatPosition(scope.row.shortPosition) }}（{{ scope.row.shortRank ?? "—" }}）</template></el-table-column>
+            <el-table-column label="多头净" min-width="94"><template #default="scope">{{ formatPosition(scope.row.netLongPosition) }}</template></el-table-column>
+            <el-table-column label="空头净" min-width="94"><template #default="scope">{{ formatPosition(scope.row.netShortPosition) }}</template></el-table-column>
+            <el-table-column label="来源" min-width="190"><template #default="scope">{{ scope.row.sources.join("；") }}</template></el-table-column>
+          </el-table>
+          <div v-else class="structure-empty"><strong>请选择月份合约</strong><span>系统不会默认传输全市场全部席位明细。</span></div>
+        </template>
+        <div v-else class="structure-empty"><strong>商品合约席位分布暂无可用数据</strong><span>{{ memberPositionPayload.limitations[0] }}</span></div>
         <ul class="member-position-limitations"><li v-for="item in memberPositionPayload.limitations" :key="item">{{ item }}</li></ul>
       </template>
-      <div v-else-if="memberPositionPayload" class="structure-empty"><strong>商品合约席位分布暂无可用数据</strong><span>{{ memberPositionPayload.limitations[0] }}</span></div>
     </section>
 
     <footer v-if="payload" class="futures-footnote">
@@ -440,6 +449,7 @@ onMounted(() => {
 .member-position-filters { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .member-position-filters .el-select { width: 146px; }
 .member-position-coverage { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-bottom: 8px; color: var(--ml-text-secondary); font-size: 12px; }
+.member-position-source-coverage { margin: 0 0 8px; padding-left: 18px; color: var(--ml-text-disabled); font-size: 11px; }
 .member-position-limitations { margin: 8px 0 0; padding-left: 18px; color: var(--ml-text-disabled); font-size: 11px; }
 @media (max-width: 720px) { .member-position-filters { justify-content: flex-start; } .member-position-filters .el-select { width: min(100%, 240px); } }
 @media (max-width: 720px) { .structure-header { display: grid; } .structure-controls { justify-content: flex-start; } }

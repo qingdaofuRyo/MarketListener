@@ -135,6 +135,16 @@ export interface FuturesMemberPositionRow {
   sources: string[];
 }
 
+export interface FuturesMemberPositionExchangeCoverage {
+  exchange: string;
+  status: "PASS" | "FAILED" | "UNSUPPORTED" | "LEGACY_UNVERIFIED" | "NOT_COLLECTED";
+  contractCount: number;
+  recordCount: number;
+  sources: string[];
+  error: string | null;
+  collectedAt: string | null;
+}
+
 export interface FuturesMemberPositionResponse {
   available: boolean;
   tradingDay: string | null;
@@ -151,8 +161,10 @@ export interface FuturesMemberPositionResponse {
     memberCount: number;
     exchangeCount: number;
     exchanges: string[];
+    exchangeCoverage?: FuturesMemberPositionExchangeCoverage[];
     missingExchanges: string[];
     isComplete: boolean;
+    dataQualityStatus?: "PASS" | "PARTIAL" | "UNAVAILABLE";
   };
   limitations: string[];
 }

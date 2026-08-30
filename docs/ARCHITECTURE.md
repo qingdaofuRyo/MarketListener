@@ -41,7 +41,7 @@
 | 层 | 介质 | 内容 |
 | --- | --- | --- |
 | Raw/Bronze | gzip JSON、JSON/JSONL | 上游原始响应、可恢复下载和审计证据。 |
-| Catalog | DuckDB | 运行台账、分区登记、数据集目录、普通 Gold 指标、版本化期货多空热度、交易所会员方向排名和固定基准期货结构 Gold。 |
+| Catalog | DuckDB | 运行台账、分区登记、数据集目录、普通 Gold 指标、版本化期货多空热度、交易所会员方向排名、逐交易所排名采集覆盖和固定基准期货结构 Gold。 |
 | Silver | Parquet | 标准化、来源隔离的 K 线；完整记录保存在 `bar_json`。 |
 | Query cache | DuckDB 清单 + 有界内存窗口 | 文件覆盖索引、游标历史查询和卡片尾部 K 线。 |
 | Personal | 本地 JSON/JSONL；Android 加密 Room | 自选、画线、账户、交易、策略参数和个人记录。 |
@@ -69,7 +69,7 @@ Provider 通过独立能力登记与探针报告声明市场、资产类型、�
 
 ### 通达信期货通与期货备用源
 
-`futures_bulk.py` 导入本地月份合约、次连 `L7`、主连 `L8` 和原生加权 `L9`，并在本地主连缺失时使用受控 AKShare 备用。`futures_calendar.py` 持久化统一交易日，`futures_rule_sync.py` 按精确交易日快照品种乘数、基础保证金和具体合约 override；`futures_heat_pipeline.py` 离线生成版本化 Gold，缺失规则不回填猜测值。`futures_member_positions.py` 将交易所公布的多/空方向排名逐条存为 `FUTURES_MEMBER_POSITION_DAILY`，未出现在另一方向榜单时保持未知而非零。`futures_structure.py` 由 DuckDB 先聚合期货 Silver，再仅以五个商品交易所的有效月份合约建立品种结构；也可从席位排名生成方向独立的席位结构。两种结构均固定基准，新增成员不会重排历史或静默并入“其他”；缺交易所覆盖时不建立正式基准。
+`futures_bulk.py` 导入本地月份合约、次连 `L7`、主连 `L8` 和原生加权 `L9`，并在本地主连缺失时使用受控 AKShare 备用。`futures_calendar.py` 持久化统一交易日，`futures_rule_sync.py` 按精确交易日快照品种乘数、基础保证金和具体合约 override；`futures_heat_pipeline.py` 离线生成版本化 Gold，缺失规则不回填猜测值。`futures_member_positions.py` 将交易所公布的多/空方向排名逐条存为 `FUTURES_MEMBER_POSITION_DAILY`，未出现在另一方向榜单时保持未知而非零；同次采集还分别存储每个交易所的 `PASS/FAILED/UNSUPPORTED` 覆盖、合约/排名行数、错误和获取时间。旧排名没有该证据时只可标记为 `LEGACY_UNVERIFIED`，不能逆推为完整来源覆盖。`futures_structure.py` 由 DuckDB 先聚合期货 Silver，再仅以五个商品交易所的有效月份合约建立品种结构；也可从席位排名生成方向独立的席位结构。两种结构均固定基准，新增成员不会重排历史或静默并入“其他”；缺交易所显式 `PASS` 覆盖时不建立正式基准。
 
 ### TickDB（历史）
 
@@ -81,7 +81,7 @@ TickDB 从未进入 Silver，本地原始目录已由用户于 2026-08-28 删除
 - `web_api/market.py` 提供分类、分页标的、待分类审计清单、游标 K 线、卡片批量、画线和指标。`unclassified_instruments.py` 只读扫描两个通达信终端中未命中文件名规则的数据，并与 Silver 未分类项合并展示；正常行情和策略入口在查询边界排除这些项。
 - `web_api/sources.py` 提供本地物理表、数据集、字段、Provider 和路由偏好。
 - `web_api/stats.py` 与 `web_api/strategy.py` 提供账户、交易、策略绩效和安全公式运行。
-- `web_api/futures.py` 只读 `FUTURES_LONG_SHORT_HEAT`、`FUTURES_STRUCTURE_*` Gold、原始会员方向排名和已选中的本地 Silver 合约日线；它不保存用户权重下的固定总分，也不临时合成加权合约。会员接口默认不传输全市场大字段，要求先按交易所/品种/合约筛选，并显示缺失交易所；`/contracts` 与 `/contract-series` 仅暴露本地月份/原生加权序列、OHLC 和单边持仓。未锁定 `priceBasis` 的名义持仓规模和未通过现货规格审计的基差均以 `null + reason` 返回，未完成价格口径或席位来源审计的结构图返回明确不可用状态。
+- `web_api/futures.py` 只读 `FUTURES_LONG_SHORT_HEAT`、`FUTURES_STRUCTURE_*` Gold、原始会员方向排名、逐交易所排名采集覆盖和已选中的本地 Silver 合约日线；它不保存用户权重下的固定总分，也不临时合成加权合约。会员接口默认不传输全市场大字段，要求先按交易所/品种/合约筛选，并显示每个交易所的来源状态、行数和失败原因；即使最新采集全部失败也会返回该日期的覆盖证据，而不是伪装成上一次成功日。`/contracts` 与 `/contract-series` 仅暴露本地月份/原生加权序列、OHLC 和单边持仓。未锁定 `priceBasis` 的名义持仓规模和未通过现货规格审计的基差均以 `null + reason` 返回，未完成价格口径或席位来源审计的结构图返回明确不可用状态。
 - `web_api/data_sections.py` 为 `/data` 的 A 股、港股、其他数据三分区提供真实可用性元数据，并从本地 `gold_metrics` 读取中国/美国宏观目录、单序列和 A 股总览。宏观观测将本机取得时间作为 `fetchedAt` 返回；缺少可验证权威发布日期时 `releasedAt=null`，绝不混称。外贸、外储和非农的上游仅给出来源日期，目录以 `timeBasis=SOURCE_DATE` 展示，不能误称为统计观察期。A 股总览会归一历史 Gold 中的紧凑/ISO 交易日再合并同日观测；港股总览在用户首次请求时仅聚合通过质量门的本地 `HK/HKEX/STOCK/*.TDX_LOCAL` 日线，返回成交额及按同一标的前收计算的涨/平/跌和覆盖数，故为 `PARTIAL`；首次聚合前、港股市值/涨跌停及没有带生效期的状态名单仍明确返回不可用，而不是合成历史值或复用 A 股指标。`/equities/{market}/lists` 的日期/类型/分页契约在没有带生效期的权威状态记录时返回不可用空集与原因，而不把空集解释成“没有风险或停牌标的”。
 - 网页请求层使用数据版本、并发去重、取消、内存/IndexedDB 缓存；权威数据仍在后端。
 
