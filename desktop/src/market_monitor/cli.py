@@ -14,6 +14,7 @@ from market_monitor.futures_bulk import run_bulk_futures
 from market_monitor.futures_heat_pipeline import run_futures_heat_pipeline
 from market_monitor.futures_structure import (
     run_member_open_interest_structure_pipeline,
+    run_product_notional_structure_pipeline,
     run_product_open_interest_structure_pipeline,
 )
 from market_monitor.futures_calendar import sync_futures_trading_calendar
@@ -117,6 +118,13 @@ def build_parser() -> argparse.ArgumentParser:
     futures_structure.add_argument("--start-day", default=None, help="仅替换该交易日（含）之后的 Gold，格式 YYYY-MM-DD")
     futures_structure.add_argument("--end-day", default=None, help="仅读取并替换该交易日（含）之前的数据，格式 YYYY-MM-DD")
     futures_structure.add_argument("--rebuild-baseline", action="store_true", help="显式按最新完整交易日重建固定堆叠基准")
+    futures_notional_structure = subcommands.add_parser(
+        "futures-notional-structure", help="从 Silver 和同交易日规则快照构建商品期货品种市值结构 Gold 数据"
+    )
+    futures_notional_structure.add_argument("--data-root", type=Path, default=Path("data_control"))
+    futures_notional_structure.add_argument("--start-day", default=None, help="仅替换该交易日（含）之后的 Gold，格式 YYYY-MM-DD")
+    futures_notional_structure.add_argument("--end-day", default=None, help="仅读取并替换该交易日（含）之前的数据，格式 YYYY-MM-DD")
+    futures_notional_structure.add_argument("--rebuild-baseline", action="store_true", help="显式按最新完整交易日重建固定堆叠基准")
     futures_member_structure = subcommands.add_parser(
         "futures-member-structure", help="从交易所公开会员排名离线构建席位持仓结构 Gold 数据"
     )
@@ -246,6 +254,8 @@ def main(argv: list[str] | None = None) -> int:
             return _futures_heat(args)
         if args.command == "futures-structure":
             return _futures_structure(args)
+        if args.command == "futures-notional-structure":
+            return _futures_notional_structure(args)
         if args.command == "futures-member-structure":
             return _futures_member_structure(args)
         if args.command == "futures-rule-sync":
@@ -434,6 +444,23 @@ def _futures_structure(args: argparse.Namespace) -> int:
         "SUCCESS" if success else "PARTIAL_FAILURE",
         EXIT_SUCCESS if success else EXIT_PARTIAL_FAILURE,
         message=f"商品期货品种持仓结构 Gold 构建完成：写入 {summary['writtenRows']} 条成员日度记录",
+    )
+    return EXIT_SUCCESS if success else EXIT_PARTIAL_FAILURE
+
+
+def _futures_notional_structure(args: argparse.Namespace) -> int:
+    summary = run_product_notional_structure_pipeline(
+        args.data_root,
+        start_day=args.start_day,
+        end_day=args.end_day,
+        rebuild_baseline=args.rebuild_baseline,
+    )
+    success = summary["status"] == "PASS"
+    print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
+    _emit(
+        "SUCCESS" if success else "PARTIAL_FAILURE",
+        EXIT_SUCCESS if success else EXIT_PARTIAL_FAILURE,
+        message=f"商品期货品种市值结构 Gold 构建完成：写入 {summary['writtenRows']} 条成员日度记录",
     )
     return EXIT_SUCCESS if success else EXIT_PARTIAL_FAILURE
 

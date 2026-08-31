@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
 from market_monitor.storage import MarketStore, PartitionKey
+from market_monitor.futures_rule_sync import SNAPSHOT_PROVIDER, SNAPSHOT_RELATIVE_PATH, SNAPSHOT_SCHEMA
 from market_monitor.web_app import create_web_app
 
 
@@ -61,6 +63,35 @@ def _write(data_root: Path, rows: list[dict[str, object]]) -> None:
         store.close()
 
 
+def _write_rule_snapshot(data_root: Path, *, day: str, product: str, exchange: str, multiplier: float) -> None:
+    target = data_root / SNAPSHOT_RELATIVE_PATH
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        json.dumps(
+            {
+                "schema": SNAPSHOT_SCHEMA,
+                "provider": SNAPSHOT_PROVIDER,
+                "retrievedAt": "2026-08-29T00:00:00+00:00",
+                "days": {
+                    day: {
+                        "provider": SNAPSHOT_PROVIDER,
+                        "retrievedAt": "2026-08-29T00:00:00+00:00",
+                        "products": {
+                            f"{exchange}.{product}": {
+                                "contractMultiplier": multiplier,
+                                "marginRate": 0.1,
+                            }
+                        },
+                        "contractOverrides": {},
+                    }
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+
 def test_contract_selector_and_series_keep_blocked_metrics_explicit(tmp_path: Path) -> None:
     data_root = tmp_path / "data"
     _write(
@@ -102,7 +133,8 @@ def test_contract_selector_and_series_keep_blocked_metrics_explicit(tmp_path: Pa
     assert payload["points"][1]["openInterest"] == 0
     assert payload["points"][0]["notionalRmb"] is None
     assert payload["points"][0]["basisRmb"] is None
-    assert "priceBasis" in payload["availability"]["notional"]["reason"]
+    assert payload["priceBasis"] == "SETTLEMENT"
+    assert payload["availability"]["notional"]["reason"] is not None
     historical = client.get(
         "/api/futures/contract-series",
         params={"exchange": "SHFE", "product": "RB", "contract": "RB2505"},
@@ -124,3 +156,26 @@ def test_contract_series_requires_an_exact_supported_contract(tmp_path: Path) ->
         "/api/futures/contract-series",
         params={"exchange": "DCE", "product": "JM", "contract": "JM2610", "series_kind": "MAIN"},
     ).status_code == 422
+
+
+def test_contract_series_values_notional_with_same_day_settlement_and_multiplier(tmp_path: Path) -> None:
+    data_root = tmp_path / "data"
+    _write(
+        data_root,
+        [_bar("2026-08-27", exchange="SHFE", product="RB", symbol="RB2610", close=3210, open_interest=1234)],
+    )
+    _write_rule_snapshot(data_root, day="2026-08-27", exchange="SHFE", product="RB", multiplier=10)
+    client = TestClient(create_web_app(data_root), client=("127.0.0.1", 50000))
+
+    payload = client.get(
+        "/api/futures/contract-series",
+        params={"exchange": "SHFE", "product": "RB", "contract": "RB2610"},
+    ).json()
+
+    point = payload["points"][0]
+    assert payload["priceBasis"] == "SETTLEMENT"
+    assert payload["availability"]["notional"] == {"available": True, "render": "line", "reason": None}
+    assert point["contractMultiplier"] == 10.0
+    assert point["settlement"] == 3209.5
+    assert point["notionalRmb"] == 3209.5 * 10 * 1234
+    assert point["unavailable"]["notional"] is None

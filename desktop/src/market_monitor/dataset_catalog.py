@@ -241,7 +241,7 @@ DEFAULT_DATASETS: tuple[DatasetDefinition, ...] = (
         ),
         "SYNC_ALL",
         "有效月份合约、质量 PASS、缺失不补零；价格相关图必须声明唯一 price_basis",
-        "期货品种或席位结构的逐日真实成员值；当前只生产不依赖价格的品种单边持仓量。",
+        "期货品种或席位结构的逐日真实成员值；当前生产品种单边持仓量，以及以结算价、同交易日交易乘数和单边持仓量计算的品种名义持仓规模。",
     ),
     DatasetDefinition(
         "FUTURES_STRUCTURE_BASELINE", "中国商品期货结构固定基准", "CN", "FUTURE", "AS_COMPUTED",

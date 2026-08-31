@@ -143,6 +143,33 @@ class RuleBook:
             source=source,
         )
 
+    def resolve_multiplier(
+        self,
+        trading_day: date | str,
+        exchange: str,
+        product_code: str,
+    ) -> float | None:
+        """Return only an exact-day contract multiplier for notional valuation.
+
+        Notional open-interest value requires the multiplier but not a margin
+        rate.  Keeping this lookup separate prevents a missing historical
+        margin field from incorrectly suppressing an otherwise auditable
+        settlement-value observation.
+        """
+
+        day = _parse_day(trading_day)
+        if day is None:
+            return None
+        venue = str(exchange or "").strip().upper()
+        product = str(product_code or "").strip().upper()
+        if not venue or not _PRODUCT.fullmatch(product) or venue == "CFFEX":
+            return None
+        snapshot = self._days.get(day.isoformat())
+        if snapshot is None:
+            return None
+        base = snapshot["products"].get(f"{venue}.{product}")
+        return _positive_float(base.get("contractMultiplier")) if isinstance(base, Mapping) else None
+
 
 def load_rule_book(data_root: Path) -> RuleBook:
     """Load an immutable rule book; a missing snapshot file is an empty book."""

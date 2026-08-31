@@ -1,9 +1,4 @@
-"""Offline builders for replayable Chinese commodity-futures market structures.
-
-The first supported structure is product open interest.  It deliberately does
-not depend on a price field, so it can be published without choosing the
-separate ``priceBasis`` required by notional-value structures.
-"""
+"""Offline builders for replayable Chinese commodity-futures market structures."""
 
 from __future__ import annotations
 
@@ -17,16 +12,21 @@ import duckdb
 
 from .futures import is_expired_futures_contract
 from .futures_heat_pipeline import _optional_day
+from .futures_rule_sync import RuleBook, load_rule_book
 from .storage import MarketStore
 
 
 PRODUCT_OPEN_INTEREST_CHART_ID = "product-open-interest"
+PRODUCT_NOTIONAL_CHART_ID = "product-notional"
 MEMBER_OPEN_INTEREST_CHART_ID = "member-open-interest"
 STRUCTURE_DIRECTION_GROSS = "gross"
 STRUCTURE_FORMULA_VERSION = "futures-structure-oi-v1"
+PRODUCT_NOTIONAL_FORMULA_VERSION = "futures-structure-notional-settlement-v1"
 MEMBER_STRUCTURE_FORMULA_VERSION = "futures-member-position-v1"
+SETTLEMENT_PRICE_BASIS = "SETTLEMENT"
 STRUCTURE_THRESHOLD = 0.015
 STRUCTURE_SOURCE = "CN_FUTURE_SILVER"
+PRODUCT_NOTIONAL_SOURCE = "CN_FUTURE_SILVER+FUTURES_CONTRACT_RULE_SNAPSHOT"
 MEMBER_STRUCTURE_SOURCE = "FUTURES_MEMBER_POSITION_DAILY"
 # A local TDX futures directory can also contain overseas contracts or
 # provider-specific pseudo exchanges.  Structure charts must use explicit
@@ -42,13 +42,65 @@ def run_product_open_interest_structure_pipeline(
     calculated_at: str | None = None,
     rebuild_baseline: bool = False,
 ) -> dict[str, Any]:
-    """Build the product open-interest structure from authoritative Silver.
+    """Build the product open-interest structure from authoritative Silver."""
 
-    This is intentionally a controlled, offline materialisation.  The web
-    API reads Gold only and therefore never reinterprets local K-line files.
-    Existing baseline metadata is retained so new products are exposed as
-    ``unclassified`` instead of silently changing the stack order.
+    return _run_product_structure_pipeline(
+        data_root,
+        chart_id=PRODUCT_OPEN_INTEREST_CHART_ID,
+        formula_version=STRUCTURE_FORMULA_VERSION,
+        source=STRUCTURE_SOURCE,
+        price_basis=None,
+        metric="open_interest",
+        start_day=start_day,
+        end_day=end_day,
+        calculated_at=calculated_at,
+        rebuild_baseline=rebuild_baseline,
+    )
+
+
+def run_product_notional_structure_pipeline(
+    data_root: Path,
+    *,
+    start_day: str | None = None,
+    end_day: str | None = None,
+    calculated_at: str | None = None,
+    rebuild_baseline: bool = False,
+) -> dict[str, Any]:
+    """Build product notional open-interest values with the locked settlement basis.
+
+    Every value is ``open_interest × settlement × contract_multiplier``.  The
+    multiplier is resolved only from the exact-day local rule snapshot; a row
+    without one remains missing rather than borrowing a nearby day's rule.
     """
+
+    return _run_product_structure_pipeline(
+        data_root,
+        chart_id=PRODUCT_NOTIONAL_CHART_ID,
+        formula_version=PRODUCT_NOTIONAL_FORMULA_VERSION,
+        source=PRODUCT_NOTIONAL_SOURCE,
+        price_basis=SETTLEMENT_PRICE_BASIS,
+        metric="settlement_notional",
+        start_day=start_day,
+        end_day=end_day,
+        calculated_at=calculated_at,
+        rebuild_baseline=rebuild_baseline,
+    )
+
+
+def _run_product_structure_pipeline(
+    data_root: Path,
+    *,
+    chart_id: str,
+    formula_version: str,
+    source: str,
+    price_basis: str | None,
+    metric: str,
+    start_day: str | None,
+    end_day: str | None,
+    calculated_at: str | None,
+    rebuild_baseline: bool,
+) -> dict[str, Any]:
+    """Materialise one product-level structure without changing existing baselines."""
 
     start = _optional_day(start_day, "start_day")
     end = _optional_day(end_day, "end_day")
@@ -62,6 +114,7 @@ def run_product_open_interest_structure_pipeline(
         files,
         end_day=end.isoformat() if end else None,
     )
+    rule_book = load_rule_book(root) if metric == "settlement_notional" else None
     daily_values: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
     daily_names: dict[str, dict[str, str]] = defaultdict(dict)
     daily_sources: dict[str, set[str]] = defaultdict(set)
@@ -73,14 +126,22 @@ def run_product_open_interest_structure_pipeline(
         member_key = f"{bar['exchange']}.{bar['product_code']}"
         daily_input_rows[trade_date] += int(bar["input_row_count"])
         daily_missing_rows[trade_date] += int(bar["missing_row_count"])
-        open_interest = _positive_or_zero(bar.get("open_interest"))
-        if open_interest is None:
+        value = (
+            _positive_or_zero(bar.get("open_interest"))
+            if metric == "open_interest"
+            else _settlement_notional(bar, rule_book)
+        )
+        if value is None:
+            if metric == "settlement_notional":
+                daily_missing_rows[trade_date] += 1
             continue
-        daily_values[trade_date][member_key] += open_interest
+        daily_values[trade_date][member_key] += value
         daily_names[trade_date][member_key] = str(bar["product_code"])
-        source = str(bar.get("actual_source") or "").strip()
-        if source:
-            daily_sources[trade_date].add(source)
+        actual_source = str(bar.get("actual_source") or "").strip()
+        if actual_source:
+            daily_sources[trade_date].add(actual_source)
+        if metric == "settlement_notional":
+            daily_sources[trade_date].add("FUTURES_CONTRACT_RULE_SNAPSHOT")
 
     timestamp = calculated_at or datetime.now(timezone.utc).isoformat(timespec="seconds")
     selected_days = [
@@ -93,7 +154,7 @@ def run_product_open_interest_structure_pipeline(
         for member_key, value in sorted(daily_values[trade_date].items()):
             gold_rows.append(
                 {
-                    "chart_id": PRODUCT_OPEN_INTEREST_CHART_ID,
+                    "chart_id": chart_id,
                     "direction": STRUCTURE_DIRECTION_GROSS,
                     "trade_date": trade_date,
                     "member_key": member_key,
@@ -102,9 +163,9 @@ def run_product_open_interest_structure_pipeline(
                     "input_row_count": daily_input_rows[trade_date],
                     "missing_row_count": daily_missing_rows[trade_date],
                     "data_quality_status": quality,
-                    "formula_version": STRUCTURE_FORMULA_VERSION,
-                    "price_basis": None,
-                    "source": ",".join(sorted(daily_sources[trade_date])) or STRUCTURE_SOURCE,
+                    "formula_version": formula_version,
+                    "price_basis": price_basis,
+                    "source": ",".join(sorted(daily_sources[trade_date])) or source,
                     "calculated_at": timestamp,
                 }
             )
@@ -113,30 +174,39 @@ def run_product_open_interest_structure_pipeline(
     try:
         store.register_default_datasets()
         existing_baseline = store.get_futures_structure_baseline(
-            chart_id=PRODUCT_OPEN_INTEREST_CHART_ID,
+            chart_id=chart_id,
             direction=STRUCTURE_DIRECTION_GROSS,
-            formula_version=STRUCTURE_FORMULA_VERSION,
+            formula_version=formula_version,
         )
         if rebuild_baseline and existing_baseline is not None:
             store.delete_futures_structure_baseline(
-                chart_id=PRODUCT_OPEN_INTEREST_CHART_ID,
+                chart_id=chart_id,
                 direction=STRUCTURE_DIRECTION_GROSS,
-                formula_version=STRUCTURE_FORMULA_VERSION,
+                formula_version=formula_version,
             )
             existing_baseline = None
         baseline_created = False
         if existing_baseline is None:
             baseline_day = _latest_complete_day(daily_values, daily_missing_rows)
             if baseline_day is not None:
-                baseline = _build_baseline(daily_values[baseline_day], daily_names[baseline_day], baseline_day, timestamp)
+                baseline = _build_baseline(
+                    daily_values[baseline_day],
+                    daily_names[baseline_day],
+                    baseline_day,
+                    timestamp,
+                    chart_id=chart_id,
+                    formula_version=formula_version,
+                    price_basis=price_basis,
+                    source=source,
+                )
                 store.upsert_futures_structure_baseline(baseline)
                 existing_baseline = baseline
                 baseline_created = True
         written = store.replace_futures_structure_daily(
             gold_rows,
-            chart_id=PRODUCT_OPEN_INTEREST_CHART_ID,
+            chart_id=chart_id,
             direction=STRUCTURE_DIRECTION_GROSS,
-            formula_version=STRUCTURE_FORMULA_VERSION,
+            formula_version=formula_version,
             start_day=start.isoformat() if start else None,
             end_day=end.isoformat() if end else None,
         )
@@ -144,7 +214,7 @@ def run_product_open_interest_structure_pipeline(
         store.close()
     return {
         "status": "PASS" if written and existing_baseline is not None else "NO_DATA",
-        "chartId": PRODUCT_OPEN_INTEREST_CHART_ID,
+        "chartId": chart_id,
         "silverFiles": len(files),
         "sourceRows": source_rows,
         "preparedRows": len(bars),
@@ -156,8 +226,8 @@ def run_product_open_interest_structure_pipeline(
         "baselineVersion": existing_baseline["baseline_version"] if existing_baseline else None,
         "baselineCreated": baseline_created,
         "baselineRebuilt": rebuild_baseline and baseline_created,
-        "formulaVersion": STRUCTURE_FORMULA_VERSION,
-        "priceBasis": None,
+        "formulaVersion": formula_version,
+        "priceBasis": price_basis,
         "calculatedAt": timestamp,
 }
 
@@ -404,6 +474,7 @@ def _read_contract_aggregates(
                 upper(coalesce(json_extract_string(bar_json, '$.product_code'), json_extract_string(bar_json, '$.productCode'), '')) AS product_code,
                 upper(coalesce(json_extract_string(bar_json, '$.symbol'), json_extract_string(bar_json, '$.contract_code'), '')) AS contract_code,
                 try_cast(json_extract_string(bar_json, '$.open_interest') AS DOUBLE) AS open_interest,
+                try_cast(json_extract_string(bar_json, '$.settlement') AS DOUBLE) AS settlement,
                 coalesce(json_extract_string(bar_json, '$.fetched_at'), '') AS fetched_at,
                 coalesce(json_extract_string(bar_json, '$.actual_source'), json_extract_string(bar_json, '$.source'), '') AS source
             FROM read_parquet(?, union_by_name=true)
@@ -419,6 +490,7 @@ def _read_contract_aggregates(
         )
         SELECT trade_date, exchange, product_code, contract_code,
             arg_max(open_interest, fetched_at) AS open_interest,
+            arg_max(settlement, fetched_at) AS settlement,
             count(*) AS input_row_count,
             count_if(open_interest IS NULL) AS missing_row_count,
             max(source) AS actual_source
@@ -435,7 +507,7 @@ def _read_contract_aggregates(
     output: list[dict[str, Any]] = []
     rejected = 0
     source_rows = 0
-    for trade_date, exchange, product_code, contract_code, open_interest, input_count, missing_count, source in rows:
+    for trade_date, exchange, product_code, contract_code, open_interest, settlement, input_count, missing_count, source in rows:
         input_row_count = int(input_count)
         source_rows += input_row_count
         try:
@@ -454,6 +526,7 @@ def _read_contract_aggregates(
                 "exchange": str(exchange),
                 "product_code": str(product_code),
                 "open_interest": open_interest,
+                "settlement": settlement,
                 "input_row_count": input_row_count,
                 "missing_row_count": int(missing_count),
                 "actual_source": str(source or ""),
@@ -484,6 +557,7 @@ def _build_baseline(
     chart_id: str = PRODUCT_OPEN_INTEREST_CHART_ID,
     direction: str = STRUCTURE_DIRECTION_GROSS,
     formula_version: str = STRUCTURE_FORMULA_VERSION,
+    price_basis: str | None = None,
     source: str = STRUCTURE_SOURCE,
 ) -> dict[str, Any]:
     total = sum(values.values())
@@ -506,7 +580,7 @@ def _build_baseline(
         "primary_members": [member for member in members if member["memberKey"] in primary_keys],
         "other_members": [member for member in members if member["memberKey"] in other_keys],
         "formula_version": formula_version,
-        "price_basis": None,
+        "price_basis": price_basis,
         "source": source,
         "created_at": created_at,
     }
@@ -519,13 +593,45 @@ def _positive_or_zero(value: object) -> float | None:
     return number if math.isfinite(number) and number >= 0 else None
 
 
+def _positive_number(value: object) -> float | None:
+    number = _positive_or_zero(value)
+    return number if number is not None and number > 0 else None
+
+
+def _settlement_notional(bar: Mapping[str, Any], rule_book: RuleBook | None) -> float | None:
+    """Calculate one contract's single-sided notional open-interest value."""
+
+    if rule_book is None:
+        return None
+    open_interest = _positive_or_zero(bar.get("open_interest"))
+    settlement = _positive_number(bar.get("settlement"))
+    if open_interest is None or settlement is None:
+        return None
+    try:
+        trade_day = date.fromisoformat(str(bar["trade_date"]))
+    except (KeyError, TypeError, ValueError):
+        return None
+    multiplier = rule_book.resolve_multiplier(
+        trade_day,
+        str(bar.get("exchange") or ""),
+        str(bar.get("product_code") or ""),
+    )
+    if multiplier is None:
+        return None
+    return settlement * multiplier * open_interest
+
+
 __all__ = (
     "MEMBER_OPEN_INTEREST_CHART_ID",
     "MEMBER_STRUCTURE_FORMULA_VERSION",
+    "PRODUCT_NOTIONAL_CHART_ID",
+    "PRODUCT_NOTIONAL_FORMULA_VERSION",
     "PRODUCT_OPEN_INTEREST_CHART_ID",
+    "SETTLEMENT_PRICE_BASIS",
     "STRUCTURE_DIRECTION_GROSS",
     "STRUCTURE_FORMULA_VERSION",
     "STRUCTURE_THRESHOLD",
     "run_member_open_interest_structure_pipeline",
+    "run_product_notional_structure_pipeline",
     "run_product_open_interest_structure_pipeline",
 )

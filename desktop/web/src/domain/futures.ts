@@ -203,11 +203,12 @@ export interface FuturesContractSeriesPoint {
   close: number | null;
   settlement: number | null;
   openInterest: number | null;
+  contractMultiplier: number | null;
   notionalRmb: number | null;
   basisRmb: number | null;
   basisPercent: number | null;
   unavailable: {
-    notional: string;
+    notional: string | null;
     basis: string;
   };
 }

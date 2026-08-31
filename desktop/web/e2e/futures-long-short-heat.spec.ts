@@ -94,6 +94,19 @@ const memberStructurePayload = {
   limitations: ["仅统计交易所实际公布的会员方向排名"],
 };
 
+const notionalStructurePayload = {
+  ...structurePayload,
+  chartId: "product-notional",
+  metric: "notionalOpenInterest",
+  unit: "CNY",
+  baselineVersion: "futures-structure-notional-settlement-v1:2026-08-26",
+  totals: [1_050_000, 1_200_000],
+  unclassifiedTotals: [0, 40_000],
+  formulaVersion: "futures-structure-notional-settlement-v1",
+  priceBasis: "SETTLEMENT",
+  limitations: ["结算价名义持仓规模测试说明"],
+};
+
 const memberPositionsPayload = {
   available: true,
   tradingDay: "2026-08-26",
@@ -126,30 +139,31 @@ const contractSeriesPayload = {
   available: true,
   instrument: contractOptionsPayload.items[0],
   seriesKind: "CONTRACT",
-  priceBasis: null,
+  priceBasis: "SETTLEMENT",
   units: { price: "source-price-unit", openInterest: "contracts", notional: "CNY", basis: null },
   availability: {
     price: { available: true, render: "candlestick", reason: null },
     openInterest: { available: true, render: "line", reason: null },
-    notional: { available: false, render: "line", reason: "等待锁定 priceBasis" },
+    notional: { available: true, render: "line", reason: null },
     basis: { available: false, render: "line", reason: "等待现货来源" },
   },
   points: [
-    { tradingDay: "2026-08-26", open: 3200, high: 3230, low: 3180, close: 3210, settlement: 3208, openInterest: 1234, notionalRmb: null, basisRmb: null, basisPercent: null, unavailable: { notional: "等待锁定 priceBasis", basis: "等待现货来源" } },
-    { tradingDay: "2026-08-27", open: 3210, high: 3250, low: 3200, close: 3230, settlement: 3228, openInterest: 1300, notionalRmb: null, basisRmb: null, basisPercent: null, unavailable: { notional: "等待锁定 priceBasis", basis: "等待现货来源" } },
+    { tradingDay: "2026-08-26", open: 3200, high: 3230, low: 3180, close: 3210, settlement: 3208, openInterest: 1234, contractMultiplier: 10, notionalRmb: 39_574_720, basisRmb: null, basisPercent: null, unavailable: { notional: null, basis: "等待现货来源" } },
+    { tradingDay: "2026-08-27", open: 3210, high: 3250, low: 3200, close: 3230, settlement: 3228, openInterest: 1300, contractMultiplier: 10, notionalRmb: 41_964_000, basisRmb: null, basisPercent: null, unavailable: { notional: null, basis: "等待现货来源" } },
   ],
   source: "fixture",
   updatedAt: "2026-08-27T15:00:00+08:00",
-  limitations: ["价格序列保留本地来源的 OHLC；持仓量为交易所公布的单边持仓量。", "等待锁定 priceBasis", "等待现货来源"],
+  limitations: ["价格序列保留本地来源的 OHLC；持仓量为交易所公布的单边持仓量。", "名义持仓规模 = 交易所单边持仓量 × 结算价 × 同交易日交易乘数；不乘保证金率或双边系数。", "等待现货来源"],
 };
 
 async function openFutures(
   page: Page,
   payload: Record<string, unknown> = heatPayload,
   requests?: { count: number },
-  options: { productStructure?: Record<string, unknown> } = {},
+  options: { productStructure?: Record<string, unknown>; productNotionalStructure?: Record<string, unknown> } = {},
 ): Promise<void> {
   const productStructure = options.productStructure ?? structurePayload;
+  const productNotionalStructure = options.productNotionalStructure ?? notionalStructurePayload;
   await page.route("**/api/futures/heat", route => {
     if (requests) requests.count += 1;
     return route.fulfill({ json: payload });
@@ -160,6 +174,13 @@ async function openFutures(
       ...productStructure,
       series: [{ memberKey: "CZCE.AP", memberName: "苹果", values: [5, 6] }],
     } : productStructure });
+  });
+  await page.route("**/api/futures/structures/product-notional**", route => {
+    const level = new URL(route.request().url()).searchParams.get("level");
+    return route.fulfill({ json: level === "other" ? {
+      ...productNotionalStructure,
+      series: [{ memberKey: "CZCE.AP", memberName: "苹果", values: [50_000, 60_000] }],
+    } : productNotionalStructure });
   });
   await page.route("**/api/futures/structures/member-open-interest**", route => {
     const level = new URL(route.request().url()).searchParams.get("level");
@@ -362,6 +383,18 @@ test("product open-interest structure preserves its fixed baseline and drills in
   await expect(panel.locator('[data-test="futures-structure-chart"]')).toBeVisible();
 });
 
+test("product notional structure states its settlement-price basis and drills into other", async ({ page }) => {
+  await openFutures(page);
+  const panel = page.locator('[data-test="product-notional-structure"]');
+  await expect(panel).toContainText("品种市值分布");
+  await expect(panel).toContainText("结算价 × 交易乘数 × 交易所单边持仓量");
+  await expect(panel).toContainText("价格基准：结算价");
+  await expect(panel).toContainText("基准日：2026-08-26");
+  await expect(panel.locator('[data-test="futures-structure-chart"]')).toBeVisible();
+  await panel.getByRole("button", { name: /查看其他/ }).click();
+  await expect(panel.getByRole("button", { name: "返回主图" })).toBeVisible();
+});
+
 test("product structure renders one hundred real members without API truncation", async ({ page }) => {
   test.slow();
   const dates = Array.from({ length: 500 }, (_, index) => {
@@ -421,18 +454,25 @@ test("contract member rankings load only after a concrete monthly contract is se
   await expect(panel).toContainText("—（—）");
 });
 
-test("contract chart keeps K-line and open interest while blocked metrics stay explicit", async ({ page }) => {
+test("contract chart uses settlement price for the available notional metric", async ({ page }) => {
   await openFutures(page);
   const panel = page.locator('[data-test="futures-contract-series"]');
   await expect(panel).toContainText("请选择交易所、品种和月份合约");
-  await panel.getByRole("combobox", { name: "商品合约交易所筛选" }).click({ force: true });
-  await page.locator(".el-select-dropdown:visible").getByText("SHFE", { exact: true }).click();
-  await panel.getByRole("combobox", { name: "商品合约品种筛选" }).click({ force: true });
-  await page.locator(".el-select-dropdown:visible").getByText("RB", { exact: true }).click();
-  await panel.getByRole("combobox", { name: "商品合约月份筛选" }).click({ force: true });
-  await page.locator(".el-select-dropdown:visible").getByText(/RB2610 · 2026-08-27/, { exact: true }).click();
+  const selects = panel.locator(".member-position-filters .el-select");
+  const exchange = selects.nth(0);
+  const product = selects.nth(1);
+  const contract = selects.nth(2);
+  await exchange.evaluate((element) => element.scrollIntoView({ block: "center" }));
+  await exchange.click();
+  await page.getByRole("option", { name: "SHFE", exact: true }).click();
+  await expect(panel.getByRole("combobox", { name: "商品合约品种筛选" })).toBeEnabled();
+  await product.click();
+  await page.getByRole("option", { name: "RB", exact: true }).click();
+  await expect(panel.getByRole("combobox", { name: "商品合约月份筛选" })).toBeEnabled();
+  await contract.click();
+  await page.getByRole("option", { name: /RB2610 · 2026-08-27/ }).click();
   await expect(panel.locator('[data-test="futures-contract-chart"]')).toBeVisible();
-  await expect(panel).toContainText("名义规模价格基准：尚未锁定");
-  await expect(panel).toContainText("等待锁定 priceBasis");
+  await expect(panel).toContainText("名义规模价格基准：SETTLEMENT");
+  await expect(panel).toContainText("名义持仓规模 = 交易所单边持仓量 × 结算价 × 同交易日交易乘数");
   await expect(panel).toContainText("等待现货来源");
 });

@@ -167,7 +167,9 @@ def test_sync_uses_latest_ten_silver_trading_days_and_positional_rules(tmp_path:
         0.17,
         "CONTRACT_OVERRIDE",
     )
+    assert rule_book.resolve_multiplier(expected_days[-1], "SHFE", "CU") == 5.0
     assert rule_book.resolve("2026-07-01", "SHFE", "CU", "CU2610") is None
+    assert rule_book.resolve_multiplier("2026-07-01", "SHFE", "CU") is None
     assert rule_book.resolve(expected_days[-1], "CFFEX", "IF", "IF2610") is None
 
 

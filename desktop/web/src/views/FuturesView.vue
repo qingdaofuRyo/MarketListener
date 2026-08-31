@@ -22,6 +22,11 @@ const structureLoading = ref(false);
 const structureError = ref("");
 const structureRange = ref<FuturesStructureRange>("1y");
 const structureLevel = ref<"main" | "other">("main");
+const notionalStructurePayload = ref<FuturesStructureResponse>();
+const notionalStructureLoading = ref(false);
+const notionalStructureError = ref("");
+const notionalStructureRange = ref<FuturesStructureRange>("1y");
+const notionalStructureLevel = ref<"main" | "other">("main");
 const memberStructurePayload = ref<FuturesStructureResponse>();
 const memberStructureLoading = ref(false);
 const memberStructureError = ref("");
@@ -99,6 +104,24 @@ async function loadStructure(force = false): Promise<void> {
     structureError.value = reason instanceof Error ? reason.message : "品种持仓结构加载失败";
   } finally {
     structureLoading.value = false;
+  }
+}
+
+async function loadNotionalStructure(force = false): Promise<void> {
+  notionalStructureLoading.value = true;
+  notionalStructureError.value = "";
+  try {
+    const query = new URLSearchParams({ range: notionalStructureRange.value, level: notionalStructureLevel.value });
+    notionalStructurePayload.value = await apiGet<FuturesStructureResponse>(
+      `/api/futures/structures/product-notional?${query.toString()}`,
+      undefined,
+      { force, ttlMs: 60_000 },
+    );
+  } catch (reason) {
+    notionalStructurePayload.value = undefined;
+    notionalStructureError.value = reason instanceof Error ? reason.message : "品种市值结构加载失败";
+  } finally {
+    notionalStructureLoading.value = false;
   }
 }
 
@@ -190,7 +213,7 @@ async function loadContractSeries(force = false): Promise<void> {
 }
 
 function refresh(): void {
-  void Promise.all([load(true), loadStructure(true), loadMemberStructure(true), loadMemberPositions(true), loadContractOptions(true), loadContractSeries(true)]);
+  void Promise.all([load(true), loadStructure(true), loadNotionalStructure(true), loadMemberStructure(true), loadMemberPositions(true), loadContractOptions(true), loadContractSeries(true)]);
 }
 
 function formatPosition(value: number | null): string {
@@ -198,6 +221,7 @@ function formatPosition(value: number | null): string {
 }
 
 watch([structureRange, structureLevel], () => void loadStructure());
+watch([notionalStructureRange, notionalStructureLevel], () => void loadNotionalStructure());
 watch([memberStructureRange, memberStructureLevel, memberStructureDirection], () => void loadMemberStructure());
 watch(memberPositionExchange, () => {
   memberPositionProduct.value = "";
@@ -228,6 +252,7 @@ watch(contractCode, () => void loadContractSeries());
 onMounted(() => {
   void load();
   void loadStructure();
+  void loadNotionalStructure();
   void loadMemberStructure();
   void loadMemberPositions();
   void loadContractOptions();
@@ -241,7 +266,7 @@ onMounted(() => {
         <h1 class="page-title">国内期货数据</h1>
         <p class="page-note">中国商品期货的市场广度、资金方向与结构数据；默认排除金融期货。</p>
       </div>
-      <el-button :loading="loading || structureLoading || memberStructureLoading" data-test="futures-refresh" @click="refresh">刷新</el-button>
+      <el-button :loading="loading || structureLoading || notionalStructureLoading || memberStructureLoading" data-test="futures-refresh" @click="refresh">刷新</el-button>
     </header>
 
     <el-alert v-if="error" :title="error" type="warning" :closable="false" class="page-alert" />
@@ -280,6 +305,42 @@ onMounted(() => {
         <span>公式版本：{{ structurePayload.formulaVersion }}</span>
         <span v-if="structurePayload.unclassifiedMembers.length">未分类新品种：{{ structurePayload.unclassifiedMembers.length }}</span>
         <ul><li v-for="item in structurePayload.limitations" :key="item">{{ item }}</li></ul>
+      </footer>
+    </section>
+
+    <section class="panel futures-structure" data-test="product-notional-structure">
+      <header class="structure-header">
+        <div>
+          <h2>品种市值分布</h2>
+          <p>有效月份合约按“结算价 × 交易乘数 × 交易所单边持仓量”汇总的名义持仓规模；不等于沉淀资金。</p>
+        </div>
+        <div class="structure-controls">
+          <el-radio-group v-model="notionalStructureRange" size="small" aria-label="品种市值结构时间范围">
+            <el-radio-button value="1y">1年</el-radio-button><el-radio-button value="3y">3年</el-radio-button><el-radio-button value="5y">5年</el-radio-button><el-radio-button value="all">全部</el-radio-button>
+          </el-radio-group>
+          <el-button v-if="notionalStructurePayload?.otherMembers.length" size="small" @click="notionalStructureLevel = notionalStructureLevel === 'main' ? 'other' : 'main'">{{ notionalStructureLevel === 'main' ? `查看其他（${notionalStructurePayload.otherMembers.length}）` : '返回主图' }}</el-button>
+        </div>
+      </header>
+      <el-alert v-if="notionalStructureError" :title="notionalStructureError" type="warning" :closable="false" />
+      <el-skeleton v-else-if="notionalStructureLoading && !notionalStructurePayload" :rows="6" animated />
+      <FuturesStructureChart
+        v-else-if="notionalStructurePayload?.available"
+        :payload="notionalStructurePayload"
+        axis-name="名义持仓规模（元）"
+        aria-label="中国商品期货品种市值固定顺序堆叠面积图"
+        total-label="市场名义持仓规模"
+      />
+      <div v-else-if="notionalStructurePayload" class="structure-empty">
+        <strong>品种市值结构暂无可用数据</strong>
+        <span>{{ notionalStructurePayload.limitations[0] }}</span>
+      </div>
+      <footer v-if="notionalStructurePayload?.available" class="structure-footnote">
+        <span>基准日：{{ notionalStructurePayload.baselineDay }}</span>
+        <span>价格基准：结算价</span>
+        <span>阈值：{{ ((notionalStructurePayload.threshold || 0) * 100).toFixed(1) }}%</span>
+        <span>公式版本：{{ notionalStructurePayload.formulaVersion }}</span>
+        <span v-if="notionalStructurePayload.unclassifiedMembers.length">未纳入基准新品种：{{ notionalStructurePayload.unclassifiedMembers.length }}</span>
+        <ul><li v-for="item in notionalStructurePayload.limitations" :key="item">{{ item }}</li></ul>
       </footer>
     </section>
 

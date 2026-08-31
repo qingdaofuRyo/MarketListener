@@ -8,9 +8,11 @@ const props = withDefaults(defineProps<{
   payload: FuturesStructureResponse;
   axisName?: string;
   ariaLabel?: string;
+  totalLabel?: string;
 }>(), {
   axisName: "单边持仓（张）",
   ariaLabel: "中国商品期货固定顺序堆叠面积图",
+  totalLabel: "市场总持仓",
 });
 
 const theme = useThemeStore();
@@ -43,7 +45,7 @@ function tooltipHtml(params: unknown): string {
     .map((item) => `<div class="structure-tooltip-row"><span><i style="background:${item.color}"></i>${escapeHtml(item.seriesName)}</span><strong>${formatValue(item.value)}</strong></div>`)
     .join("");
   return `<div class="structure-tooltip"><strong>${escapeHtml(props.payload.dates[index])}</strong>${rows}`
-    + `<hr><div class="structure-tooltip-row"><span>市场总持仓</span><strong>${formatValue(props.payload.totals[index])}</strong></div>`
+    + `<hr><div class="structure-tooltip-row"><span>${escapeHtml(props.totalLabel)}</span><strong>${formatValue(props.payload.totals[index])}</strong></div>`
     + `<div class="structure-tooltip-row"><span>未分类新品种</span><strong>${formatValue(props.payload.unclassifiedTotals[index])}</strong></div>`
     + `<div class="structure-tooltip-row"><span>输入覆盖</span><strong>${coverage ? `${coverage.inputRowCount - coverage.missingRowCount}/${coverage.inputRowCount}` : "—"}</strong></div></div>`;
 }

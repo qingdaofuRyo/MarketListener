@@ -15,10 +15,14 @@ from market_monitor.futures_heat import load_long_short_heat_config
 from market_monitor.futures_structure import (
     MEMBER_OPEN_INTEREST_CHART_ID,
     MEMBER_STRUCTURE_FORMULA_VERSION,
+    PRODUCT_NOTIONAL_CHART_ID,
+    PRODUCT_NOTIONAL_FORMULA_VERSION,
     PRODUCT_OPEN_INTEREST_CHART_ID,
+    SETTLEMENT_PRICE_BASIS,
     STRUCTURE_DIRECTION_GROSS,
     STRUCTURE_FORMULA_VERSION,
 )
+from market_monitor.futures_rule_sync import RuleBook, load_rule_book
 from market_monitor.futures_member_positions import ALL_EXCHANGES, COMMODITY_EXCHANGES
 from market_monitor.storage import MarketStore
 
@@ -27,14 +31,15 @@ from .market import _logical_instruments
 
 
 router = APIRouter(prefix="/api/futures", tags=["futures"])
-_STRUCTURE_CHARTS = frozenset({PRODUCT_OPEN_INTEREST_CHART_ID, "product-notional", "member-notional", MEMBER_OPEN_INTEREST_CHART_ID})
+_STRUCTURE_CHARTS = frozenset({PRODUCT_OPEN_INTEREST_CHART_ID, PRODUCT_NOTIONAL_CHART_ID, "member-notional", MEMBER_OPEN_INTEREST_CHART_ID})
 _MEMBER_STRUCTURE_DIRECTIONS = frozenset({"long", "short", STRUCTURE_DIRECTION_GROSS, "net-long", "net-short"})
 _CONTRACT_SERIES_KINDS = frozenset({"CONTRACT", "WEIGHTED"})
 
 # These labels deliberately live next to the API contract.  The frontend must
 # not infer a zero-valued line merely because a dependent Gold dataset has not
 # been produced yet.
-_NOTIONAL_UNAVAILABLE = "名义持仓规模等待全轮统一锁定结算价或收盘价 priceBasis；当前不会用收盘价静默代替。"
+_NOTIONAL_UNAVAILABLE = "名义持仓规模缺少同交易日的结算价、交易乘数或交易所单边持仓量。"
+_WEIGHTED_NOTIONAL_UNAVAILABLE = "加权合约的持仓与名义规模须由有效月份合约汇总；当前独立加权序列不以自身持仓量代替。"
 _BASIS_UNAVAILABLE = "基差等待现货规格、方向、单位换算和可追溯现货来源通过探针；当前不会以不同规格价格相减。"
 
 
@@ -227,17 +232,33 @@ def futures_contract_series(
         )
     instrument = matches[0]
     bars = read_bars(root, str(instrument["storageInstrumentId"]), period="1d", limit=5_000)
-    points = [_contract_series_point(bar) for bar in bars]
+    rule_book = load_rule_book(root)
+    points = [
+        _contract_series_point(
+            bar,
+            exchange=selected_exchange,
+            product=selected_product,
+            series_kind=selected_kind,
+            rule_book=rule_book,
+        )
+        for bar in bars
+    ]
     if start is not None:
         points = [point for point in points if point["tradingDay"] >= start.isoformat()]
     if end is not None:
         points = [point for point in points if point["tradingDay"] <= end.isoformat()]
     has_open_interest = any(point["openInterest"] is not None for point in points)
+    has_notional = any(point["notionalRmb"] is not None for point in points)
+    notional_reason = (
+        _WEIGHTED_NOTIONAL_UNAVAILABLE
+        if selected_kind == "WEIGHTED"
+        else None if has_notional else _NOTIONAL_UNAVAILABLE
+    )
     return {
         "available": bool(points),
         "instrument": _contract_option(instrument),
         "seriesKind": selected_kind,
-        "priceBasis": None,
+        "priceBasis": SETTLEMENT_PRICE_BASIS,
         "units": {
             "price": "来源报价单位（待合约规格审计）",
             "openInterest": "contracts",
@@ -251,7 +272,7 @@ def futures_contract_series(
                 "render": "line",
                 "reason": None if has_open_interest else "本地日线没有交易所单边持仓量。",
             },
-            "notional": {"available": False, "render": "line", "reason": _NOTIONAL_UNAVAILABLE},
+            "notional": {"available": has_notional, "render": "line", "reason": notional_reason},
             "basis": {"available": False, "render": "line", "reason": _BASIS_UNAVAILABLE},
         },
         "points": points,
@@ -259,7 +280,8 @@ def futures_contract_series(
         "updatedAt": instrument.get("lastBarAt"),
         "limitations": [
             "价格序列保留本地来源的 OHLC；持仓量为交易所公布的单边持仓量。",
-            _NOTIONAL_UNAVAILABLE,
+            "名义持仓规模 = 交易所单边持仓量 × 结算价 × 同交易日交易乘数；不乘保证金率或双边系数。",
+            *( [notional_reason] if notional_reason else []),
             _BASIS_UNAVAILABLE,
             *( ["加权合约不会由接口临时合成；需先导入具有成分合约和权重证据的独立加权序列。"] if selected_kind == "WEIGHTED" else []),
         ],
@@ -290,6 +312,8 @@ def futures_structure(
         raise HTTPException(status_code=422, detail="range must be 1y, 3y, 5y or all")
     if chart_id == PRODUCT_OPEN_INTEREST_CHART_ID and direction == STRUCTURE_DIRECTION_GROSS:
         formula_version = STRUCTURE_FORMULA_VERSION
+    elif chart_id == PRODUCT_NOTIONAL_CHART_ID and direction == STRUCTURE_DIRECTION_GROSS:
+        formula_version = PRODUCT_NOTIONAL_FORMULA_VERSION
     elif chart_id == MEMBER_OPEN_INTEREST_CHART_ID and direction in _MEMBER_STRUCTURE_DIRECTIONS:
         formula_version = MEMBER_STRUCTURE_FORMULA_VERSION
     else:
@@ -465,12 +489,13 @@ def _structure_payload(
         }
         for day in dates
     ]
+    chart_metadata = _structure_metadata(str(baseline["chart_id"]))
     return {
         "available": bool(dates),
         "chartId": baseline["chart_id"],
-        "metric": "openInterest",
+        "metric": chart_metadata["metric"],
         "direction": baseline["direction"],
-        "unit": "contracts",
+        "unit": chart_metadata["unit"],
         "baselineDay": baseline["baseline_day"],
         "baselineVersion": baseline["baseline_version"],
         "threshold": baseline["threshold"],
@@ -488,9 +513,29 @@ def _structure_payload(
         "source": baseline["source"],
         "updatedAt": max((str(row["calculated_at"]) for row in rows), default=baseline["created_at"]),
         "limitations": [
-            "仅统计国内商品期货有效月份合约的交易所单边持仓量；已排除中金所金融期货。",
+            chart_metadata["formula"],
             "“其他”成员集合和堆叠顺序固定于基准日；基准日后出现的新成员单列为未分类，不会静默并入其他。",
         ],
+    }
+
+
+def _structure_metadata(chart_id: str) -> dict[str, str]:
+    if chart_id == PRODUCT_NOTIONAL_CHART_ID:
+        return {
+            "metric": "notionalOpenInterest",
+            "unit": "CNY",
+            "formula": "仅统计国内商品期货有效月份合约的单边名义持仓规模：结算价 × 交易乘数 × 交易所单边持仓量；已排除中金所金融期货，不乘保证金率或双边系数。",
+        }
+    if chart_id == MEMBER_OPEN_INTEREST_CHART_ID:
+        return {
+            "metric": "memberOpenInterest",
+            "unit": "contracts",
+            "formula": "仅统计交易所已公布席位排名覆盖范围内的商品期货单边持仓；不是会员完整持仓。",
+        }
+    return {
+        "metric": "openInterest",
+        "unit": "contracts",
+        "formula": "仅统计国内商品期货有效月份合约的交易所单边持仓量；已排除中金所金融期货。",
     }
 
 
@@ -803,22 +848,43 @@ def _contract_option(item: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _contract_series_point(bar: Mapping[str, Any]) -> dict[str, Any]:
+def _contract_series_point(
+    bar: Mapping[str, Any],
+    *,
+    exchange: str,
+    product: str,
+    series_kind: str,
+    rule_book: RuleBook,
+) -> dict[str, Any]:
     """Turn one local daily bar into the fixed four-series response shape."""
 
     trading_day = str(bar.get("trading_day") or bar.get("trading_date") or bar.get("bar_open_time") or "")[:10]
+    settlement = _finite_number(bar.get("settlement"))
+    open_interest = _finite_number(_first_present(bar, "open_interest", "openInterest"))
+    multiplier = rule_book.resolve_multiplier(trading_day, exchange, product) if series_kind == "CONTRACT" else None
+    notional = (
+        settlement * multiplier * open_interest
+        if settlement is not None and multiplier is not None and open_interest is not None and open_interest >= 0
+        else None
+    )
+    notional_reason = (
+        None if notional is not None
+        else _WEIGHTED_NOTIONAL_UNAVAILABLE if series_kind == "WEIGHTED"
+        else _NOTIONAL_UNAVAILABLE
+    )
     return {
         "tradingDay": trading_day,
         "open": _finite_number(bar.get("open")),
         "high": _finite_number(_first_present(bar, "high", "highest")),
         "low": _finite_number(_first_present(bar, "low", "lowest")),
         "close": _finite_number(bar.get("close")),
-        "settlement": _finite_number(bar.get("settlement")),
-        "openInterest": _finite_number(_first_present(bar, "open_interest", "openInterest")),
-        "notionalRmb": None,
+        "settlement": settlement,
+        "openInterest": open_interest,
+        "contractMultiplier": multiplier,
+        "notionalRmb": notional,
         "basisRmb": None,
         "basisPercent": None,
-        "unavailable": {"notional": _NOTIONAL_UNAVAILABLE, "basis": _BASIS_UNAVAILABLE},
+        "unavailable": {"notional": notional_reason, "basis": _BASIS_UNAVAILABLE},
     }
 
 

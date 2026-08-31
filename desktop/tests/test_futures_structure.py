@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -8,11 +9,16 @@ from market_monitor.cli import main
 from market_monitor.futures_structure import (
     MEMBER_OPEN_INTEREST_CHART_ID,
     MEMBER_STRUCTURE_FORMULA_VERSION,
+    PRODUCT_NOTIONAL_CHART_ID,
+    PRODUCT_NOTIONAL_FORMULA_VERSION,
     PRODUCT_OPEN_INTEREST_CHART_ID,
+    SETTLEMENT_PRICE_BASIS,
     STRUCTURE_FORMULA_VERSION,
     run_member_open_interest_structure_pipeline,
+    run_product_notional_structure_pipeline,
     run_product_open_interest_structure_pipeline,
 )
+from market_monitor.futures_rule_sync import SNAPSHOT_PROVIDER, SNAPSHOT_RELATIVE_PATH, SNAPSHOT_SCHEMA
 from market_monitor.storage import MarketStore, PartitionKey
 from market_monitor.web_app import create_web_app
 
@@ -53,6 +59,34 @@ def _write(data_root: Path, rows: list[dict[str, object]]) -> None:
         store.close()
 
 
+def _write_rule_snapshot(data_root: Path, days: dict[str, dict[str, float]]) -> None:
+    target = data_root / SNAPSHOT_RELATIVE_PATH
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        json.dumps(
+            {
+                "schema": SNAPSHOT_SCHEMA,
+                "provider": SNAPSHOT_PROVIDER,
+                "retrievedAt": "2026-08-29T00:00:00+00:00",
+                "days": {
+                    day: {
+                        "provider": SNAPSHOT_PROVIDER,
+                        "retrievedAt": "2026-08-29T00:00:00+00:00",
+                        "products": {
+                            key: {"contractMultiplier": multiplier, "marginRate": 0.1}
+                            for key, multiplier in products.items()
+                        },
+                        "contractOverrides": {},
+                    }
+                    for day, products in days.items()
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+
 def _coverage(exchange: str, *, status: str = "PASS") -> dict[str, object]:
     return {
         "trading_day": "2026-08-27",
@@ -76,6 +110,13 @@ def test_product_open_interest_pipeline_fixes_baseline_and_exposes_new_members(t
             _bar("2026-08-20", exchange="CFFEX", product="IF", symbol="IF2610", open_interest=99_999),
             _bar("2026-08-20", exchange="TDX", product="CN", symbol="CN001", open_interest=99_999),
         ],
+    )
+    _write_rule_snapshot(
+        data_root,
+        {
+            "2026-08-20": {"DCE.JM": 60, "CZCE.AP": 10},
+            "2026-08-21": {"DCE.JM": 60, "CZCE.AP": 10, "DCE.I": 100},
+        },
     )
     first = run_product_open_interest_structure_pipeline(data_root, calculated_at="2026-08-29T01:00:00+00:00")
     assert first["status"] == "PASS"
@@ -109,6 +150,23 @@ def test_product_open_interest_pipeline_fixes_baseline_and_exposes_new_members(t
     assert payload["unclassifiedTotals"] == [0, 4.0]
     assert payload["totals"] == [101.0, 115.0]
 
+    notional = run_product_notional_structure_pipeline(data_root, calculated_at="2026-08-29T03:00:00+00:00")
+    assert notional["status"] == "PASS"
+    assert notional["priceBasis"] == SETTLEMENT_PRICE_BASIS
+    notional_payload = client.get(
+        f"/api/futures/structures/{PRODUCT_NOTIONAL_CHART_ID}", params={"range": "all"}
+    ).json()
+    assert notional_payload["metric"] == "notionalOpenInterest"
+    assert notional_payload["unit"] == "CNY"
+    assert notional_payload["priceBasis"] == SETTLEMENT_PRICE_BASIS
+    assert notional_payload["formulaVersion"] == PRODUCT_NOTIONAL_FORMULA_VERSION
+    assert notional_payload["stackOrder"] == ["DCE.JM", "DCE.I", "OTHER"]
+    assert notional_payload["series"][0]["values"] == [600_000.0, 660_000.0]
+    assert notional_payload["series"][1]["values"] == [None, 40_000.0]
+    assert notional_payload["series"][2]["values"] == [1_000.0, 1_000.0]
+    assert notional_payload["unclassifiedTotals"] == [0, 0]
+    assert notional_payload["totals"] == [601_000.0, 701_000.0]
+
     drilldown = client.get(
         f"/api/futures/structures/{PRODUCT_OPEN_INTEREST_CHART_ID}", params={"range": "all", "level": "other"}
     ).json()
@@ -141,6 +199,30 @@ def test_futures_structure_cli_passes_explicit_baseline_rebuild(tmp_path: Path, 
     assert main(["futures-structure", "--data-root", str(tmp_path / "data"), "--rebuild-baseline"]) == 0
     assert captured["rebuild_baseline"] is True
     assert '"writtenRows": 3' in capsys.readouterr().out
+
+
+def test_futures_notional_structure_cli_passes_explicit_baseline_rebuild(tmp_path: Path, monkeypatch, capsys) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_pipeline(
+        data_root: Path,
+        *,
+        start_day: str | None,
+        end_day: str | None,
+        rebuild_baseline: bool,
+    ) -> dict[str, object]:
+        captured.update(
+            data_root=data_root,
+            start_day=start_day,
+            end_day=end_day,
+            rebuild_baseline=rebuild_baseline,
+        )
+        return {"status": "PASS", "writtenRows": 5}
+
+    monkeypatch.setattr("market_monitor.cli.run_product_notional_structure_pipeline", fake_pipeline)
+    assert main(["futures-notional-structure", "--data-root", str(tmp_path / "data"), "--rebuild-baseline"]) == 0
+    assert captured["rebuild_baseline"] is True
+    assert '"writtenRows": 5' in capsys.readouterr().out
 
 
 def test_member_structure_requires_both_direction_ranks_for_net_and_uses_fixed_baselines(tmp_path: Path) -> None:
