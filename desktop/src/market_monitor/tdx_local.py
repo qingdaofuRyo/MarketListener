@@ -858,7 +858,11 @@ def _normalized_rows(
     asset_type = metadata["asset_type"]
     canonical = f"{market}.{exchange}.{asset_type}.{code}"
     physical = canonical + ".TDX_LOCAL"
-    name = names.get(market, {}).get(code) or _fallback_name(market, asset_type, code)
+    name = (
+        names.get(f"{market}.{exchange}", {}).get(code)
+        or names.get(market, {}).get(code)
+        or _fallback_name(market, asset_type, code)
+    )
     volume_multipliers, method, multiplier_counts, volume_reasons = _volume_profile(records, metadata)
     unique_multipliers = sorted(multiplier_counts)
     invalid_volume_rows = sum(value is None for value in volume_multipliers)
@@ -1061,6 +1065,44 @@ def _load_tdx_names(tdx_root: Path) -> dict[str, dict[str, str]]:
             name = raw[name_start:name_end].decode("gbk", errors="replace").strip()
             if name:
                 output["CN"][code] = name
+    ds_stock = hq_cache / "ds_stk.dat"
+    try:
+        raw = ds_stock.read_bytes()
+    except OSError:
+        raw = b""
+    prefix_markets = {
+        10: ("GLOBAL", "BASIC_FX"),
+        12: ("GLOBAL", "GLOBAL_INDEX"),
+        16: ("GLOBAL", "COMEX"),
+        17: ("GLOBAL", "NYMEX"),
+        18: ("GLOBAL", "CBOT"),
+        27: ("HK", "HKEX"),
+        31: ("HK", "HKEX"),
+        38: ("CN", "TDX_MACRO"),
+        48: ("HK", "HKEX"),
+        62: ("CN", "CSI"),
+        69: ("CN", "HUAZHENG"),
+        102: ("CN", "CNI"),
+    }
+    for offset in range(36, len(raw) - 105, 106):
+        identity = prefix_markets.get(raw[offset - 4])
+        if not identity:
+            continue
+        market, exchange = identity
+        code = raw[offset : offset + 24].split(b"\0", 1)[0].decode("ascii", errors="ignore").strip().upper()
+        name = raw[offset + 23 : offset + 65].split(b"\0", 1)[0].decode("gb18030", errors="replace").strip()
+        if code and name and code.casefold() != name.casefold():
+            output.setdefault(f"{market}.{exchange}", {})[code] = name
+    for filename in ("tdxzs3.cfg", "tdxzs.cfg"):
+        path = hq_cache / filename
+        try:
+            lines = path.read_text(encoding="gb18030", errors="replace").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            fields = line.split("|")
+            if len(fields) >= 2 and re.fullmatch(r"88[01]\d{3}", fields[1].strip()):
+                output["CN"].setdefault(fields[1].strip(), fields[0].strip())
     return output
 
 

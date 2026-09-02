@@ -1,53 +1,31 @@
 import { expect, test } from "@playwright/test";
 
 
-test("market page shows one unclassified review table without an Other category", async ({ page }) => {
-  const dataVersion = "unclassified-v2";
+test("market page omits the internal unclassified review section", async ({ page }) => {
+  const dataVersion = "unclassified-v3";
+  let unclassifiedRequested = false;
   await page.route("**/api/strategy/definitions*", route => route.fulfill({ json: { items: [] } }));
   await page.route("**/api/market/**", route => {
     const path = new URL(route.request().url()).pathname;
     if (path === "/api/market/cache-status") return route.fulfill({ json: { dataVersion } });
     if (path === "/api/market/categories") return route.fulfill({ json: { items: [{ id: "all", label: "全部市场" }], total: 1 } });
     if (path === "/api/market/instruments") return route.fulfill({ json: { items: [], total: 0, dataVersion } });
-    if (path === "/api/market/unclassified") return route.fulfill({ json: {
-      items: [{
-        reviewId: "raw:tdx:62#000300",
-        name: null,
-        code: "000300",
-        sourceCode: "62#000300",
-        marketPrefix: "62",
-        latestClose: 4492.25,
-        lastBarAt: "2026-08-27T00:00:00+08:00",
-        pricePeriod: "1d",
-        periods: ["1d", "5m"],
-        sourceTerminal: "通达信金融终端",
-        origin: "RAW_UNRECOGNIZED",
-        reason: "文件名未命中已登记分类规则",
-      }],
-      total: 1,
-      page: 1,
-      pageSize: 50,
-    } });
+    if (path === "/api/market/unclassified") { unclassifiedRequested = true; return route.fulfill({ json: { items: [], total: 0 } }); }
     return route.fulfill({ json: { bars: [], total: 0, start: 0, size: 0, hasMore: false, availablePeriods: [] } });
   });
 
   await page.goto("/market/");
-  await expect(page.getByRole("heading", { name: "待分类标的" })).toBeVisible();
-  const table = page.locator(".unclassified-table");
-  await expect(table).toContainText("待确认");
-  await expect(table).toContainText("62#000300");
-  await expect(table).toContainText("4,492.25");
-  await expect(table).toContainText("通达信金融终端");
-  await expect(table).toContainText("日线、5分钟");
+  await expect(page.getByRole("heading", { name: "待分类标的" })).toHaveCount(0);
+  expect(unclassifiedRequested).toBe(false);
 
   await page.locator(".all-toolbar .el-select").click();
   await expect(page.getByRole("option", { name: "其它", exact: true })).toHaveCount(0);
 });
 
-test("market list ignores a persisted pre-v2 unclassified response", async ({ page }) => {
+test("market list ignores a persisted pre-v3 category response", async ({ page }) => {
   const revision = "fixture-r4";
   const staleVersion = `${revision}:market-categories-r4-v1`;
-  const currentVersion = `${revision}:market-categories-r4-v2`;
+  const currentVersion = `${revision}:market-categories-r4-v3`;
   const staleKey = `/api/market/instruments?page=1&pageSize=20&version=${encodeURIComponent(staleVersion)}`;
   const staleInstrument = {
     instrumentId: "GLOBAL.UNKNOWN.LEGACY",

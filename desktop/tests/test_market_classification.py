@@ -13,9 +13,9 @@ def instrument(symbol: str, *, market: str = "CN", exchange: str = "", asset_typ
 
 
 def test_ambiguous_000001_prefers_explicit_fields_then_allowlist() -> None:
-    assert classify_market(instrument("000001", exchange="SSE", asset_type="INDEX")) == "a-index"
+    assert classify_market(instrument("000001", exchange="SSE", asset_type="INDEX")) == "exchange-index"
     assert classify_market(instrument("000001", exchange="SZSE", asset_type="STOCK")) == "a-sz"
-    assert classify_market(instrument("000001")) == "a-index"  # documented index allowlist
+    assert classify_market(instrument("000001")) == "exchange-index"  # documented index allowlist
 
 
 def test_zero_prefix_split_uses_exchange_and_type_as_second_check() -> None:
@@ -35,9 +35,9 @@ def test_zero_prefix_split_uses_exchange_and_type_as_second_check() -> None:
 
 def test_explicit_stock_or_index_type_overrides_exchange_prefix_ambiguity() -> None:
     assert classify_market(instrument("000001", exchange="SSE", asset_type="STOCK")) == "a-sh"
-    assert classify_market(instrument("000001", exchange="SZSE", asset_type="INDEX")) == "a-index"
-    assert classify_market(instrument("881001", exchange="SSE", asset_type="INDEX")) == "tdx-industry-index"
-    assert classify_market(instrument("881001", exchange="SSE")) == "tdx-industry-index"
+    assert classify_market(instrument("000001", exchange="SZSE", asset_type="INDEX")) == "exchange-index"
+    assert classify_market(instrument("881001", exchange="SSE", asset_type="INDEX")) == "tdx-index"
+    assert classify_market(instrument("881001", exchange="SSE")) == "tdx-index"
 
 
 def test_bond_repo_fund_and_reit_code_ranges() -> None:
@@ -50,11 +50,11 @@ def test_bond_repo_fund_and_reit_code_ranges() -> None:
         (instrument("123127", exchange="SZSE"), "a-convertible"),
         (instrument("132001", exchange="SSE"), "a-exchangeable"),
         (instrument("120001", exchange="SZSE"), "a-exchangeable"),
-        (instrument("201001", exchange="SSE"), "a-repo"),
+        (instrument("201001", exchange="SSE"), "a-other-repo"),
         (instrument("204001", exchange="SSE"), "a-pledged-repo"),
-        (instrument("207001", exchange="SSE"), "a-repo"),
+        (instrument("207001", exchange="SSE"), "a-other-repo"),
         (instrument("131810", exchange="SZSE"), "a-pledged-repo"),
-        (instrument("131910", exchange="SZSE"), "a-repo"),
+        (instrument("131910", exchange="SZSE"), "a-other-repo"),
         (instrument("501001", exchange="SSE"), "a-lof"),
         (instrument("160123", exchange="SZSE"), "a-lof"),
         (instrument("508000", exchange="SSE"), "a-reit"),
@@ -65,8 +65,8 @@ def test_bond_repo_fund_and_reit_code_ranges() -> None:
         (instrument("550001", exchange="SSE"), "a-etf"),
         (instrument("580001", exchange="SSE"), "a-etf"),
         (instrument("589001", exchange="SSE"), "a-etf"),
-        (instrument("880001", exchange="SSE"), "tdx-board-index"),
-        (instrument("881048", exchange="SSE"), "tdx-industry-index"),
+        (instrument("880001", exchange="SSE"), "tdx-index"),
+        (instrument("881048", exchange="SSE"), "tdx-index"),
     ]
     for item, expected in cases:
         assert classify_market(item) == expected
@@ -74,14 +74,14 @@ def test_bond_repo_fund_and_reit_code_ranges() -> None:
 
 def test_a_share_boundaries_use_etf_index_and_board_priority() -> None:
     cases = [
-        (instrument("000300", exchange="SSE", asset_type="INDEX"), "a-index"),
-        (instrument("399006", exchange="SZSE", asset_type="INDEX"), "a-index"),
-        (instrument("889001", exchange="SSE"), "a-index"),
-        (instrument("950001", exchange="SSE"), "a-index"),
-        (instrument("999001", exchange="SSE"), "a-index"),
-        (instrument("470001", exchange="SZSE", asset_type="INDEX"), "a-index"),
-        (instrument("970001", exchange="SZSE", asset_type="INDEX"), "a-index"),
-        (instrument("988001", exchange="SZSE", asset_type="INDEX"), "a-index"),
+        (instrument("000300", exchange="SSE", asset_type="INDEX"), "exchange-index"),
+        (instrument("399006", exchange="SZSE", asset_type="INDEX"), "exchange-index"),
+        (instrument("889001", exchange="SSE"), "exchange-index"),
+        (instrument("950001", exchange="SSE"), "exchange-index"),
+        (instrument("999001", exchange="SSE"), "exchange-index"),
+        (instrument("470001", exchange="SZSE", asset_type="INDEX"), "exchange-index"),
+        (instrument("970001", exchange="SZSE", asset_type="INDEX"), "exchange-index"),
+        (instrument("988001", exchange="SZSE", asset_type="INDEX"), "exchange-index"),
         (instrument("588000", exchange="SSE", asset_type="ETF"), "a-etf"),
         (instrument("159915", exchange="SZSE", asset_type="ETF"), "a-etf"),
         (instrument("688001", exchange="SSE", asset_type="STOCK"), "a-star"),
@@ -96,7 +96,7 @@ def test_hong_kong_and_futures_boundaries() -> None:
     assert classify_market(instrument("HSI", market="HK", exchange="HKEX", asset_type="INDEX")) == "hk-index"
     assert classify_market(instrument("IF2612", exchange="CFFEX", asset_type="FUTURE")) == "cn-future-cffex"
     rb = instrument("rb2510", exchange="SHFE", asset_type="FUTURE")
-    assert classify_market(rb) == "cn-future-commodity"
+    assert classify_market(rb) == "cn-future-shfe"
     assert night_session(rb) == "21:00-23:00"
     assert classify_market(instrument("rb000", exchange="SHFE", asset_type="FUTURE")) == "cn-future-index"
     assert classify_market(instrument("USDJPY", market="GLOBAL", exchange="BASIC_FX", asset_type="FX_RATE")) == "global-fx"
@@ -109,6 +109,26 @@ def test_hong_kong_and_futures_boundaries() -> None:
 
 def test_legacy_stock_key_remains_compatible() -> None:
     assert matches_market_category(instrument("600519", exchange="SSE", asset_type="STOCK"), "cn-stock")
+
+
+def test_indexes_use_administrator_categories() -> None:
+    assert classify_market(instrument("000300", exchange="CSI", asset_type="INDEX")) == "csi-index"
+    assert classify_market(instrument("399001", exchange="CNI", asset_type="INDEX")) == "cni-index"
+    assert classify_market(instrument("993411", exchange="HUAZHENG", asset_type="INDEX")) == "huazheng-index"
+    assert matches_market_category(instrument("000300", exchange="CSI", asset_type="INDEX"), "a-index")
+
+
+def test_futures_use_explicit_trading_venue_categories() -> None:
+    domestic = {
+        "SHFE": "cn-future-shfe", "INE": "cn-future-ine", "DCE": "cn-future-dce",
+        "CZCE": "cn-future-czce", "CFFEX": "cn-future-cffex", "GFEX": "cn-future-gfex",
+    }
+    symbols = {"SHFE": "RB2610", "INE": "SC2610", "DCE": "M2610", "CZCE": "CF701", "CFFEX": "IF2610", "GFEX": "SI2610"}
+    for exchange, expected in domestic.items():
+        assert classify_market(instrument(symbols[exchange], exchange=exchange, asset_type="FUTURE")) == expected
+    for exchange, expected in {"COMEX": "future-comex", "NYMEX": "future-nymex", "CBOT": "future-cbot"}.items():
+        assert classify_market(instrument("GC00W", market="GLOBAL", exchange=exchange, asset_type="FUTURE")) == expected
+    assert matches_market_category(instrument("RB2610", exchange="SHFE", asset_type="FUTURE"), "cn-future-commodity")
 
 
 def test_b_shares_are_separate_from_a_share_categories() -> None:

@@ -73,6 +73,24 @@ def test_load_tdx_names_reads_fixed_width_tnf_records(tmp_path: Path) -> None:
     assert names == {"CN": {"899050": "北证50"}, "HK": {}}
 
 
+def test_load_tdx_names_reads_prefix_aware_ds_and_board_names(tmp_path: Path) -> None:
+    root = tmp_path / "tdx"
+    hq_cache = root / "T0002" / "hq_cache"
+    hq_cache.mkdir(parents=True)
+    raw = bytearray(36 + 106)
+    raw[32] = 102
+    raw[36:42] = b"CN6002"
+    ds_name = "北京指数".encode("gb18030")
+    raw[59 : 59 + len(ds_name)] = ds_name
+    (hq_cache / "ds_stk.dat").write_bytes(raw)
+    (hq_cache / "tdxzs.cfg").write_text("合成革|881048|4|1|0|合成革\n", encoding="gb18030")
+
+    names = _load_tdx_names(root)
+
+    assert names["CN.CNI"]["CN6002"] == "北京指数"
+    assert names["CN"]["881048"] == "合成革"
+
+
 def test_cn_classification_covers_bond_repo_fund_and_reit_codes() -> None:
     assert _cn_classification("sh", "110075")[0] == "CONVERTIBLE_BOND"
     assert _cn_classification("sh", "126001")[0] == "CONVERTIBLE_BOND"

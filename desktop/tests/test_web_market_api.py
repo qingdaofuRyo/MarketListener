@@ -209,13 +209,15 @@ def test_market_categories_expose_ordered_r3_filter_contract(tmp_path: Path) -> 
     items = response.json()["items"]
     assert items[0] == {"id": "all", "label": "全部市场"}
     assert {item["id"] for item in items} >= {
-        "a-index", "tdx-board-index", "tdx-industry-index", "a-sh", "a-sz", "a-bse",
+        "exchange-index", "csi-index", "cni-index", "huazheng-index", "tdx-index", "a-sh", "a-sz", "a-bse",
         "a-chinext", "a-star", "a-etf", "a-convertible", "a-exchangeable", "a-pledged-repo",
-        "a-repo", "a-lof", "a-reit",
-        "hk-index", "hk-stock", "global-index", "global-future", "cn-future-index", "cn-future-cffex",
-        "cn-future-commodity", "cn-future-night",
+        "a-lof", "a-reit",
+        "hk-index", "hk-stock", "global-index", "future-comex", "future-nymex", "future-cbot",
+        "cn-future-index", "cn-future-shfe", "cn-future-ine", "cn-future-dce", "cn-future-czce",
+        "cn-future-cffex", "cn-future-gfex", "cn-future-night",
     }
-    assert "other" not in {item["id"] for item in items}
+    public_ids = {item["id"] for item in items}
+    assert not {"other", "a-index", "tdx-board-index", "tdx-industry-index", "global-future", "cn-future-commodity", "a-repo", "a-other-repo"} & public_ids
 
 
 def test_unclassified_endpoint_combines_silver_and_raw_review_rows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -312,6 +314,23 @@ def test_tdx_index_names_resolve_from_bundled_name_map() -> None:
     assert repaired_sector["seriesKind"] == "TDX_INDUSTRY_INDEX"
     assert repaired_sector["name"] == "合成革"
 
+    assert _normalize_tdx_instrument({
+        "symbol": "000300", "exchange": "CSI", "assetType": "INDEX",
+        "actualSource": "通达信金融终端（本地）", "name": "000300",
+    })["name"] == "沪深300"
+    assert _normalize_tdx_instrument({
+        "symbol": "CN6002", "exchange": "CNI", "assetType": "INDEX",
+        "actualSource": "通达信金融终端（本地）", "name": "CN6002",
+    })["name"] == "北京指数"
+    assert _normalize_tdx_instrument({
+        "symbol": "T99001", "exchange": "HUAZHENG", "assetType": "INDEX",
+        "actualSource": "通达信金融终端（本地）", "name": "T99001",
+    })["name"] == "华证A指大盘全收"
+    assert _normalize_tdx_instrument({
+        "symbol": "EHR00W", "exchange": "COMEX", "assetType": "FUTURE",
+        "actualSource": "通达信金融终端（本地）", "name": "EHR00W",
+    })["name"] == "COMEX钢卷主连"
+
 
 def test_future_contract_names_use_the_product_name_map() -> None:
     contract = {
@@ -324,6 +343,14 @@ def test_future_contract_names_use_the_product_name_map() -> None:
         "name": "ZN2607",
     }
     assert _normalize_future_name(contract)["name"] == "沪锌2607"
+    assert _normalize_future_name({
+        "symbol": "PL2609", "sourceSymbol": "PL2609", "productCode": "PL",
+        "exchange": "CZCE", "assetType": "FUTURE", "seriesKind": "CONTRACT", "name": "PL2609",
+    })["name"] == "丙烯2609"
+    assert _normalize_future_name({
+        "symbol": "OP2701", "sourceSymbol": "OP2701", "productCode": "OP",
+        "exchange": "SHFE", "assetType": "FUTURE", "seriesKind": "CONTRACT", "name": "OP2701",
+    })["name"] == "胶版印刷纸2701"
 
 
 def test_future_search_and_continuous_names_are_unambiguous(tmp_path: Path) -> None:

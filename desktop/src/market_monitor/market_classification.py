@@ -17,13 +17,41 @@ from typing import Any
 
 _CONFIG_PATH = Path(__file__).with_name("config") / "market_classification.json"
 UNCLASSIFIED_CATEGORY = "unclassified"
+_DOMESTIC_FUTURE_CATEGORIES = {
+    "SHFE": "cn-future-shfe",
+    "INE": "cn-future-ine",
+    "DCE": "cn-future-dce",
+    "CZCE": "cn-future-czce",
+    "CFFEX": "cn-future-cffex",
+    "GFEX": "cn-future-gfex",
+}
+_GLOBAL_FUTURE_CATEGORIES = {
+    "COMEX": "future-comex",
+    "NYMEX": "future-nymex",
+    "CBOT": "future-cbot",
+    "CME": "future-cme",
+    "ICE": "future-ice",
+    "LME": "future-lme",
+    "SGX": "future-sgx",
+}
+_INDEX_CATEGORIES = {
+    "CSI": "csi-index",
+    "CNI": "cni-index",
+    "HUAZHENG": "huazheng-index",
+}
 _LEGACY_CATEGORIES = {
-    "cn-index": {"a-index", "tdx-board-index", "tdx-industry-index"},
+    "cn-index": {"exchange-index", "csi-index", "cni-index", "huazheng-index", "tdx-index"},
+    "a-index": {"exchange-index", "csi-index", "cni-index", "huazheng-index", "tdx-index"},
+    "tdx-board-index": {"tdx-index"},
+    "tdx-industry-index": {"tdx-index"},
     "cn-stock": {"a-sh", "a-sz", "a-bse", "a-chinext", "a-star"},
     "cn-etf": {"a-etf"},
     "hk-index": {"hk-index"},
     "hk-stock": {"hk-stock"},
     "commodity-index": {"cn-future-index"},
+    "cn-future-commodity": set(_DOMESTIC_FUTURE_CATEGORIES.values()) - {"cn-future-cffex"},
+    "global-future": set(_GLOBAL_FUTURE_CATEGORIES.values()),
+    "a-repo": {"a-pledged-repo", "a-other-repo"},
 }
 
 
@@ -104,7 +132,7 @@ def _a_share_category(symbol: str, exchange: str, asset_type: str, spec: dict[st
     ):
         return "a-etf"
     if asset_type == "INDEX":
-        return "a-index"
+        return "exchange-index"
     if asset_type == "B_SHARE":
         return "b-sh" if exchange == "SSE" else "b-sz" if exchange == "SZSE" else None
     if asset_type in {"CONVERTIBLE_BOND", "EXCHANGEABLE_BOND", "PLEDGED_REPO", "REPO", "LOF", "REIT"}:
@@ -112,7 +140,7 @@ def _a_share_category(symbol: str, exchange: str, asset_type: str, spec: dict[st
             "CONVERTIBLE_BOND": "a-convertible",
             "EXCHANGEABLE_BOND": "a-exchangeable",
             "PLEDGED_REPO": "a-pledged-repo",
-            "REPO": "a-repo",
+            "REPO": "a-other-repo",
             "LOF": "a-lof",
             "REIT": "a-reit",
         }[asset_type]
@@ -133,14 +161,14 @@ def _a_share_category(symbol: str, exchange: str, asset_type: str, spec: dict[st
             return "a-sz"
         return None
     if exchange and exchange in rules["indexPrefixes"] and _prefix(symbol, rules["indexPrefixes"][exchange]):
-        return "a-index"
+        return "exchange-index"
     if not exchange and symbol in rules["indexAllowlist"]:
-        return "a-index"
+        return "exchange-index"
     for prefix_key, category in (
         ("convertibleBondPrefixes", "a-convertible"),
         ("exchangeableBondPrefixes", "a-exchangeable"),
         ("pledgedRepoPrefixes", "a-pledged-repo"),
-        ("repoPrefixes", "a-repo"),
+        ("repoPrefixes", "a-other-repo"),
         ("lofPrefixes", "a-lof"),
         ("reitPrefixes", "a-reit"),
     ):
@@ -175,12 +203,17 @@ def _future_category(
     suffix = symbol[len(product) :] if product and symbol.startswith(product) else ""
     if series_kind == "COMMODITY_INDEX" or symbol in rules["indexAllowlist"] or suffix in rules["indexSuffixes"]:
         return "cn-future-index"
-    if exchange == "CFFEX" or product in rules["cffexProducts"]:
+    if exchange in _DOMESTIC_FUTURE_CATEGORIES:
+        return _DOMESTIC_FUTURE_CATEGORIES[exchange]
+    if product in rules["cffexProducts"]:
         return "cn-future-cffex"
-    if exchange in rules["commodityProducts"] or any(
+    if any(
         product in products for products in rules["commodityProducts"].values()
     ):
-        return "cn-future-commodity"
+        matched_exchange = next(
+            candidate for candidate, products in rules["commodityProducts"].items() if product in products
+        )
+        return _DOMESTIC_FUTURE_CATEGORIES[matched_exchange]
     return UNCLASSIFIED_CATEGORY
 
 
@@ -210,7 +243,7 @@ def classify_market(item: dict[str, Any]) -> str:
         if asset_type == "FX_RATE":
             return "global-fx"
         if asset_type == "FUTURE":
-            return "global-future"
+            return _GLOBAL_FUTURE_CATEGORIES.get(exchange, UNCLASSIFIED_CATEGORY)
         return UNCLASSIFIED_CATEGORY
 
     if market == "CN" and asset_type == "MACRO":
@@ -218,6 +251,9 @@ def classify_market(item: dict[str, Any]) -> str:
 
     if market == "CN" and series_kind in {"OPTION_VOLATILITY_INDEX", "FUTURES_UNDERLYING_INDEX"}:
         return "cn-future-index"
+
+    if market == "CN" and asset_type == "INDEX" and exchange in _INDEX_CATEGORIES:
+        return _INDEX_CATEGORIES[exchange]
 
     is_future = asset_type == "FUTURE" or (
         not asset_type and (exchange in spec["futures"]["commodityProducts"] or exchange == "CFFEX")
@@ -232,7 +268,7 @@ def classify_market(item: dict[str, Any]) -> str:
 
 def night_session(item: dict[str, Any]) -> str | None:
     """Return the configured night-session window for an eligible commodity."""
-    if classify_market(item) != "cn-future-commodity":
+    if classify_market(item) not in set(_DOMESTIC_FUTURE_CATEGORIES.values()) - {"cn-future-cffex"}:
         return None
     product = _future_product(item, _canonical_parts(item))
     for window, products in market_classification_spec()["futures"]["nightSessions"].items():
@@ -253,11 +289,11 @@ def matches_market_category(item: dict[str, Any], category_key: str) -> bool:
         return primary in _LEGACY_CATEGORIES[key]
     series_kind = _value(item, "seriesKind", "series_kind").upper()
     if key == "cn-future-main":
-        return primary in {"cn-future-cffex", "cn-future-commodity"} and series_kind == "MAIN"
+        return primary in set(_DOMESTIC_FUTURE_CATEGORIES.values()) and series_kind == "MAIN"
     if key == "cn-future-secondary":
-        return primary in {"cn-future-cffex", "cn-future-commodity"} and series_kind == "SECONDARY"
+        return primary in set(_DOMESTIC_FUTURE_CATEGORIES.values()) and series_kind == "SECONDARY"
     if key == "cn-future-weighted":
-        return primary in {"cn-future-cffex", "cn-future-commodity"} and series_kind == "WEIGHTED"
+        return primary in set(_DOMESTIC_FUTURE_CATEGORIES.values()) and series_kind == "WEIGHTED"
     return primary == key
 
 

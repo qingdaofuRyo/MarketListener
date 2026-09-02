@@ -13,11 +13,6 @@ interface Instrument {
 }
 interface Strategy { strategyId: string; displayName: string; }
 interface MarketCategory { id: string; label: string; }
-interface UnclassifiedInstrument {
-  reviewId: string; name?: string; code: string; sourceCode: string; marketPrefix?: string;
-  latestClose?: number; lastBarAt?: string; pricePeriod?: string; periods: string[];
-  sourceTerminal: string; origin: "RAW_UNRECOGNIZED" | "SILVER_UNCLASSIFIED"; reason: string;
-}
 interface BarsMeta { total: number; period: string; availablePeriods: string[]; earliestBarAt?: string; latestBarAt?: string; dataVersion?: string; }
 interface History extends BarsMeta { start: number; size: number; bars: KLineBar[]; before?: string; hasMore?: boolean; }
 interface ChartBootstrap extends History { series: Record<string, Array<number | null>>; drawings: ChartDrawing[]; }
@@ -34,11 +29,11 @@ interface DrawingPreferences {
 }
 
 const fallbackCategories: MarketCategory[] = [
-  ["all", "全部市场"], ["a-index", "A股-指数"], ["tdx-industry-index", "通达信-行业板块指数"], ["tdx-board-index", "通达信-综合板块指数"], ["a-sh", "A股-沪市"], ["a-sz", "A股-深市"], ["a-bse", "A股-北证"],
+  ["all", "全部市场"], ["exchange-index", "交易所指数"], ["csi-index", "中证指数"], ["cni-index", "国证指数"], ["huazheng-index", "华证指数"], ["tdx-index", "通达信指数"], ["a-sh", "A股-沪市"], ["a-sz", "A股-深市"], ["a-bse", "A股-北证"],
   ["a-chinext", "A股-创业板"], ["a-star", "A股-科创板"], ["a-etf", "A股-ETF基金"], ["a-convertible", "A股-可转债"], ["a-exchangeable", "A股-可交债"],
-  ["a-pledged-repo", "A股-债券通用质押式回购"], ["a-repo", "A股-债券回购"], ["a-lof", "A股-LOF基金"], ["a-reit", "A股-REITs"], ["hk-index", "港股-指数"], ["hk-stock", "港股-个股"],
-  ["global-index", "全球-指数"], ["global-fx", "全球-基本汇率"], ["global-future", "全球-期货"], ["cn-macro", "中国-宏观指标"],
-  ["cn-future-index", "国内期货-指数"], ["cn-future-cffex", "国内期货-中金所"], ["cn-future-commodity", "国内期货-商品期货"], ["cn-future-night", "国内期货-商品期货夜盘"],
+  ["a-pledged-repo", "A股-债券质押式回购"], ["a-lof", "A股-LOF基金"], ["a-reit", "A股-REITs"], ["hk-index", "港股-指数"], ["hk-stock", "港股-个股"],
+  ["global-index", "全球-指数"], ["global-fx", "全球-基本汇率"], ["future-comex", "纽约COMEX"], ["future-nymex", "纽约NYMEX"], ["future-cbot", "芝加哥CBOT"], ["future-cme", "芝加哥CME"], ["future-ice", "洲际交易所ICE"], ["future-lme", "伦敦LME"], ["future-sgx", "新加坡SGX"], ["cn-macro", "中国-宏观指标"],
+  ["cn-future-index", "国内期货-指数"], ["cn-future-shfe", "上海期货交易所"], ["cn-future-ine", "上海国际能源交易中心"], ["cn-future-dce", "大连商品交易所"], ["cn-future-czce", "郑州商品交易所"], ["cn-future-cffex", "中国金融期货交易所"], ["cn-future-gfex", "广州期货交易所"], ["cn-future-night", "国内期货-商品期货夜盘"],
 ].map(([id, label]) => ({ id, label }));
 const periodOptions = [
   ["5m", "5分"], ["15m", "15分"], ["30m", "30分"], ["1h", "60分"], ["2h", "120分"],
@@ -92,7 +87,6 @@ const allItems = ref<Instrument[]>([]); const allTotal = ref(0); const category 
 const storedView = localStorage.getItem("market-all-view");
 const view = ref<"card" | "list">(storedView === "card" || storedView === "list" ? storedView : "list"); const loading = ref(false); const error = ref("");
 const targetItems = ref<Instrument[]>([]); const targetLoading = ref(false); const selectedTargetMarkets = ref<string[]>([]); const selectedTargetStrategies = ref<string[]>([]);
-const unclassifiedItems = ref<UnclassifiedInstrument[]>([]); const unclassifiedTotal = ref(0); const unclassifiedPage = ref(1); const unclassifiedPageSize = ref(50); const unclassifiedQuery = ref(""); const unclassifiedLoading = ref(false); const unclassifiedError = ref("");
 const selected = ref<Instrument>(); const fullscreen = ref(false); const detailLoading = ref(false); const selectedDrawingId = ref("");
 const marketVersion = ref("");
 const history = ref<History>({ total: 0, period: "1d", availablePeriods: [], start: 0, size: 0, bars: [], hasMore: false });
@@ -115,7 +109,7 @@ const drawingPopoverDrag = ref<{ pointerId: number; startX: number; startY: numb
 const workbenchChart = ref<HTMLElement>();
 const drawingPopoverElement = ref<HTMLElement>();
 const viewportHeight = ref(720);
-let searchTimer: ReturnType<typeof setTimeout> | undefined; let unclassifiedSearchTimer: ReturnType<typeof setTimeout> | undefined; let serial = 0; let allSerial = 0; let cardDrawingsSerial = 0; let historyAbort: AbortController | undefined; let allAbort: AbortController | undefined;
+let searchTimer: ReturnType<typeof setTimeout> | undefined; let serial = 0; let allSerial = 0; let cardDrawingsSerial = 0; let historyAbort: AbortController | undefined; let allAbort: AbortController | undefined;
 let drawingSaveChain: Promise<unknown> = Promise.resolve();
 
 const visibleDrawings = computed(() => drawings.value.filter((item) => item.crossPeriod || item.period === history.value.period).map((item) => ({ ...item, hidden: hiddenDrawings.value || item.hidden })));
@@ -262,20 +256,6 @@ async function loadTargets(): Promise<void> {
     })).items;
   } catch { targetItems.value = []; } finally { targetLoading.value = false; }
 }
-async function loadUnclassified(targetPage = 1): Promise<void> {
-  unclassifiedLoading.value = true; unclassifiedError.value = "";
-  try {
-    const data = await apiGet<{ items: UnclassifiedInstrument[]; total: number }>("/api/market/unclassified", {
-      q: unclassifiedQuery.value, page: targetPage, pageSize: unclassifiedPageSize.value,
-    }, { ttlMs: 0, persist: false, force: true });
-    unclassifiedItems.value = data.items; unclassifiedTotal.value = data.total; unclassifiedPage.value = targetPage;
-  } catch (reason) { unclassifiedError.value = reason instanceof Error ? reason.message : "待分类标的加载失败"; }
-  finally { unclassifiedLoading.value = false; }
-}
-function searchUnclassified(): void { if (unclassifiedSearchTimer) clearTimeout(unclassifiedSearchTimer); unclassifiedSearchTimer = setTimeout(() => void loadUnclassified(1), 250); }
-function changeUnclassifiedPageSize(size: number): void { unclassifiedPageSize.value = size; void loadUnclassified(1); }
-function periodText(item: UnclassifiedInstrument): string { return item.periods.map((period) => period === "1d" ? "日线" : period === "5m" ? "5分钟" : period).join("、") || "—"; }
-function barTimeText(value?: string): string { return value ? value.replace("T", " ").slice(0, 19) : "—"; }
 function resetAll(): void { page.value = 1; allItems.value = []; void loadAll(); }
 function search(): void { if (searchTimer) clearTimeout(searchTimer); searchTimer = setTimeout(resetAll, 250); }
 function searchNow(): void { if (searchTimer) clearTimeout(searchTimer); resetAll(); }
@@ -437,8 +417,8 @@ function drawingsForPeriod(period: string): ChartDrawing[] {
   return drawings.value.filter((item) => item.crossPeriod || item.period === period).map((item) => ({ ...item, hidden: hiddenDrawings.value || item.hidden }));
 }
 watch(selected, () => { if (view.value === "list") { void loadBoards(); if (selected.value) void loadDrawings(selected.value.instrumentId); } });
-onMounted(async () => { updateViewport(); window.addEventListener("resize", updateViewport); window.addEventListener("pointermove", resizePointer); window.addEventListener("pointerup", stopResize); await loadMarketVersion(); await Promise.all([loadCategories(), loadStrategies()]); await Promise.all([loadAll(), loadTargets()]); void loadUnclassified(); if (view.value === "list") await loadBoards(); });
-onBeforeUnmount(() => { if (searchTimer) clearTimeout(searchTimer); if (unclassifiedSearchTimer) clearTimeout(unclassifiedSearchTimer); allAbort?.abort(); historyAbort?.abort(); boardTop.value.abort?.abort(); boardBottom.value.abort?.abort(); window.removeEventListener("resize", updateViewport); window.removeEventListener("pointermove", resizePointer); window.removeEventListener("pointerup", stopResize); document.body.classList.remove("market-resizing"); });
+onMounted(async () => { updateViewport(); window.addEventListener("resize", updateViewport); window.addEventListener("pointermove", resizePointer); window.addEventListener("pointerup", stopResize); await loadMarketVersion(); await Promise.all([loadCategories(), loadStrategies()]); await Promise.all([loadAll(), loadTargets()]); if (view.value === "list") await loadBoards(); });
+onBeforeUnmount(() => { if (searchTimer) clearTimeout(searchTimer); allAbort?.abort(); historyAbort?.abort(); boardTop.value.abort?.abort(); boardBottom.value.abort?.abort(); window.removeEventListener("resize", updateViewport); window.removeEventListener("pointermove", resizePointer); window.removeEventListener("pointerup", stopResize); document.body.classList.remove("market-resizing"); });
 </script>
 
 <template>
@@ -453,23 +433,6 @@ onBeforeUnmount(() => { if (searchTimer) clearTimeout(searchTimer); if (unclassi
         <button v-for="item in targetItems" :key="item.instrumentId" type="button" class="target-row" @click="openWorkbench(item)"><b>{{ item.symbol || item.instrumentId }}</b><span>{{ item.name || "—" }}</span><strong>{{ noData(item.latestPrice ?? item.lastClose, 4) }}</strong></button>
         <p v-if="!strategies.length && !targetLoading" class="muted">暂无已保存策略。</p><p v-else-if="!targetItems.length && !targetLoading" class="muted">暂无同时满足当前市场与策略筛选的标的。</p>
       </div>
-    </section>
-
-    <section class="unclassified-section">
-      <div class="section-heading"><h2>待分类标的</h2><p>这里集中展示原“其它”分类及本地文件规则无法识别的标的；确认名称与市场后再加入正式分类，不参与正常行情分类和策略筛选。</p></div>
-      <div class="unclassified-toolbar"><el-input v-model="unclassifiedQuery" clearable placeholder="查询名称、代码、前缀或来源" @input="searchUnclassified" @keyup.enter="void loadUnclassified(1)" @clear="void loadUnclassified(1)" /><el-button :loading="unclassifiedLoading" @click="void loadUnclassified(unclassifiedPage)">刷新</el-button><span>共 {{ unclassifiedTotal }} 个待确认标的</span></div>
-      <el-alert v-if="unclassifiedError" :title="unclassifiedError" type="warning" :closable="false" class="page-alert" />
-      <el-table v-loading="unclassifiedLoading" :data="unclassifiedItems" row-key="reviewId" border stripe empty-text="暂无待分类标的" class="unclassified-table">
-        <el-table-column label="标的名称" min-width="150"><template #default="scope">{{ scope.row.name || "待确认" }}</template></el-table-column>
-        <el-table-column prop="code" label="代码" min-width="120" />
-        <el-table-column prop="sourceCode" label="来源代码" min-width="130" />
-        <el-table-column label="最新收盘价" min-width="120" align="right"><template #default="scope">{{ noData(scope.row.latestClose, 4) }}</template></el-table-column>
-        <el-table-column label="数据时间" min-width="170"><template #default="scope">{{ barTimeText(scope.row.lastBarAt) }}</template></el-table-column>
-        <el-table-column label="已有周期" min-width="110"><template #default="scope">{{ periodText(scope.row) }}</template></el-table-column>
-        <el-table-column prop="sourceTerminal" label="来源终端" min-width="160" />
-        <el-table-column prop="reason" label="待确认原因" min-width="330" show-overflow-tooltip />
-      </el-table>
-      <el-pagination v-if="unclassifiedTotal > 0" class="market-pagination" layout="sizes, prev, pager, next, jumper, total" :page-sizes="[20,50,100,200]" :total="unclassifiedTotal" :page-size="unclassifiedPageSize" :current-page="unclassifiedPage" @size-change="changeUnclassifiedPageSize" @current-change="void loadUnclassified($event)" />
     </section>
 
     <section class="all-section">
@@ -539,7 +502,7 @@ onBeforeUnmount(() => { if (searchTimer) clearTimeout(searchTimer); if (unclassi
 </template>
 
 <style scoped>
-.unclassified-section{min-width:0;margin-top:28px;padding:0;border:0;background:transparent}.section-heading p{margin:7px 0 0;color:var(--ml-text-secondary);font-size:12px}.unclassified-toolbar{display:grid;grid-template-columns:minmax(260px,460px) auto 1fr;align-items:center;gap:10px;margin-bottom:12px}.unclassified-toolbar span{color:var(--ml-text-secondary);font-size:12px}.unclassified-table{width:100%}
+.section-heading p{margin:7px 0 0;color:var(--ml-text-secondary);font-size:12px}
 .market-page{width:96vw;margin:0 2vw}.target-section,.all-section{padding:0;border:0;background:transparent}.all-section{margin-top:28px}.section-heading{margin-bottom:14px}.section-heading h1,.section-heading h2{margin:0;font-size:clamp(22px,2vw,30px);letter-spacing:-.03em}.target-filters{display:flex;flex-direction:column;gap:9px;margin-bottom:14px}.filter-row{display:grid;grid-template-columns:42px 1fr;gap:8px;align-items:start}.filter-row>span{padding-top:7px;color:var(--ml-text-disabled);font-size:11px}.target-nav{display:flex;flex-wrap:wrap;gap:6px}.target-nav button{border:1px solid var(--ml-divider);border-radius:6px;padding:6px 10px;background:var(--ml-surface);color:var(--ml-text-secondary);cursor:pointer}.target-nav button.active{border-color:var(--ml-accent);background:var(--ml-surface-selected);color:var(--ml-text-primary)}.target-rows{display:flex;flex-wrap:wrap;gap:8px;min-height:42px}.target-row{display:grid;grid-template-columns:auto 1fr auto;gap:9px;align-items:center;min-width:260px;padding:10px 12px;border:1px solid var(--ml-divider);border-radius:8px;background:var(--ml-surface);color:var(--ml-text-primary);cursor:pointer;text-align:left}.target-row:hover{border-color:var(--ml-accent)}.target-row span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ml-text-secondary)}
 .all-toolbar{position:sticky;top:52px;z-index:30;display:grid;grid-template-columns:240px minmax(180px,1fr) auto auto;gap:10px;padding:12px 0;background:var(--ml-background)}.view-switch{display:flex;padding:3px;border:1px solid var(--ml-divider);border-radius:8px;background:var(--ml-surface)}.view-switch button{border:0;background:transparent;padding:0 12px;color:var(--ml-text-secondary);cursor:pointer}.view-switch button.active{background:var(--ml-surface-selected);color:var(--ml-text-primary);border-radius:5px}.quote-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.quote-card{border:1px solid var(--ml-divider);border-radius:9px;background:var(--ml-surface);color:var(--ml-text-primary);overflow:hidden}.quote-card:hover{border-color:var(--ml-accent)}.quote-summary{display:block;width:100%;border:0;background:transparent;color:inherit;cursor:pointer;text-align:left}.quote-card dl{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));margin:0;padding:12px;gap:9px}.quote-card dl>div{min-width:0}.quote-card dt{margin-bottom:4px;color:var(--ml-text-secondary);font-size:11px;white-space:nowrap}.quote-card dd{overflow:hidden;margin:0;font:700 12px/1.35 ui-monospace,Consolas,monospace;text-overflow:ellipsis;white-space:nowrap}.list-workbench{display:grid;grid-template-columns:minmax(560px,50%) 1fr;height:calc(100vh - 118px);min-height:600px;border:1px solid var(--ml-divider);border-radius:2px;overflow:hidden;background:var(--ml-surface)}.instrument-list{height:100%;overflow-y:auto;overscroll-behavior:contain;border-right:1px solid var(--ml-divider)}.list-header-row,.instrument-row{display:grid;grid-template-columns:1fr 30px;min-width:560px;border-bottom:1px solid var(--ml-divider)}.list-header-row{position:sticky;top:0;z-index:4;background:var(--ml-surface-elevated)}.list-table-header,.row-main{display:grid;align-items:center;min-width:0}.list-table-header button{height:28px;overflow:hidden;border:0;border-right:1px solid var(--ml-divider);background:transparent;color:var(--ml-text-secondary);cursor:grab;font-size:11px;text-align:left;text-overflow:ellipsis;white-space:nowrap}.list-table-header button.dragging{opacity:.45}.list-table-header button span{float:right;color:var(--ml-text-disabled)}.instrument-row.active{background:var(--ml-surface-selected)}.row-main{border:0;padding:0;background:transparent;color:var(--ml-text-primary);cursor:pointer;text-align:left}.row-main>span{overflow:hidden;padding:5px 6px;border-right:1px solid color-mix(in srgb,var(--ml-divider) 60%,transparent);color:var(--ml-text-secondary);font-size:12px;text-overflow:ellipsis;white-space:nowrap}.row-main .column-symbol,.row-main .column-close{color:var(--ml-text-primary);font-family:ui-monospace,Consolas,monospace;font-weight:700}.row-detail{border:0;background:transparent;color:var(--ml-text-disabled);cursor:pointer}.row-detail:hover{color:var(--ml-accent)}.list-loading{padding:12px;text-align:center;color:var(--ml-text-disabled);font-size:11px}.boards{display:grid;grid-template-rows:1fr 1fr;min-width:0;min-height:0}.board{min-height:0;padding:0;border-bottom:1px solid var(--ml-divider);overflow:hidden}.board:last-child{border-bottom:0}.board header{display:grid;grid-template-columns:auto 1fr;align-items:center;gap:6px;min-height:30px;padding:0 4px}.board-title{border:0;background:transparent;color:var(--ml-text-primary);font-weight:650;cursor:pointer;white-space:nowrap}.board-title span{color:var(--ml-accent)}.board nav{display:flex;justify-content:flex-end;gap:1px;overflow-x:auto}.board nav button,.period-bar button{flex:0 0 auto;border:0;border-radius:3px;background:transparent;color:var(--ml-text-secondary);padding:3px 5px;cursor:pointer;font-size:11px}.board nav button.active,.period-bar button.active{background:var(--ml-surface-selected);color:var(--ml-text-primary)}.board nav button.unavailable{opacity:.32;cursor:not-allowed}.market-pagination{justify-content:flex-end;margin-top:16px}
 :global(.workbench-overlay){position:fixed;inset:0;z-index:3000;background:var(--ml-background);color:var(--ml-text-primary);display:grid;grid-template-columns:48px 1fr;grid-template-rows:56px 42px 1fr}.workbench-header{grid-column:1/-1;display:flex;align-items:center;justify-content:space-between;gap:16px;padding:0 16px;border-bottom:1px solid var(--ml-divider);background:var(--ml-surface)}.workbench-header>div:first-child{display:flex;align-items:baseline;gap:10px;min-width:0}.workbench-header strong{font-size:18px}.workbench-header span{overflow:hidden;color:var(--ml-text-secondary);font-size:12px;text-overflow:ellipsis;white-space:nowrap}.workbench-actions{display:flex;align-items:center;gap:8px}.close-workbench{border:0;background:transparent;color:var(--ml-text-primary);font-size:32px;line-height:1;cursor:pointer}.drawing-toolbar{grid-row:2/4;display:flex;flex-direction:column;align-items:center;gap:5px;padding:7px 5px;border-right:1px solid var(--ml-divider);background:var(--ml-surface);overflow:auto}.drawing-toolbar button{display:grid;place-items:center;width:34px;height:34px;border:1px solid transparent;border-radius:6px;background:transparent;color:var(--ml-text-secondary);cursor:pointer}.drawing-toolbar button:hover,.drawing-toolbar button.active{border-color:var(--ml-accent);background:var(--ml-surface-selected);color:var(--ml-text-primary)}.drawing-toolbar svg{width:19px;height:19px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}.drawing-toolbar hr{width:26px;border:0;border-top:1px solid var(--ml-divider)}.period-bar{display:flex;align-items:center;gap:3px;overflow:auto;padding:5px 12px;border-bottom:1px solid var(--ml-divider)}.period-bar button{padding:5px 9px}.period-bar button.unavailable{opacity:.32;cursor:not-allowed}.workbench-chart{position:relative;min-width:0;min-height:0;overflow:hidden}.drawing-popover{position:absolute;z-index:12;top:90px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:7px;max-width:calc(100% - 24px);padding:6px 8px;border:1px solid var(--ml-divider);border-radius:8px;background:color-mix(in srgb,var(--ml-surface) 94%,transparent);box-shadow:0 8px 24px rgba(0,0,0,.24);overflow-x:auto;font-size:11px}.drawing-popover label{display:flex;align-items:center;gap:4px;white-space:nowrap;color:var(--ml-text-secondary)}.drawing-popover input[type=color]{width:26px;height:24px;padding:1px;border:1px solid var(--ml-divider);background:transparent}.drawing-popover input[type=text]{width:100px}.drawing-popover input[type=number]{width:54px}.drawing-popover select,.drawing-popover input[type=text],.drawing-popover input[type=number]{height:25px;border:1px solid var(--ml-divider);border-radius:4px;background:var(--ml-background);color:var(--ml-text-primary)}.drawing-popover button{height:26px;border:1px solid var(--ml-divider);border-radius:5px;background:var(--ml-background);color:var(--ml-text-secondary);cursor:pointer;white-space:nowrap}.drawing-popover button.active{border-color:var(--ml-accent);color:var(--ml-text-primary)}.drawing-popover button.danger{color:var(--ml-error)}
@@ -549,5 +512,4 @@ onBeforeUnmount(() => { if (searchTimer) clearTimeout(searchTimer); if (unclassi
 .drawing-popover{overflow:visible}.popover-drag-handle{display:grid!important;place-items:center;width:27px!important;padding:0!important;border:0!important;background:transparent!important;cursor:move!important;touch-action:none}.popover-drag-handle svg{width:16px;height:18px;fill:var(--ml-text-secondary)}.popover-color{width:28px;height:26px;padding:1px;border:1px solid var(--ml-divider);border-radius:4px;background:transparent;cursor:pointer}.popover-opacity{width:70px}.font-size-select{width:70px}.preview-select{position:relative}.preview-select summary{display:grid;place-items:center;width:40px;height:26px;border:1px solid var(--ml-divider);border-radius:5px;background:var(--ml-background);color:var(--ml-text-primary);cursor:pointer;list-style:none}.preview-select summary::-webkit-details-marker{display:none}.preview-select>div{position:absolute;z-index:20;top:30px;left:0;display:grid;gap:3px;padding:4px;border:1px solid var(--ml-divider);border-radius:5px;background:var(--ml-surface);box-shadow:0 6px 18px rgba(0,0,0,.25)}.preview-select button{display:grid;place-items:center;width:40px!important;padding:0!important}.drawing-popover .icon-action{display:grid;place-items:center;width:29px;padding:0}.drawing-popover .icon-action svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
 @media (max-width:1280px){.quote-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}@media (max-width:800px){.market-page{width:calc(100vw - 24px);margin:0 12px}.all-toolbar{grid-template-columns:1fr;position:static}.quote-grid{grid-template-columns:1fr}.list-workbench{grid-template-columns:1fr!important;grid-template-rows:240px 1fr;height:auto;min-height:900px}.workbench-resizer{display:none}.instrument-list{border-right:0;border-bottom:1px solid var(--ml-divider)}.workbench-header span,.workbench-actions .el-button-group,.workbench-actions>.el-dropdown{display:none}.drawing-popover{left:8px;right:8px;transform:none}}
 .quote-card dl{padding:6px 10px 5px;gap:7px}.quote-card dt{margin-bottom:2px;font-size:10px}.quote-card dd{font:700 11px/1.3 ui-monospace,Consolas,monospace}.drawing-popover{gap:5px;padding:4px 6px;border-radius:6px}.drawing-popover button{height:24px}.drawing-popover .icon-action{width:26px}.drawing-popover .popover-drag-handle{width:24px!important}
-@media (max-width:800px){.unclassified-toolbar{grid-template-columns:1fr}.unclassified-toolbar span{grid-column:1}}
 </style>
