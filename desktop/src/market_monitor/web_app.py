@@ -40,6 +40,8 @@ from .web_api import watchlist as watchlist_api
 _WEB_ROUTES = {
     "/",
     "/market/",
+    "/market/all/",
+    "/market/targets/",
     "/futures/",
     "/settings/",
     "/data/",
@@ -220,6 +222,9 @@ def create_web_app(
 
     for route in sorted(_WEB_ROUTES):
         app.add_api_route(route, shell, methods=["GET"], include_in_schema=False)
+    # Market detail is a client route rather than an API resource.  Serving the
+    # shell here keeps a refreshed or shared detail URL inside the SPA.
+    app.add_api_route("/market/instrument/{instrument_id}", shell, methods=["GET"], include_in_schema=False)
     app.add_api_route("/f10/company/{instrument_key}", shell, methods=["GET"], include_in_schema=False)
     return app
 

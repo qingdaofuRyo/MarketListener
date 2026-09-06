@@ -26,6 +26,7 @@ from market_monitor.chart_drawings import (
     validate_fibonacci_retracement,
 )
 from market_monitor.market_data_version import market_data_version
+from market_monitor.market_list_metrics import RETURN_WINDOWS, finite_number, trailing_trading_returns
 from market_monitor.market_classification import (
     UNCLASSIFIED_CATEGORY,
     classify_market,
@@ -98,11 +99,13 @@ _PERIOD_ORDER = ("1m", "5m", "15m", "30m", "1h", "2h", "4h", "1d", "1w", "1mo", 
 _SOURCE_MINUTES = {"1m": 1, "5m": 5, "15m": 15, "30m": 30}
 _DAILY_WINDOW_FACTORS = {"1w": 6, "1mo": 24, "1q": 70, "3mo": 70, "6mo": 140, "1y": 270}
 _MARKET_CAP_CACHE: dict[str, dict[str, tuple[float | None, float | None]]] = {}
+_MARKET_LIST_METRICS_CACHE: dict[tuple[str, str], dict[str, Any]] = {}
 _CONTINUOUS_LABELS = {"SECONDARY": "次连", "MAIN": "主连", "WEIGHTED": "加权"}
-# The v3 revision changes the public market taxonomy and removes the
-# unclassified review section from the market page.  Persisted v2 category
-# payloads must not leak the old overlapping labels into the new UI.
-_PRESENTATION_SCHEMA_VERSION = "market-categories-r4-v4"
+# The v5 revision adds the canonical continuous-series views and retires the
+# former night-session filter from public market navigation.  Night-session
+# metadata remains available to data-processing code, but persisted v4 UI
+# choices must not leak into the list.
+_PRESENTATION_SCHEMA_VERSION = "market-categories-r4-v5"
 _TDX_SECURITY_NAMES_PATH = Path(__file__).resolve().parents[1] / "config" / "tdx_security_names.json"
 _TDX_COMMODITY_INDEX_NAMES_PATH = Path(__file__).resolve().parents[1] / "config" / "tdx_commodity_index_names.json"
 _TDX_FUTURES_INDEX_NAMES_PATH = Path(__file__).resolve().parents[1] / "config" / "tdx_futures_index_names.json"
@@ -466,7 +469,70 @@ def _normalize_tdx_instrument(item: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def _quote_item(item: dict[str, Any], caps: dict[str, tuple[float | None, float | None]]) -> dict[str, Any]:
+def _daily_list_metrics(data_root: Path, item: dict[str, Any], data_version: str) -> dict[str, Any]:
+    """Read the bounded daily window required by the market-list columns.
+
+    The canonical instrument may have multiple source-isolated rows.  Use the
+    same selected source route as the chart whenever it has daily bars and do
+    not join values from another source into the snapshot.
+    """
+
+    instrument_id = str(item.get("instrumentId") or "")
+    cache_key = (data_version, instrument_id)
+    cached = _MARKET_LIST_METRICS_CACHE.get(cache_key)
+    if cached is not None:
+        return dict(cached)
+    candidates = [str(item.get("storageInstrumentId") or "")]
+    candidates.extend(str(value) for value in item.get("sourceCandidates", []) if value)
+    candidate = next(
+        (value for value in dict.fromkeys(candidates) if value and "1d" in instrument_periods(data_root, value)),
+        "",
+    )
+    if not candidate:
+        result = {"dailyReturns": {str(window): None for window in RETURN_WINDOWS}, "fieldCapabilities": {}}
+        _MARKET_LIST_METRICS_CACHE[cache_key] = result
+        return dict(result)
+    bars = _enrich_bars(read_bars(data_root, candidate, period="1d", limit=max(RETURN_WINDOWS) + 1), item)
+    latest = bars[-1] if bars else {}
+    returns = trailing_trading_returns(bars)
+    values = {
+        "open": finite_number(latest.get("open")),
+        "high": finite_number(latest.get("high")),
+        "low": finite_number(latest.get("low")),
+        "close": finite_number(latest.get("close")),
+        "settlement": finite_number(latest.get("settlement")),
+        "volume": finite_number(latest.get("volume")),
+        "amount": finite_number(latest.get("amount")),
+        "openInterest": finite_number(latest.get("open_interest")),
+        "pctChange": finite_number(latest.get("pct_change")),
+        "amplitude": finite_number(latest.get("amplitude")),
+        "capitalDeposit": finite_number(latest.get("capital_deposit")),
+        "capitalDepositReason": latest.get("capital_deposit_reason"),
+    }
+    result = {
+        **values,
+        "dailyReturns": {str(window): returns[window] for window in RETURN_WINDOWS},
+        "fieldCapabilities": {
+            "openInterest": values["openInterest"] is not None,
+            "capitalDeposit": values["capitalDeposit"] is not None,
+            "amount": values["amount"] is not None,
+        },
+        "dailySourceInstrumentId": candidate,
+        "dailyAsOf": str(latest.get("trading_day") or latest.get("bar_open_time") or "")[:10] or None,
+    }
+    _MARKET_LIST_METRICS_CACHE[cache_key] = result
+    if len(_MARKET_LIST_METRICS_CACHE) > 20_000:
+        _MARKET_LIST_METRICS_CACHE.clear()
+        _MARKET_LIST_METRICS_CACHE[cache_key] = result
+    return dict(result)
+
+
+def _quote_item(
+    item: dict[str, Any],
+    caps: dict[str, tuple[float | None, float | None]],
+    data_root: Path,
+    data_version: str,
+) -> dict[str, Any]:
     result = _normalize_tdx_instrument(_normalize_future_name(item))
     total_cap, float_cap = caps.get(str(item.get("instrumentId") or ""), (None, None))
     result["latestPrice"] = item.get("lastClose")
@@ -486,6 +552,16 @@ def _quote_item(item: dict[str, Any], caps: dict[str, tuple[float | None, float 
     result["capitalDepositReason"] = reason
     result.update({_camel_key(key): value for key, value in trace.items()})
     result["nightSession"] = night_session(item)
+    inventory_open_interest = result["openInterest"]
+    inventory_capital_deposit = result["capitalDeposit"]
+    result.update(_daily_list_metrics(data_root, result, data_version))
+    # The bounded daily snapshot is the authoritative list source when it is
+    # available; otherwise preserve the existing latest inventory value.
+    result["latestPrice"] = result.get("close") if result.get("close") is not None else result.get("latestPrice")
+    if result.get("openInterest") is None:
+        result["openInterest"] = inventory_open_interest
+    if result.get("capitalDeposit") is None:
+        result["capitalDeposit"] = inventory_capital_deposit
     return result
 
 
@@ -812,9 +888,11 @@ def market_instruments(
                 for field in ("instrumentId", "symbol", "name", "productCode", "sourceSymbol")
             )
         ]
-    caps = _market_caps(_data_root(request))
-    payload = paginate([_quote_item(item, caps) for item in items], page, page_size)
-    payload["dataVersion"] = _response_data_version(_data_root(request))
+    data_root = _data_root(request)
+    data_version = _response_data_version(data_root)
+    caps = _market_caps(data_root)
+    payload = paginate([_quote_item(item, caps, data_root, data_version) for item in items], page, page_size)
+    payload["dataVersion"] = data_version
     return clean(payload)
 
 

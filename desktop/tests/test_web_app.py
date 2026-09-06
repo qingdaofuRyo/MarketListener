@@ -36,7 +36,17 @@ def _dist(tmp_path: Path) -> Path:
 def test_fastapi_shell_has_exact_routes_and_industry_v2_redirect(tmp_path: Path) -> None:
     client = TestClient(create_web_app(tmp_path / "data", web_dist=_dist(tmp_path)))
 
-    for route in ("/", "/data/", "/f10/", "/industry/", "/logs/", "/f10/company/CN.SSE.STOCK.600519"):
+    for route in (
+        "/",
+        "/data/",
+        "/f10/",
+        "/industry/",
+        "/logs/",
+        "/market/all/",
+        "/market/targets/",
+        "/market/instrument/CN.CFFEX.FUTURE.IFMAIN",
+        "/f10/company/CN.SSE.STOCK.600519",
+    ):
         response = client.get(route)
         assert response.status_code == 200
         assert "MarketListener" in response.text

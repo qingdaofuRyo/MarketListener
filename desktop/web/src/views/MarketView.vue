@@ -17,18 +17,23 @@ import KLineChart, {
   type KLineBar,
   type StrategyChartMarker,
 } from "../components/charts/KLineChart.vue";
-import MiniKLine from "../components/charts/MiniKLine.vue";
 import DrawingColorPicker from "../components/charts/DrawingColorPicker.vue";
 import { DRAWING_COLOR_PRESETS } from "../components/charts/drawingPalette";
 import ChartIcon from "../components/charts/ChartIcon.vue";
 import QuoteValues from "../components/charts/QuoteValues.vue";
 import { chartTypes, type ChartType } from "../domain/chartPresentation";
 import {
+  DEFAULT_MARKET_CATEGORY,
+  editableTarget,
+  nextSortState,
+  sortMarketInstruments,
+  type MarketSortState,
+  type SortableMarketInstrument,
+} from "../domain/marketList";
+import {
   apiGet,
   apiPost,
   apiPut,
-  formatAssetType,
-  formatMarket,
   formatNumber,
   invalidateQuery,
 } from "../domain/api";
@@ -38,7 +43,7 @@ import type {
   VolumeProfile,
 } from "../domain/strategyTypes";
 
-interface Instrument {
+interface Instrument extends SortableMarketInstrument {
   instrumentId: string;
   symbol?: string;
   name?: string;
@@ -53,6 +58,17 @@ interface Instrument {
   openInterest?: number;
   capitalDeposit?: number;
   capitalDepositReason?: string;
+  open?: number;
+  high?: number;
+  low?: number;
+  close?: number;
+  settlement?: number;
+  volume?: number;
+  amount?: number;
+  pctChange?: number;
+  amplitude?: number;
+  dailyReturns?: Record<string, number | null>;
+  fieldCapabilities?: Record<string, boolean>;
   matchedStrategyIds?: string[];
   nightSession?: string;
   actualSource?: string;
@@ -162,7 +178,10 @@ interface Board {
   instrumentId: string;
   abort?: AbortController;
 }
-type ListColumnKey = "symbol" | "name" | "close" | "market" | "source";
+type ListColumnKey =
+  | "symbol" | "name" | "latestPrice" | "totalMarketCap" | "floatMarketCap"
+  | "capitalDeposit" | "openInterest" | "pctChange" | "amplitude" | "volume"
+  | "amount" | "return3" | "return5" | "return10" | "return22" | "return44";
 interface ListColumn {
   id: ListColumnKey;
   label: string;
@@ -219,13 +238,14 @@ const fallbackCategories: MarketCategory[] = [
   ["future-sgx", "新加坡SGX"],
   ["cn-macro", "中国-宏观指标"],
   ["cn-future-index", "国内期货-指数"],
+  ["cn-future-main", "国内期货主连合约"],
+  ["cn-future-weighted", "国内期货加权合约"],
   ["cn-future-shfe", "上海期货交易所"],
   ["cn-future-ine", "上海国际能源交易中心"],
   ["cn-future-dce", "大连商品交易所"],
   ["cn-future-czce", "郑州商品交易所"],
   ["cn-future-cffex", "中国金融期货交易所"],
   ["cn-future-gfex", "广州期货交易所"],
-  ["cn-future-night", "国内期货-商品期货夜盘"],
 ].map(([id, label]) => ({ id, label }));
 const periodOptions = [
   ["5m", "5分"],
@@ -239,19 +259,16 @@ const periodOptions = [
   ["3mo", "季线"],
   ["1y", "年线"],
 ] as const;
-const quoteFields: Array<[ListColumnKey, string]> = [
-  ["symbol", "代码"],
-  ["name", "名称"],
-  ["close", "收盘价"],
-  ["market", "市场类型"],
-  ["source", "数据源"],
-];
-const defaultListColumns: ListColumn[] = quoteFields.map(([id, label]) => ({
-  id,
-  label,
-}));
+const defaultListColumns: ListColumn[] = [
+  ["name", "名称"], ["symbol", "代码"], ["latestPrice", "最新价"],
+  ["totalMarketCap", "总市值"], ["floatMarketCap", "流通市值"],
+  ["capitalDeposit", "沉淀资金"], ["openInterest", "持仓量"], ["pctChange", "涨幅"],
+  ["amplitude", "振幅"], ["volume", "成交量"], ["amount", "成交额"],
+  ["return3", "近3日涨幅"], ["return5", "近5日涨幅"], ["return10", "近10日涨幅"],
+  ["return22", "近22日涨幅"], ["return44", "近44日涨幅"],
+].map(([id, label]) => ({ id: id as ListColumnKey, label }));
 const drawingTools: Array<{ id: DrawingTool; label: string; path: string }> = [
-  { id: "cursor", label: "光标", path: "M5 3l13 8-6 2-3 6z" },
+  { id: "cursor", label: "光标", path: "M12 2v20M2 12h20M8 8l8 8M16 8l-8 8" },
   {
     id: "horizontal",
     label: "水平线",
@@ -294,8 +311,6 @@ const drawingGroupOpen = ref("");
 const groupSelection = ref<Record<string,string>>({lines:'trend', shapes:'rectangle', pens:'brush'});
 const chartTypeMenu = ref(false);
 const replaySelecting = ref(false);
-const cardPeriod = ref(localStorage.getItem("market-card-period") || "1d");
-watch(cardPeriod, (value) => localStorage.setItem("market-card-period", value));
 function groupedTool(id: string) { return drawingTools.find((item) => item.id === groupSelection.value[id])!; }
 function chooseGroupedTool(group: string, id: DrawingTool) { groupSelection.value[group] = id; drawingGroupOpen.value = ""; selectDrawingTool(id); }
 const drawingColorPresets = DRAWING_COLOR_PRESETS;
@@ -390,13 +405,13 @@ const router = useRouter();
 const strategies = ref<Strategy[]>([]);
 const allItems = ref<Instrument[]>([]);
 const allTotal = ref(0);
-const category = ref("all");
+const listElement = ref<HTMLElement>();
+const category = ref(DEFAULT_MARKET_CATEGORY);
 const query = ref("");
 const page = ref(1);
-const cardPageSize = ref(10);
-const storedView = localStorage.getItem("market-all-view");
-const view = ref<"card" | "list">(
-  storedView === "card" || storedView === "list" ? storedView : "list",
+const listSort = ref<MarketSortState>({ field: null, direction: null });
+const marketTab = computed<"all" | "targets">(
+  () => route.path.includes("/targets/") ? "targets" : "all",
 );
 const loading = ref(false);
 const error = ref("");
@@ -448,6 +463,19 @@ const replayCount = ref(1);
 const replayPlaying = ref(false);
 const replaySpeed = ref(1);
 let replayTimer: ReturnType<typeof setInterval> | undefined;
+let previousBodyOverflow = "";
+let previousRootOverflow = "";
+function setDetailScrollLock(locked: boolean): void {
+  if (locked) {
+    previousBodyOverflow = document.body.style.overflow;
+    previousRootOverflow = document.documentElement.style.overflow;
+    document.body.style.overflow = "hidden";
+    document.documentElement.style.overflow = "hidden";
+    return;
+  }
+  document.body.style.overflow = previousBodyOverflow;
+  document.documentElement.style.overflow = previousRootOverflow;
+}
 function readLocal<T>(key: string, fallback: T): T {
   try { const result = JSON.parse(localStorage.getItem(key) || "null"); return Array.isArray(result) ? result as T : fallback; }
   catch { return fallback; }
@@ -505,9 +533,13 @@ watch([replayCount, replayActive, replaySelecting], () => {
   void loadIndicatorSeries();
 });
 watch(chartType, (value) => localStorage.setItem("market-chart-type", value));
-watch(fullscreen, (value) => { if (!value) { stopReplay(); replayActive.value = false; } });
+watch(fullscreen, (value) => {
+  setDetailScrollLock(value);
+  if (!value) { stopReplay(); replayActive.value = false; }
+});
 function closeWorkbench(): void {
   indicatorDialogOpen.value = false; fullscreen.value = false; tool.value = "cursor";
+  void router.replace({ path: "/market/all/", query: { ...route.query, category: category.value } });
 }
 function onWorkbenchEscape(event: KeyboardEvent): void {
   if (event.key !== "Escape" || !fullscreen.value) return;
@@ -549,7 +581,6 @@ const magnet = ref(storedDrawingOptions.magnet);
 const crossPeriod = ref(storedDrawingOptions.crossPeriod);
 const hiddenDrawings = ref(false);
 const keepDrawing = ref(storedDrawingOptions.keepDrawing);
-const cardDrawings = ref<Record<string, ChartDrawing[]>>({});
 const emptyBoard = (period: string): Board => ({
   period,
   bars: [],
@@ -566,6 +597,8 @@ const boardTop = ref<Board>(emptyBoard(storedPeriod("market-board-top", "1d")));
 const boardBottom = ref<Board>(
   emptyBoard(storedPeriod("market-board-bottom", "1h")),
 );
+const boardTopQuote = ref<KLineBar | null>(null);
+const boardBottomQuote = ref<KLineBar | null>(null);
 const listColumns = ref<ListColumn[]>(storedListColumns());
 const draggingColumn = ref<ListColumnKey>();
 const columnWidths = ref<Record<ListColumnKey, number>>(storedColumnWidths());
@@ -595,7 +628,6 @@ let serial = 0;
 let indicatorSerial = 0;
 let profileRangeTimer: ReturnType<typeof setTimeout> | undefined;
 let allSerial = 0;
-let cardDrawingsSerial = 0;
 let drawingRevision = 0;
 let historyAbort: AbortController | undefined;
 let allAbort: AbortController | undefined;
@@ -615,9 +647,28 @@ const boardChartHeight = computed(() =>
 const detailChartHeight = computed(() =>
   Math.max(360, viewportHeight.value - 136 - (replayActive.value ? 40 : 0)),
 );
-const hasMore = computed(() => allItems.value.length < allTotal.value);
-const pageSize = computed(() =>
-  view.value === "list" ? 20 : cardPageSize.value,
+const pageSize = 500;
+const sortedItems = computed(() => sortMarketInstruments(allItems.value, listSort.value));
+// Keep the complete market collection in memory, but only mount a small window of
+// rows.  Pagination is an API transport detail rather than a user interaction.
+const LIST_ROW_HEIGHT = 33;
+const LIST_HEADER_HEIGHT = 30;
+const LIST_WINDOW_BUFFER = 18;
+const listScrollTop = ref(0);
+const listViewportHeight = ref(600);
+const virtualStart = computed(() =>
+  Math.max(0, Math.floor(Math.max(0, listScrollTop.value - LIST_HEADER_HEIGHT) / LIST_ROW_HEIGHT) - LIST_WINDOW_BUFFER),
+);
+const virtualEnd = computed(() =>
+  Math.min(
+    sortedItems.value.length,
+    Math.ceil((listScrollTop.value + listViewportHeight.value) / LIST_ROW_HEIGHT) + LIST_WINDOW_BUFFER,
+  ),
+);
+const virtualItems = computed(() => sortedItems.value.slice(virtualStart.value, virtualEnd.value));
+const virtualTop = computed(() => virtualStart.value * LIST_ROW_HEIGHT);
+const virtualBottom = computed(() =>
+  Math.max(0, (sortedItems.value.length - virtualEnd.value) * LIST_ROW_HEIGHT),
 );
 const listGridTemplate = computed(() =>
   listColumns.value.map((item) => `${columnWidths.value[item.id]}px`).join(" "),
@@ -1041,9 +1092,6 @@ function clearActiveStrategy(): void {
   strategyBacktest.value = null;
   strategyBacktestError.value = "";
 }
-function marketText(item: Partial<Instrument>): string {
-  return `${formatMarket(item.market)} · ${formatAssetType(item.assetType)}`;
-}
 function storedPeriod(key: string, fallback: string): string {
   const value = localStorage.getItem(key) || fallback;
   return periodOptions.some(([period]) => period === value) ? value : fallback;
@@ -1063,11 +1111,10 @@ function storedListColumns(): ListColumn[] {
 }
 function storedColumnWidths(): Record<ListColumnKey, number> {
   const defaults: Record<ListColumnKey, number> = {
-    symbol: 96,
-    name: 132,
-    close: 92,
-    market: 152,
-    source: 126,
+    symbol: 94, name: 132, latestPrice: 94, totalMarketCap: 108,
+    floatMarketCap: 108, capitalDeposit: 108, openInterest: 96,
+    pctChange: 82, amplitude: 82, volume: 102, amount: 102,
+    return3: 92, return5: 92, return10: 98, return22: 98, return44: 98,
   };
   try {
     const stored = JSON.parse(
@@ -1104,9 +1151,26 @@ function storedChartWidth(): number {
 function quoteValue(item: Instrument, field: ListColumnKey): string {
   if (field === "symbol") return item.symbol || item.instrumentId;
   if (field === "name") return item.name || "—";
-  if (field === "market") return marketText(item);
-  if (field === "source") return item.actualSource || item.source || "本地";
-  return noData(item.latestPrice ?? item.lastClose, 4);
+  if (field.startsWith("return")) {
+    const value = item.dailyReturns?.[field.slice(6)];
+    return typeof value === "number" ? `${noData(value)}%` : "—";
+  }
+  const value = item[field as keyof Instrument];
+  const digits = field === "latestPrice" ? 4 : 2;
+  const unit = ["totalMarketCap", "floatMarketCap", "capitalDeposit", "volume", "amount"].includes(field);
+  return typeof value === "number" ? (unit ? compactNumber(value) : noData(value, digits)) : "—";
+}
+function compactNumber(value: number): string {
+  const absolute = Math.abs(value);
+  if (absolute >= 1e8) return `${noData(value / 1e8)}亿`;
+  if (absolute >= 1e4) return `${noData(value / 1e4)}万`;
+  return noData(value);
+}
+function toggleListSort(field: ListColumnKey): void {
+  listSort.value = nextSortState(listSort.value, field);
+}
+function sortMark(field: ListColumnKey): string {
+  return listSort.value.field === field ? (listSort.value.direction === "asc" ? "↑" : "↓") : "";
 }
 function reorderColumn(target: ListColumnKey): void {
   const source = draggingColumn.value;
@@ -1125,31 +1189,6 @@ function reorderColumn(target: ListColumnKey): void {
 }
 function updateViewport(): void {
   viewportHeight.value = window.innerHeight;
-}
-function persistView(next: "card" | "list"): void {
-  if (view.value === next) return;
-  allAbort?.abort();
-  ++allSerial;
-  if (next === "card") {
-    boardTop.value.abort?.abort();
-    boardBottom.value.abort?.abort();
-    ++boardTop.value.requestId;
-    ++boardBottom.value.requestId;
-    boardTop.value.loading = false;
-    boardBottom.value.loading = false;
-  }
-  const previousInstrumentId = selected.value?.instrumentId;
-  view.value = next;
-  localStorage.setItem("market-all-view", next);
-  page.value = 1;
-  allItems.value = [];
-  void loadAll().then(() => {
-    if (
-      next === "list" &&
-      selected.value?.instrumentId === previousInstrumentId
-    )
-      void loadBoards();
-  });
 }
 function startColumnResize(event: PointerEvent, id: ListColumnKey): void {
   event.preventDefault();
@@ -1309,12 +1348,6 @@ function onSelectDrawing(
     drawingPopoverPosition.value = { left, top };
   });
 }
-function changeCardPageSize(size: number): void {
-  cardPageSize.value = size;
-  page.value = 1;
-  allItems.value = [];
-  void loadAll();
-}
 function selectDrawingTool(next: DrawingTool): void {
   tool.value = next;
   selectedDrawingId.value = "";
@@ -1355,6 +1388,13 @@ async function loadCategories(): Promise<void> {
   } catch {
     categories.value = fallbackCategories;
   }
+  const requested = typeof route.query.category === "string" ? route.query.category : "";
+  category.value = categories.value.some((item) => item.id === requested)
+    ? requested
+    : DEFAULT_MARKET_CATEGORY;
+  if (requested !== category.value) {
+    void router.replace({ path: route.path.includes("/targets/") ? "/market/targets/" : "/market/all/", query: { ...route.query, category: category.value } });
+  }
 }
 async function loadStrategies(): Promise<void> {
   try { const data=await apiGet<{items:Array<{id:string;displayName:string;action:string;enabled:boolean}>}>("/api/signals/definitions",undefined,{force:true});
@@ -1362,37 +1402,49 @@ async function loadStrategies(): Promise<void> {
     selectedTargetStrategies.value=selectedTargetStrategies.value.filter(id=>strategies.value.some(item=>item.strategyId===id));
   }catch{strategies.value=[];}
 }
-async function loadAll(append = false, targetPage = 1): Promise<void> {
-  if (append && loading.value) return;
-  if (!append) allAbort?.abort();
-  const controller = append ? allAbort : new AbortController();
-  if (!append) allAbort = controller;
+async function loadAll(): Promise<void> {
+  allAbort?.abort();
+  const controller = new AbortController();
+  allAbort = controller;
   const request = ++allSerial;
-  const requestedView = view.value;
   loading.value = true;
   error.value = "";
+  const received = new Map<string, Instrument>();
   try {
-    const requestedPage = append ? page.value + 1 : targetPage;
-    const data = await apiGet<{
-      items: Instrument[];
-      total: number;
-      dataVersion?: string;
-    }>(
-      "/api/market/instruments",
-      {
-        categoryKey: category.value === "all" ? undefined : category.value,
-        q: query.value,
-        page: requestedPage,
-        pageSize: pageSize.value,
-        version: marketVersion.value || undefined,
-      },
-      { ttlMs: 5 * 60_000, persist: true, signal: controller?.signal },
-    );
-    if (request !== allSerial || requestedView !== view.value) return;
-    page.value = requestedPage;
-    allItems.value = append ? [...allItems.value, ...data.items] : data.items;
-    allTotal.value = data.total;
-    if (data.dataVersion) marketVersion.value = data.dataVersion;
+    let total = 0;
+    let incomplete = false;
+    for (let requestedPage = 1; ; requestedPage += 1) {
+      const data = await apiGet<{
+        items: Instrument[];
+        total: number;
+        dataVersion?: string;
+      }>(
+        "/api/market/instruments",
+        {
+          categoryKey: category.value,
+          q: query.value,
+          page: requestedPage,
+          pageSize,
+          version: marketVersion.value || undefined,
+        },
+        { ttlMs: 5 * 60_000, persist: true, signal: controller.signal },
+      );
+      if (request !== allSerial) return;
+      const before = received.size;
+      for (const item of data.items) received.set(item.instrumentId, item);
+      total = data.total;
+      if (data.dataVersion) marketVersion.value = data.dataVersion;
+      if (received.size >= total) break;
+      if (data.items.length === 0 || received.size === before) {
+        incomplete = received.size < total;
+        break;
+      }
+    }
+    if (request !== allSerial) return;
+    page.value = Math.ceil(received.size / pageSize) || 1;
+    allItems.value = [...received.values()];
+    allTotal.value = total;
+    if (incomplete) error.value = `当前市场仅取得 ${received.size} / ${total} 个唯一标的，列表未完整。`;
     if (
       (!selected.value ||
         !allItems.value.some(
@@ -1401,7 +1453,6 @@ async function loadAll(append = false, targetPage = 1): Promise<void> {
       allItems.value.length
     )
       selected.value = allItems.value[0];
-    if (requestedView === "card") await loadCardDrawings(allItems.value);
   } catch (reason) {
     if (
       request === allSerial &&
@@ -1418,6 +1469,29 @@ function resetAll(): void {
   allItems.value = [];
   void loadAll();
 }
+function chooseCategory(value: string): void {
+  category.value = categories.value.some((item) => item.id === value)
+    ? value
+    : DEFAULT_MARKET_CATEGORY;
+  const nextQuery = { ...route.query, category: category.value };
+  void router.replace({ path: "/market/all/", query: nextQuery });
+  resetAll();
+}
+function navigateMarket(tab: "all" | "targets"): void {
+  void router.push({ path: tab === "all" ? "/market/all/" : "/market/targets/", query: { ...route.query, category: category.value } });
+}
+watch(
+  () => route.query.category,
+  (value) => {
+    const next = typeof value === "string" && categories.value.some((item) => item.id === value)
+      ? value
+      : DEFAULT_MARKET_CATEGORY;
+    if (next !== category.value) {
+      category.value = next;
+      resetAll();
+    }
+  },
+);
 function search(): void {
   if (searchTimer) clearTimeout(searchTimer);
   searchTimer = setTimeout(resetAll, 250);
@@ -1444,16 +1518,38 @@ function toggleTargetStrategy(id: string): void {
 function choose(item: Instrument): void {
   selected.value = item;
 }
+function selectRelativeInstrument(event: KeyboardEvent): void {
+  if (fullscreen.value || marketTab.value !== "all" || editableTarget(event.target)) return;
+  if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+  const items = sortedItems.value;
+  if (!items.length) return;
+  event.preventDefault();
+  const current = items.findIndex((item) => item.instrumentId === selected.value?.instrumentId);
+  const nextIndex = Math.max(0, Math.min(items.length - 1, (current < 0 ? 0 : current) + (event.key === "ArrowDown" ? 1 : -1)));
+  const next = items[nextIndex];
+  if (!next) return;
+  choose(next);
+  const element = listElement.value;
+  if (!element) return;
+  const rowTop = LIST_HEADER_HEIGHT + nextIndex * LIST_ROW_HEIGHT;
+  const rowBottom = rowTop + LIST_ROW_HEIGHT;
+  if (rowTop < element.scrollTop) element.scrollTop = rowTop;
+  else if (rowBottom > element.scrollTop + element.clientHeight) {
+    element.scrollTop = Math.max(0, rowBottom - element.clientHeight);
+  }
+  void nextTick(() => element.querySelector<HTMLElement>(`[data-instrument-id="${CSS.escape(next.instrumentId)}"]`)?.scrollIntoView({ block: "nearest" }));
+}
 function listScroll(event: Event): void {
   const element = event.currentTarget as HTMLElement;
-  if (
-    hasMore.value &&
-    element.scrollTop + element.clientHeight >= element.scrollHeight - 160
-  )
-    void loadAll(true);
+  listScrollTop.value = element.scrollTop;
+  listViewportHeight.value = element.clientHeight;
 }
 function listWheel(event: WheelEvent): void {
   const element = event.currentTarget as HTMLElement;
+  if (event.shiftKey) {
+    element.scrollLeft += event.deltaY;
+    return;
+  }
   const multiplier =
     event.deltaMode === WheelEvent.DOM_DELTA_LINE
       ? 24
@@ -1461,29 +1557,6 @@ function listWheel(event: WheelEvent): void {
         ? element.clientHeight
         : 1;
   element.scrollTop += event.deltaY * multiplier;
-  listScroll(event);
-}
-async function loadCardDrawings(items: Instrument[]): Promise<void> {
-  const instrumentIds = [
-    ...new Set(items.map((item) => item.instrumentId).filter(Boolean)),
-  ];
-  const request = ++cardDrawingsSerial;
-  if (!instrumentIds.length) {
-    cardDrawings.value = {};
-    return;
-  }
-  await drawingSaveChain.catch(() => undefined);
-  try {
-    const data = await apiGet<{ items: Record<string, ChartDrawing[]> }>(
-      "/api/market/drawings/batch",
-      { instrumentIds: instrumentIds.join(","), period: "1d" },
-      { ttlMs: 0, persist: false, force: true },
-    );
-    if (request === cardDrawingsSerial && view.value === "card")
-      cardDrawings.value = data.items ?? {};
-  } catch {
-    if (request === cardDrawingsSerial) cardDrawings.value = {};
-  }
 }
 function toggleFlagPicker(instrumentId: string): void {
   flagPickerInstrumentId.value =
@@ -1501,9 +1574,15 @@ function rowFlagStyle(item: Instrument): Record<string, string> {
   const color = rowFlags.value[item.instrumentId];
   return color ? { "--row-flag-color": color } : {};
 }
+function quoteTone(item: Instrument): "up" | "down" | "flat" {
+  if (typeof item.pctChange !== "number") return "flat";
+  return item.pctChange > 0 ? "up" : item.pctChange < 0 ? "down" : "flat";
+}
 
 async function loadBoard(instrumentId: string, board: Board): Promise<void> {
   board.abort?.abort();
+  if (board === boardTop.value) boardTopQuote.value = null;
+  if (board === boardBottom.value) boardBottomQuote.value = null;
   const controller = new AbortController();
   board.abort = controller;
   const requestId = ++board.requestId;
@@ -1637,12 +1716,6 @@ function saveDrawings(): Promise<unknown> {
   } catch {
     snapshot = JSON.parse(JSON.stringify(drawings.value)) as ChartDrawing[];
   }
-  cardDrawings.value = {
-    ...cardDrawings.value,
-    [instrumentId]: snapshot.filter(
-      (item) => item.crossPeriod || item.period === "1d",
-    ),
-  };
   drawingSaveChain = drawingSaveChain
     .catch(() => undefined)
     .then(async () => {
@@ -1981,10 +2054,16 @@ async function loadEarlierHistory(): Promise<void> {
     if (request === serial) detailEarlierLoading.value = false;
   }
 }
-async function openWorkbench(item: Instrument): Promise<void> {
+async function openWorkbench(item: Instrument, updateRoute = true): Promise<void> {
   const changedInstrument = drawingsInstrumentId.value !== item.instrumentId;
   selected.value = item;
   fullscreen.value = true;
+  if (updateRoute) {
+    await router.replace({
+      path: `/market/instrument/${encodeURIComponent(item.instrumentId)}/`,
+      query: { ...route.query, category: category.value },
+    });
+  }
   history.value.period = "1d";
   selectedDrawingId.value = "";
   if (changedInstrument) drawingsInstrumentId.value = "";
@@ -2028,10 +2107,8 @@ function drawingsForPeriod(period: string): ChartDrawing[] {
     .map((item) => ({ ...item, hidden: hiddenDrawings.value || item.hidden }));
 }
 watch(selected, () => {
-  if (view.value === "list") {
-    void loadBoards();
-    if (selected.value) void loadDrawings(selected.value.instrumentId);
-  }
+  void loadBoards();
+  if (selected.value) void loadDrawings(selected.value.instrumentId);
 });
 watch(() => [selected.value?.instrumentId, history.value.period], () => {
   stopReplay(); replayActive.value = false; quoteBar.value = null;
@@ -2040,6 +2117,7 @@ onMounted(async () => {
   updateViewport();
   window.addEventListener("resize", updateViewport);
   window.addEventListener("keydown", onWorkbenchEscape);
+  window.addEventListener("keydown", selectRelativeInstrument);
   monitorTimer=setInterval(()=>{ if(monitoredItems.value.length)void scanSignals(true); },30000);
   window.addEventListener("pointermove", resizePointer);
   window.addEventListener("pointerup", stopResize);
@@ -2050,7 +2128,10 @@ onMounted(async () => {
     loadIndicatorCatalog(),
   ]);
   await Promise.all([loadAll(), loadTargets()]);
-  if (view.value === "list") await loadBoards();
+  const routeInstrumentId = typeof route.params.instrumentId === "string" ? route.params.instrumentId : "";
+  const routeInstrument = allItems.value.find((item) => item.instrumentId === routeInstrumentId);
+  if (routeInstrument) await openWorkbench(routeInstrument, false);
+  else await loadBoards();
   const pendingIndicator = consumePendingIndicator();
   const pendingStrategy = consumePendingStrategy();
   const pendingDrawingTool = consumePendingDrawingTool();
@@ -2062,6 +2143,7 @@ onBeforeUnmount(() => {
   signalScanSerial++; if(monitorTimer)clearInterval(monitorTimer);
   stopReplay();
   window.removeEventListener("keydown", onWorkbenchEscape);
+  window.removeEventListener("keydown", selectRelativeInstrument);
   if (searchTimer) clearTimeout(searchTimer);
   if (profileRangeTimer) clearTimeout(profileRangeTimer);
   allAbort?.abort();
@@ -2071,13 +2153,18 @@ onBeforeUnmount(() => {
   window.removeEventListener("resize", updateViewport);
   window.removeEventListener("pointermove", resizePointer);
   window.removeEventListener("pointerup", stopResize);
+  setDetailScrollLock(false);
   document.body.classList.remove("market-resizing");
 });
 </script>
 
 <template>
   <main class="market-page">
-    <section class="target-section">
+    <nav class="market-section-nav" aria-label="行情导航">
+      <button type="button" :class="{active: marketTab === 'all'}" @click="navigateMarket('all')">全部行情</button>
+      <button type="button" :class="{active: marketTab === 'targets'}" @click="navigateMarket('targets')">目标行情</button>
+    </nav>
+    <section v-show="marketTab === 'targets'" class="target-section">
       <div class="section-heading"><h1 class="page-title">目标行情</h1></div>
       <div class="target-filters">
         <div class="filter-row">
@@ -2160,10 +2247,10 @@ onBeforeUnmount(() => {
       </details>
     </section>
 
-    <section class="all-section">
+    <section v-show="marketTab === 'all'" class="all-section">
       <div class="section-heading"><h2>全部行情</h2></div>
       <div class="all-toolbar">
-        <el-select v-model="category" placeholder="市场类型" @change="resetAll"
+        <el-select :model-value="category" placeholder="市场类型" @change="chooseCategory(String($event))"
           ><el-option
             v-for="item in categories"
             :key="item.id"
@@ -2172,6 +2259,7 @@ onBeforeUnmount(() => {
         /></el-select>
         <el-input
           v-model="query"
+          aria-label="搜索全部行情"
           clearable
           placeholder="查询代码或名称"
           @input="search"
@@ -2179,22 +2267,6 @@ onBeforeUnmount(() => {
           @clear="resetAll"
         />
         <el-button type="primary" @click="searchNow">查询</el-button>
-        <select v-if="view === 'card'" v-model="cardPeriod" aria-label="卡片 K 线周期"><option v-for="[id,label] in periodOptions" :key="id" :value="id">{{label}}</option></select>
-        <div class="view-switch">
-          <button
-            type="button"
-            :class="{ active: view === 'card' }"
-            @click="persistView('card')"
-          >
-            卡片视图</button
-          ><button
-            type="button"
-            :class="{ active: view === 'list' }"
-            @click="persistView('list')"
-          >
-            列表视图
-          </button>
-        </div>
       </div>
       <el-alert
         v-if="error"
@@ -2203,41 +2275,13 @@ onBeforeUnmount(() => {
         :closable="false"
         class="page-alert"
       />
-      <div v-if="view === 'card'" v-loading="loading" class="quote-grid">
-        <article
-          v-for="item in allItems"
-          :key="item.instrumentId"
-          class="quote-card"
-        >
-          <button
-            type="button"
-            class="quote-summary"
-            @click="openWorkbench(item)"
-          >
-            <dl>
-              <div v-for="[field, text] in quoteFields" :key="field">
-                <dt>{{ text }}</dt>
-                <dd>{{ quoteValue(item, field) }}</dd>
-              </div>
-            </dl></button
-          ><MiniKLine
-            :instrument-id="item.instrumentId"
-            :period="cardPeriod"
-            :data-version="marketVersion"
-            :drawings="cardDrawings[item.instrumentId] || []"
-            :total-market-cap="item.totalMarketCap"
-            :float-market-cap="item.floatMarketCap"
-            :future-units="item.assetType === 'FUTURE'"
-          />
-        </article>
-      </div>
       <div
-        v-else
         class="list-workbench"
         v-loading="loading"
         :style="{ gridTemplateColumns: workbenchGridTemplate }"
       >
         <div
+          ref="listElement"
           class="instrument-list"
           @scroll.passive="listScroll"
           @wheel.prevent="listWheel"
@@ -2261,7 +2305,7 @@ onBeforeUnmount(() => {
                 @drop.prevent="reorderColumn(column.id)"
                 @dragend="draggingColumn = undefined"
               >
-                <span>{{ column.label }}</span>
+                <button type="button" class="column-sort" :aria-label="`按${column.label}排序`" @click.stop="toggleListSort(column.id)">{{ column.label }} <b>{{ sortMark(column.id) }}</b></button>
                 <button
                   type="button"
                   class="column-resizer"
@@ -2280,10 +2324,12 @@ onBeforeUnmount(() => {
             </div>
             <span />
           </div>
+          <div v-if="virtualTop" class="list-virtual-spacer" :style="{ height: `${virtualTop}px` }" />
           <div
-            v-for="(item, index) in allItems"
+            v-for="(item, index) in virtualItems"
             :key="item.instrumentId"
             class="instrument-row"
+            :data-instrument-id="item.instrumentId"
             :class="{
               active: selected?.instrumentId === item.instrumentId,
               flagged: Boolean(rowFlags[item.instrumentId]),
@@ -2332,7 +2378,7 @@ onBeforeUnmount(() => {
                 </button>
               </div>
             </div>
-            <span class="sequence-cell">{{ index + 1 }}</span
+            <span class="sequence-cell">{{ virtualStart + index + 1 }}</span
             ><button
               type="button"
               class="row-main"
@@ -2347,19 +2393,10 @@ onBeforeUnmount(() => {
                 :class="`column-${column.id}`"
                 >{{ quoteValue(item, column.id) }}</span
               ></button
-            ><button
-              type="button"
-              class="row-detail"
-              aria-label="打开详情 K 线"
-              title="打开详情 K 线"
-              @click="openWorkbench(item)"
             >
-              ↗
-            </button>
           </div>
-          <div v-if="hasMore" class="list-loading">
-            {{ loading ? "正在加载…" : "向下滚动加载更多" }}
-          </div>
+          <div v-if="virtualBottom" class="list-virtual-spacer" :style="{ height: `${virtualBottom}px` }" />
+          <div v-if="loading" class="list-loading">正在加载当前市场全部标的…</div>
         </div>
         <button
           type="button"
@@ -2380,13 +2417,8 @@ onBeforeUnmount(() => {
         <div class="boards">
           <section v-loading="boardTop.loading" class="board">
             <header>
-              <button
-                type="button"
-                class="board-title"
-                @click="selected && openWorkbench(selected)"
-              >
-                {{ selected?.name || "请选择标的" }} <span>↗</span>
-              </button>
+              <strong class="board-title">{{ selected?.name || "请选择标的" }}</strong>
+              <div class="board-quote-wrap"><QuoteValues :bar="boardTopQuote" :latest-bar="boardTop.bars.at(-1)" :total-market-cap="selected?.totalMarketCap" :float-market-cap="selected?.floatMarketCap" :swap-colors="swapColors" inline /></div>
               <select :value="boardTop.period" aria-label="上看板 K 线周期" @change="boardPeriod('top',($event.target as HTMLSelectElement).value)"><option v-for="[id,label] in periodOptions" :key="id" :value="id" :disabled="!boardPeriodAvailable(boardTop,id)">{{label}}</option></select>
             </header>
             <KLineChart
@@ -2398,20 +2430,18 @@ onBeforeUnmount(() => {
               :total-market-cap="selected?.totalMarketCap"
               :float-market-cap="selected?.floatMarketCap"
               :future-units="selected?.assetType === 'FUTURE'"
-              show-quote-panel
+              hide-quote
               drawings-read-only
+              open-on-double-click
+              @open-detail="selected && openWorkbench(selected)"
+              @hover="boardTopQuote = $event"
               @request-earlier="loadEarlierBoard(boardTop)"
             />
           </section>
           <section v-loading="boardBottom.loading" class="board">
             <header>
-              <button
-                type="button"
-                class="board-title"
-                @click="selected && openWorkbench(selected)"
-              >
-                {{ selected?.name || "请选择标的" }} <span>↗</span>
-              </button>
+              <strong class="board-title">{{ selected?.name || "请选择标的" }}</strong>
+              <div class="board-quote-wrap"><QuoteValues :bar="boardBottomQuote" :latest-bar="boardBottom.bars.at(-1)" :total-market-cap="selected?.totalMarketCap" :float-market-cap="selected?.floatMarketCap" :swap-colors="swapColors" inline /></div>
               <select :value="boardBottom.period" aria-label="下看板 K 线周期" @change="boardPeriod('bottom',($event.target as HTMLSelectElement).value)"><option v-for="[id,label] in periodOptions" :key="id" :value="id" :disabled="!boardPeriodAvailable(boardBottom,id)">{{label}}</option></select>
             </header>
             <KLineChart
@@ -2423,24 +2453,16 @@ onBeforeUnmount(() => {
               :total-market-cap="selected?.totalMarketCap"
               :float-market-cap="selected?.floatMarketCap"
               :future-units="selected?.assetType === 'FUTURE'"
-              show-quote-panel
+              hide-quote
               drawings-read-only
+              open-on-double-click
+              @open-detail="selected && openWorkbench(selected)"
+              @hover="boardBottomQuote = $event"
               @request-earlier="loadEarlierBoard(boardBottom)"
             />
           </section>
         </div>
       </div>
-      <el-pagination
-        v-if="view === 'card' && allTotal > 0"
-        class="market-pagination"
-        layout="sizes, prev, pager, next, jumper, total"
-        :page-sizes="[10, 20, 30, 50, 100]"
-        :total="allTotal"
-        :page-size="cardPageSize"
-        :current-page="page"
-        @size-change="changeCardPageSize"
-        @current-change="void loadAll(false, $event)"
-      />
     </section>
 
     <Teleport to="body"
@@ -2452,13 +2474,12 @@ onBeforeUnmount(() => {
         <header class="workbench-header">
           <div class="instrument-quote-line">
             <b>{{ selected?.name }} · {{ selected?.symbol || selected?.instrumentId }}</b>
-            <QuoteValues :bar="displayedQuote" :latest-bar="history.bars.at(-1)" :total-market-cap="selected?.totalMarketCap" :float-market-cap="selected?.floatMarketCap" :swap-colors="swapColors" inline />
           </div>
           <div class="workbench-actions">
             <div class="chart-type-picker">
               <button class="icon-button" aria-label="K线类型" :title="chartTypes.find((item)=>item.value===chartType)?.label" @click="chartTypeMenu=!chartTypeMenu"><ChartIcon :name="chartType"/><ChartIcon name="chevron"/></button>
               <div v-if="chartTypeMenu" role="menu" aria-label="K线类型" class="chart-type-menu">
-                <button v-for="item in chartTypes" :key="item.value" role="menuitem" :aria-label="item.label" :title="item.label" :class="{active:chartType===item.value}" @click="chartType=item.value;chartTypeMenu=false"><ChartIcon :name="item.value"/></button>
+                <button v-for="item in chartTypes" :key="item.value" role="menuitem" :aria-label="item.label" :title="item.label" :class="{active:chartType===item.value}" @click="chartType=item.value;chartTypeMenu=false"><ChartIcon :name="item.value"/><span>{{ item.label }}</span></button>
               </div>
             </div>
             <el-button @click="openIndicatorLibrary"><ChartIcon name="indicator"/>指标</el-button>
@@ -2615,6 +2636,21 @@ onBeforeUnmount(() => {
             </button>
           </div>
         </header>
+        <aside class="detail-instrument-list" aria-label="当前市场标的">
+          <button
+            v-for="item in sortedItems"
+            :key="item.instrumentId"
+            type="button"
+            class="detail-instrument-row"
+            :class="{active: item.instrumentId === selected?.instrumentId, [quoteTone(item)]: true}"
+            @click="openWorkbench(item)"
+          >
+            <b>{{ item.name || item.symbol || item.instrumentId }}</b>
+            <small>{{ item.symbol || item.instrumentId }}</small>
+            <strong>{{ quoteValue(item, 'latestPrice') }}</strong>
+            <em>{{ typeof item.pctChange === 'number' ? `${noData(item.pctChange)}%` : '—' }}</em>
+          </button>
+        </aside>
         <aside class="drawing-toolbar">
           <button aria-label="光标" title="光标" :class="{active:tool==='cursor'}" @click="selectDrawingTool('cursor'); drawingGroupOpen=''"><svg viewBox="0 0 24 24"><path :d="drawingTools[0].path"/></svg></button>
           <div v-for="group in drawingGroups" :key="group.id" class="drawing-tool-group">
@@ -2734,11 +2770,10 @@ onBeforeUnmount(() => {
           <div class="chart-indicator-legend" aria-label="已添加指标">
             <div v-for="instance in indicatorInstances" :key="instance.instanceId" class="chart-indicator-legend-row" :class="{dimmed: !instance.visible || (instance.crossPeriod === false && instance.period !== history.period)}">
               <span>{{ indicatorName(instance) }}</span><small>{{ instance.placement === 'overlay' ? '主图' : '副图' }}</small>
-              <input class="indicator-direct-color" type="color" :aria-label="'颜色'+indicatorName(instance)" title="指标颜色" :value="instance.style.color || '#f59e0b'" @input="updateIndicatorStyle(instance.instanceId,{color:($event.target as HTMLInputElement).value})"/>
               <button :aria-label="'跨周期'+indicatorName(instance)" title="跨周期显示" :aria-pressed="instance.crossPeriod !== false" :class="{active:instance.crossPeriod!==false}" @click="setIndicatorCrossPeriod(instance,instance.crossPeriod===false)"><ChartIcon name="periods"/></button>
               <button :aria-label="(instance.visible?'隐藏':'显示')+indicatorName(instance)" :title="instance.visible?'隐藏指标':'显示指标'" @click="toggleIndicatorVisibility(instance.instanceId)"><ChartIcon :name="instance.visible?'visible':'hidden'"/></button>
               <button :aria-label="'设置'+indicatorName(instance)" title="参数设置" @click="indicatorSettingsId=instance.instanceId;indicatorDialogOpen=true"><ChartIcon name="settings"/></button>
-              <button :aria-label="'删除'+indicatorName(instance)" title="删除指标" @click="removeIndicator(instance.instanceId)"><ChartIcon name="delete"/></button>
+              <button class="indicator-delete" :aria-label="'删除'+indicatorName(instance)" title="删除指标" @click="removeIndicator(instance.instanceId)">×</button>
               <span v-if="instance.status==='unavailable'" :title="instance.unavailableReason">⚠</span>
             </div>
           </div>
@@ -2748,7 +2783,7 @@ onBeforeUnmount(() => {
             class="drawing-popover"
             :style="drawingPopoverStyle"
           >
-            <button
+          <button
               class="popover-drag-handle"
               type="button"
               aria-label="拖动工具栏"
@@ -2908,13 +2943,9 @@ onBeforeUnmount(() => {
               @click="
                 patchSelected('crossPeriod', !selectedDrawing.crossPeriod)
               "
-            >
-              <svg viewBox="0 0 24 24">
-                <path
-                  d="M4 20v-4h3v4M9 20v-7h3v7M14 20v-10h3v10M19 20V7h2v13M3 12c4-1 7-4 10-4s5-3 8-5"
-                />
-              </svg>
-            </button>
+          >
+            <ChartIcon name="periods" />
+          </button>
             <button
               type="button"
               class="icon-action danger"
@@ -2950,7 +2981,6 @@ onBeforeUnmount(() => {
             :float-market-cap="selected?.floatMarketCap"
             :future-units="selected?.assetType === 'FUTURE'"
             :loading-earlier="detailEarlierLoading"
-            hide-quote
             @hover="quoteBar = $event"
             @draw="createDrawing"
             @select-drawing="onSelectDrawing"
@@ -3217,75 +3247,6 @@ onBeforeUnmount(() => {
   padding: 12px 0;
   background: var(--ml-background);
 }
-.view-switch {
-  display: flex;
-  padding: 3px;
-  border: 1px solid var(--ml-divider);
-  border-radius: 8px;
-  background: var(--ml-surface);
-}
-.view-switch button {
-  border: 0;
-  background: transparent;
-  padding: 0 12px;
-  color: var(--ml-text-secondary);
-  cursor: pointer;
-}
-.view-switch button.active {
-  background: var(--ml-surface-selected);
-  color: var(--ml-text-primary);
-  border-radius: 5px;
-}
-.quote-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 14px;
-}
-.quote-card {
-  border: 1px solid var(--ml-divider);
-  border-radius: 9px;
-  background: var(--ml-surface);
-  color: var(--ml-text-primary);
-  overflow: hidden;
-}
-.quote-card:hover {
-  border-color: var(--ml-accent);
-}
-.quote-summary {
-  display: block;
-  width: 100%;
-  border: 0;
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
-  text-align: left;
-}
-.quote-card dl {
-  display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  margin: 0;
-  padding: 12px;
-  gap: 9px;
-}
-.quote-card dl > div {
-  min-width: 0;
-}
-.quote-card dt {
-  margin-bottom: 4px;
-  color: var(--ml-text-secondary);
-  font-size: 11px;
-  white-space: nowrap;
-}
-.quote-card dd {
-  overflow: hidden;
-  margin: 0;
-  font:
-    700 12px/1.35 ui-monospace,
-    Consolas,
-    monospace;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 .list-workbench {
   display: grid;
   grid-template-columns: minmax(560px, 50%) 1fr;
@@ -3441,10 +3402,6 @@ onBeforeUnmount(() => {
 .board nav button.unavailable {
   opacity: 0.32;
   cursor: not-allowed;
-}
-.market-pagination {
-  justify-content: flex-end;
-  margin-top: 16px;
 }
 :global(.workbench-overlay) {
   position: fixed;
@@ -3713,9 +3670,6 @@ onBeforeUnmount(() => {
 }
 .drawing-popover button.danger {
   color: var(--ml-error);
-}
-.quote-grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 .list-workbench {
   grid-template-columns: none;
@@ -4060,11 +4014,6 @@ onBeforeUnmount(() => {
   stroke-linecap: round;
   stroke-linejoin: round;
 }
-@media (max-width: 1280px) {
-  .quote-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
 @media (max-width: 800px) {
   .market-page {
     width: calc(100vw - 24px);
@@ -4073,9 +4022,6 @@ onBeforeUnmount(() => {
   .all-toolbar {
     grid-template-columns: 1fr;
     position: static;
-  }
-  .quote-grid {
-    grid-template-columns: 1fr;
   }
   .list-workbench {
     grid-template-columns: 1fr !important;
@@ -4101,20 +4047,6 @@ onBeforeUnmount(() => {
     transform: none;
   }
 }
-.quote-card dl {
-  padding: 6px 10px 5px;
-  gap: 7px;
-}
-.quote-card dt {
-  margin-bottom: 2px;
-  font-size: 10px;
-}
-.quote-card dd {
-  font:
-    700 11px/1.3 ui-monospace,
-    Consolas,
-    monospace;
-}
 .drawing-popover {
   gap: 5px;
   padding: 4px 6px;
@@ -4129,6 +4061,39 @@ onBeforeUnmount(() => {
 .drawing-popover .popover-drag-handle {
   width: 24px !important;
 }
+.market-section-nav{display:flex;gap:4px;margin:0 0 12px;border-bottom:1px solid var(--ml-divider)}
+.market-section-nav button{border:0;border-bottom:2px solid transparent;background:transparent;color:var(--ml-text-secondary);padding:9px 14px;cursor:pointer}
+.market-section-nav button.active{border-color:var(--ml-accent);color:var(--ml-text-primary);font-weight:700}
+.all-section{margin-top:0}
+.all-toolbar{grid-template-columns:220px minmax(10ch,18ch) auto;align-items:center}
+.all-toolbar :deep(.el-input){width:clamp(10ch,16vw,18ch)}
+.list-workbench{height:calc(100vh - 154px);min-height:520px}
+.instrument-list{overflow:auto}
+.list-header-row,.instrument-row{grid-template-columns:34px 42px minmax(max-content,1fr)}
+.list-table-header,.row-main{min-width:max-content}
+.instrument-row{height:33px;box-sizing:border-box}
+.list-virtual-spacer{min-width:max-content;pointer-events:none}
+.column-sort{width:100%;height:28px;padding:0;border:0;background:transparent;color:inherit;cursor:pointer;text-align:left;white-space:nowrap}
+.column-sort b{float:right;color:var(--ml-accent)}
+.board header{grid-template-columns:auto minmax(0,1fr) 6.8ch;gap:8px}
+.board-title{cursor:default;max-width:12ch;overflow:hidden;text-overflow:ellipsis}
+.board-quote-wrap{min-width:0;overflow-x:auto;scrollbar-width:thin}
+.board-quote-wrap :deep(.quote-values){height:24px;font-size:10px}
+.board-quote-wrap :deep(.quote-pair p){line-height:12px}
+.board select{box-sizing:border-box;width:6.8ch;min-width:6.8ch;height:26px;padding:0 1.35em 0 .35em;background:var(--ml-surface);border:1px solid var(--ml-divider);border-radius:4px;color:var(--ml-text-primary);font-size:11px}
+:global(.workbench-overlay){grid-template-columns:minmax(176px,220px) minmax(0,1fr) 48px;grid-template-rows:46px minmax(0,1fr) 36px;overflow:hidden}
+.workbench-header{grid-column:1/-1;grid-template-rows:1fr;padding:0 10px}
+.instrument-quote-line{grid-row:1;min-width:0}
+.detail-instrument-list{grid-column:1;grid-row:2/4;min-height:0;overflow:auto;border-right:1px solid var(--ml-divider);background:var(--ml-surface)}
+.detail-instrument-row{display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-rows:1fr 1fr;gap:1px 8px;width:100%;padding:7px 9px;border:0;border-bottom:1px solid var(--ml-divider);background:transparent;color:var(--ml-text-primary);cursor:pointer;text-align:left;font-variant-numeric:tabular-nums}
+.detail-instrument-row:hover,.detail-instrument-row.active{background:var(--ml-surface-selected)}
+.detail-instrument-row b,.detail-instrument-row small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.detail-instrument-row b{font-size:12px}.detail-instrument-row small{color:var(--ml-text-secondary);font-size:10px}.detail-instrument-row strong,.detail-instrument-row em{text-align:right;font-style:normal}.detail-instrument-row strong{font-size:12px}.detail-instrument-row em{font-size:10px}.detail-instrument-row.up strong,.detail-instrument-row.up em{color:var(--ml-price-up)}.detail-instrument-row.down strong,.detail-instrument-row.down em{color:var(--ml-price-down)}.detail-instrument-row.flat strong,.detail-instrument-row.flat em{color:var(--ml-text-secondary)}
+.drawing-toolbar{grid-column:3;grid-row:2/4;position:relative;z-index:40;border-right:0;border-left:1px solid var(--ml-divider);overflow:visible}
+.drawing-group-menu{left:auto;right:43px;z-index:80}
+.period-bar{grid-column:2;grid-row:3}.workbench-content{grid-column:2;grid-row:2;overflow:auto}.workbench-chart{min-height:0}
+.workbench-content .replay-controls{position:sticky;bottom:0;left:auto;right:auto}
+.chart-type-menu{display:grid;gap:2px;min-width:145px}.chart-type-menu button{justify-content:flex-start;padding:0 7px}
+.chart-indicator-legend{left:10px;top:62px}.chart-indicator-legend-row{background:transparent;border-radius:0;padding:1px 2px;text-shadow:0 1px var(--ml-background)}.indicator-delete{font-size:18px;line-height:1}
 .indicator-manager {
   display: grid;
   gap: 9px;

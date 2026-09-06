@@ -25,6 +25,8 @@ export interface Palette {
   error: string;
   info: string;
   highlight: string;
+  chartVolume: string;
+  chartSecondary: string;
   chartGrid: string;
   chartAxis: string;
   chartTooltip: string;
@@ -60,6 +62,8 @@ export const palettes: Record<EffectiveTheme, Palette> = {
     error: "#ff5252",
     info: "#4f8cff",
     highlight: "#ffd166",
+    chartVolume: "#f28bb5",
+    chartSecondary: "#63a4ff",
     chartGrid: "#232d3d",
     chartAxis: "#7c8899",
     chartTooltip: "#1b2534",
@@ -93,6 +97,8 @@ export const palettes: Record<EffectiveTheme, Palette> = {
     error: "#dc2626",
     info: "#2563eb",
     highlight: "#b45309",
+    chartVolume: "#c5296e",
+    chartSecondary: "#2563eb",
     chartGrid: "#e1e6ee",
     chartAxis: "#687386",
     chartTooltip: "#ffffff",

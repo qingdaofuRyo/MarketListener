@@ -283,8 +283,6 @@ def matches_market_category(item: dict[str, Any], category_key: str) -> bool:
     if not key or key == "all":
         return True
     primary = classify_market(item)
-    if key == "cn-future-night":
-        return night_session(item) is not None
     if key in _LEGACY_CATEGORIES:
         return primary in _LEGACY_CATEGORIES[key]
     series_kind = _value(item, "seriesKind", "series_kind").upper()

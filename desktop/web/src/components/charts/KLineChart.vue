@@ -11,6 +11,7 @@ import {
 import type { IndicatorInstance, VolumeProfile } from "../../domain/strategyTypes";
 import { useThemeStore } from "../../stores/theme";
 import { heikinAshi, type ChartType } from "../../domain/chartPresentation";
+import { weekdayLabel } from "../../domain/marketList";
 import LaserCanvas from "./LaserCanvas.vue";
 import QuoteValues from "./QuoteValues.vue";
 
@@ -154,6 +155,7 @@ const props = withDefaults(
     chartType?: ChartType;
     hideQuote?: boolean;
     replayPick?: boolean;
+    openOnDoubleClick?: boolean;
   }>(),
   {
     bars: () => [],
@@ -180,6 +182,7 @@ const props = withDefaults(
     brushStyle: () => ({}),
     chartType: "candles",
     hideQuote: false,
+    openOnDoubleClick: false,
   },
 );
 const emit = defineEmits<{
@@ -190,6 +193,7 @@ const emit = defineEmits<{
   selectDrawing: [id: string, anchor?: DrawingAnchor];
   updateDrawing: [drawing: ChartDrawing];
   requestEarlier: [];
+  openDetail: [];
 }>();
 const theme = useThemeStore();
 const element = ref<HTMLElement>();
@@ -224,6 +228,8 @@ let rangeRenderTimer: ReturnType<typeof setTimeout> | undefined;
 let requestedEarlierForLength = -1;
 let pendingEarlierShift = 0;
 let resizeObserver: ResizeObserver | undefined;
+let hoverFrame: number | undefined;
+let pendingHoverIndex = -1;
 
 const categories = computed(() =>
   props.bars.map((bar) => String(bar.barOpenTime || bar.tradingDate || "")),
@@ -245,13 +251,18 @@ const volumeData = computed(() =>
     itemStyle: { color: upColor(bar) },
   })),
 );
-const secondaryMetric = computed<"openInterest" | "turnoverRate">(() =>
+const secondaryMetric = computed<"openInterest" | "amount">(() =>
   props.bars.some((bar) => asNumber(bar.openInterest) != null)
     ? "openInterest"
-    : "turnoverRate",
+    : "amount",
 );
 const secondaryData = computed(() =>
-  props.bars.map((bar) => asNumber(bar[secondaryMetric.value])),
+  props.bars.map((bar) => ({
+    value: asNumber(bar[secondaryMetric.value]),
+    // Both bars retain the candle's up/down semantics.  The secondary measure is
+    // deliberately lighter and is painted first, so volume remains readable.
+    itemStyle: { color: upColor(bar), opacity: 0.34 },
+  })),
 );
 const majorTicks = computed(() => {
   const indexes = new Set<number>();
@@ -319,7 +330,7 @@ const displayQuotePanel = computed(
   () => props.showQuotePanel || !props.compact,
 );
 const secondaryMetricLabel = computed(() =>
-  secondaryMetric.value === "openInterest" ? "持仓量" : "换手率",
+  secondaryMetric.value === "openInterest" ? "持仓量" : "成交额",
 );
 const paneIndicatorInstances = computed(() =>
   props.indicatorInstances.filter(
@@ -359,15 +370,17 @@ function compactAxis(value: unknown): string {
 }
 function timeLabel(value: string): string {
   const text = value.replace("T", " ");
-  return ["5m", "15m", "30m", "1h", "2h"].includes(props.period) ? (text.length >= 16 ? text.slice(0, 16) : text.slice(0, 10)) : text.slice(0, 10);
+  const day = text.slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return text.slice(0, 16);
+  const weekday = weekdayLabel(day);
+  return ["5m", "15m", "30m", "1h", "2h"].includes(props.period)
+    ? `${day} ${weekday} ${text.slice(11, 16)}`.trim()
+    : `${day} ${weekday}`;
 }
 function axisTimeLabel(value: string): string {
   const day = value.slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return timeLabel(value);
-  const weekday = new Intl.DateTimeFormat("zh-CN", {
-    weekday: "short",
-    timeZone: "Asia/Shanghai",
-  }).format(new Date(`${day}T00:00:00+08:00`));
+  const weekday = weekdayLabel(day);
   return ["5m", "15m", "30m", "1h", "2h"].includes(props.period) ? timeLabel(value).slice(5) : `${day.slice(5)} ${weekday}`;
 }
 function isMajorTick(index: number): boolean {
@@ -466,9 +479,12 @@ function drawingPoint(item: { time: string; price: number }): number[] | null {
   return pixel.map(Number);
 }
 function secondaryAxis(value: unknown): string {
-  return secondaryMetric.value === "turnoverRate"
-    ? `${format(value, 2)}%`
-    : compactAxis(value);
+  return compactAxis(value);
+}
+function requestDetail(event: MouseEvent): void {
+  if (!props.bars.length || !props.openOnDoubleClick || event.defaultPrevented) return;
+  if ((event.target as HTMLElement | null)?.closest("input, button, select, textarea")) return;
+  emit("openDetail");
 }
 function nearestCategoryIndex(time: string): number {
   const exact = categories.value.indexOf(time);
@@ -689,8 +705,8 @@ function resizedFibonacciPoints(
       : point,
   );
 }
-function drawingFromGraphicId(id?: string): ChartDrawing | undefined {
-  if (!id?.startsWith("draw_")) return undefined;
+function drawingFromGraphicId(id?: unknown): ChartDrawing | undefined {
+  if (typeof id !== "string" || !id.startsWith("draw_")) return undefined;
   return props.drawings.find((item) =>
     [item.id, `${item.id}_start`, `${item.id}_end`].includes(
       id.replace(/^draw_/, ""),
@@ -1594,7 +1610,7 @@ function chartLayout(): {
   const palette = theme.palette;
   const compact = props.compact;
   const left = compact ? 48 : 66;
-  const right = compact ? 14 : 42;
+  const right = compact ? 12 : 28;
   const top = props.hideQuote ? 16 : displayQuotePanel.value ? (compact ? 54 : 58) : compact ? 26 : 42;
   const bottom = compact ? 20 : 28;
   const paneCount = paneIndicatorInstances.value.length;
@@ -1648,13 +1664,13 @@ function chartLayout(): {
       formatter: (value: string) => axisTimeLabel(value),
     },
   }));
-  const indicatorAxis = (gridIndex: number) => ({
+  const indicatorAxis = (gridIndex: number, color = palette.chartAxis) => ({
     gridIndex,
     scale: true,
     splitNumber: 3,
     axisLabel: {
       show: true,
-      color: palette.chartAxis,
+      color,
       fontSize: compact ? 8 : 10,
       showMinLabel: false,
       showMaxLabel: false,
@@ -1679,10 +1695,10 @@ function chartLayout(): {
       axisPointer: { show: true },
     },
     {
-      ...indicatorAxis(1),
+      ...indicatorAxis(1, palette.chartVolume),
       axisLabel: {
         show: true,
-        color: palette.chartAxis,
+        color: palette.chartVolume,
         fontSize: compact ? 8 : 10,
         showMinLabel: false,
         showMaxLabel: false,
@@ -1690,11 +1706,11 @@ function chartLayout(): {
       },
     },
     {
-      ...indicatorAxis(1),
+      ...indicatorAxis(1, palette.chartSecondary),
       position: "right",
       axisLabel: {
         show: true,
-        color: palette.chartAxis,
+        color: palette.chartSecondary,
         fontSize: compact ? 8 : 10,
         showMinLabel: false,
         showMaxLabel: false,
@@ -1706,7 +1722,20 @@ function chartLayout(): {
       indicatorAxis(index + 2),
     ),
   ];
-  const titles = paneIndicatorInstances.value.map((item, index) => ({
+  const titles = [
+    {
+      text: "成交量",
+      left: left + 4,
+      top: Math.max(0, cursor - gap * secondaryCount - secondaryHeight - 13),
+      textStyle: { color: palette.chartVolume, fontSize: compact ? 8 : 10, fontWeight: 600 },
+    },
+    {
+      text: secondaryMetricLabel.value,
+      right: right + 3,
+      top: Math.max(0, cursor - gap * secondaryCount - secondaryHeight - 13),
+      textStyle: { color: palette.chartSecondary, fontSize: compact ? 8 : 10, fontWeight: 600 },
+    },
+    ...paneIndicatorInstances.value.map((item, index) => ({
     text: item.displayName || item.definitionId,
     left: left + 4,
     top: Number((grids[index + 2] as { top: number }).top) + 2,
@@ -1715,7 +1744,8 @@ function chartLayout(): {
       fontSize: compact ? 8 : 10,
       fontWeight: 500,
     },
-  }));
+    })),
+  ];
   return { grids, xAxes, yAxes, titles };
 }
 
@@ -1814,21 +1844,21 @@ function render(): void {
           emphasis: { disabled: true },
         },
         {
+          name: secondaryMetricLabel.value,
+          type: "bar",
+          xAxisIndex: 1,
+          yAxisIndex: 2,
+          data: secondaryData.value,
+          barGap: "-100%",
+          emphasis: { disabled: true },
+        },
+        {
           name: "成交量",
           type: "bar",
           xAxisIndex: 1,
           yAxisIndex: 1,
           data: volumeData.value,
-          emphasis: { disabled: true },
-        },
-        {
-          name: secondaryMetric.value === "openInterest" ? "持仓量" : "换手率",
-          type: "line",
-          xAxisIndex: 1,
-          yAxisIndex: 2,
-          data: secondaryData.value,
-          showSymbol: false,
-          lineStyle: { width: 1.2, color: palette.accent },
+          barGap: "-100%",
           emphasis: { disabled: true },
         },
         ...indicatorSeries(),
@@ -2158,7 +2188,7 @@ function pointerDown(event: unknown): void {
     return;
   }
   if (props.drawingTool !== "cursor") return;
-  if (payload.target?.id?.startsWith("draw_")) return;
+  if (typeof payload.target?.id === "string" && payload.target.id.startsWith("draw_")) return;
   panStartX = payload.offsetX;
   panOrigin = { ...range.value };
   requestedEarlierInGesture = false;
@@ -2375,7 +2405,7 @@ function drawingCanvasClick(event: unknown): void {
     target?: { id?: string };
     source?: unknown;
   };
-  if (payload.target?.id?.startsWith("draw_")) return;
+  if (typeof payload.target?.id === "string" && payload.target.id.startsWith("draw_")) return;
   if (props.drawingTool === "cursor" && !props.replayPick) {
     emit("selectDrawing", "");
     return;
@@ -2454,8 +2484,14 @@ function installHandlers(): void {
   chart.on("updateAxisPointer", (event: unknown) => {
     const value = (event as { axesInfo?: Array<{ value?: number }> })
       .axesInfo?.[0]?.value;
-    hoverIndex.value = typeof value === "number" ? value : -1;
-    emit("hover", hoverBar.value);
+    pendingHoverIndex = typeof value === "number" ? value : -1;
+    if (hoverFrame != null) return;
+    hoverFrame = requestAnimationFrame(() => {
+      hoverFrame = undefined;
+      if (hoverIndex.value === pendingHoverIndex) return;
+      hoverIndex.value = pendingHoverIndex;
+      emit("hover", hoverBar.value);
+    });
   });
   chart.on("datazoom", updateRange);
   chart.on("click", seriesCanvasClick);
@@ -2579,6 +2615,7 @@ onBeforeUnmount(() => {
   resizeObserver?.disconnect();
   if (rangeRenderTimer) clearTimeout(rangeRenderTimer);
   if (rectangleRenderFrame != null) cancelAnimationFrame(rectangleRenderFrame);
+  if (hoverFrame != null) cancelAnimationFrame(hoverFrame);
   chart?.dispose();
   chart = undefined;
 });
@@ -2587,7 +2624,7 @@ onBeforeUnmount(() => {
 <template>
   <div
     class="kline-chart chart-box"
-    :class="{ compact, 'drawing-active': drawingTool !== 'cursor' }"
+    :class="{ compact, 'drawing-active': drawingTool !== 'cursor', 'cursor-tool': drawingTool === 'cursor' }"
     :style="{ height: `${height}px` }"
   >
     <div v-if="!hideQuote && hoverBar" class="quote-panel">
@@ -2597,6 +2634,7 @@ onBeforeUnmount(() => {
     <div
       ref="element"
       class="chart-root"
+      @dblclick="requestDetail"
       :data-chart-type="chartType"
       :data-rectangle-preview="Boolean(rectangleCursor)"
       :data-rectangle-anchor="Boolean(rectangleAnchor)"
@@ -2826,6 +2864,7 @@ onBeforeUnmount(() => {
 .drawing-active :deep(canvas) {
   cursor: crosshair !important;
 }
+.cursor-tool .chart-root :deep(canvas) { cursor: crosshair !important; }
 .chart-empty {
   position: absolute;
   inset: 0;

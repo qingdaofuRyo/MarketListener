@@ -82,6 +82,70 @@
 - 实际执行 `cd desktop/web; npm run build` 通过（保留既有大包体积警告）；`npm run test:e2e -- e2e/chart-workbench-r4.spec.ts e2e/terminal.spec.ts e2e/market-drawing-preferences.spec.ts --grep "chart presentation|brush preserves|indicator library|trend line uses|strategy indicators load|brush drawing saves|rectangle drawing previews|fibonacci retracement"`：`8 passed (24.2s)`。全部为桌面定向场景，合成行情用于确定性验证，不代表真实 Provider 验收。
 - 截图位于忽略目录 `desktop/web/test-results/r4-chart-workbench.png`、`r4-indicator-library.png`。本次修改直接位于 `C:\Users\qingd\Documents\MarketListener`，未提交或推送；不运行全量、Android 或移动端设计，后续以用户实际体验反馈为准。
 
+### R4-T045 — 共享行情状态、列表导航与详情上下文（2026-09-06）
+
+- `task_id`：`R4-T045`；`priority`：P0；`执行对象`：`MarketView.vue`、`router.ts`、`domain/marketList.ts`、`web_app.py`；`state`：`VERIFYING`；`failure_count`：0（历史未记录）。
+- `现状`：原页面同时维持卡片/列表、首屏 20 条、`all` 默认分类和未路由化的详情浮层，排序、选中标的和详情上下文不共享。
+- `问题原因`：展示模式、分页和图表状态在单组件内各自持有，后端 SPA shell 未覆盖详情 URL，无法可靠刷新/返回。
+- `业务目标`：以“全部行情/目标行情”导航、当前分类、搜索、选中标的和三态排序构成单一状态；全部行情只保留列表，合法 URL 保留分类，裸路径/非法/已退役夜盘分类回落到主连，详情继承集合与排序。
+- `影响范围`：对应续期需求 1、2、4、8、9、10、11、12、13、21；同时扩展 T012、T036、T044，不改变信号监控的开/加/减/平业务规则。
+- `依赖关系`：依赖 T012 分类目录、T046 快照；供 T036 详情列表、T048 验收使用。
+- `涉及文件`：`desktop/web/src/views/MarketView.vue`、`desktop/web/src/router.ts`、`desktop/web/src/domain/marketList.ts`、`desktop/src/market_monitor/web_app.py`、`desktop/web/e2e/market-list-r4.spec.ts`、`desktop/tests/test_web_app.py`。
+- `实现方案`：`/market/` 重定向 `/market/all/`，导航使用 `/market/all/`、`/market/targets/`、`/market/instrument/:instrumentId/`；后端 shell 允许详情刷新。每分类自动请求所有 API 页，按 `instrumentId` 去重，并在重复/空页未达到 `total` 时明确报“不完整”；列表只渲染可视窗口及缓冲行。排序在原始数值上执行“升→降→默认”，空值置后、相同值保留服务端顺序/ID；方向键、Shift+滚轮、双击行/看板均复用选中标的和版本化请求链。
+- `边界条件`：输入、`select`、可编辑区或详情模态不抢方向键；双击控件和拖动不进入详情；无匹配显示空态；详情左栏不复制排序代码；静态类别名称只消费分类目录。
+- `兼容性要求`：保留策略/指标/绘图链接参数消费；旧 `all/card` 本地偏好不覆盖产品默认值；支持直接刷新 `instrumentId` 路径；不要求移动端改版。
+- `验收标准`：无卡片入口/死组件；503 条 fixture 自动两页取得、虚拟 DOM 小于 100、末项可达；主连为初始值；排序/键盘/横滚/双击/刷新及详情集合继承可重复验证。
+- `测试结果`：`market-list-r4.spec.ts` 两项通过，覆盖 503 条分页、虚拟化、三态稳定排序、输入不抢按键、横向滚动、详情路由、工具栏位置和滚动锁；`test_web_app.py` 覆盖详情 shell。`npm run build` 通过。
+- `最终输出`：共享 `marketList.ts`、路由化导航、可恢复服务端默认顺序与详情上下文；本轮定向验收完成，保留真实数据源数量/性能的用户体验核验，状态 `VERIFYING`。
+
+### R4-T046 — 市场分类、行情快照与交易日收益率（2026-09-06）
+
+- `task_id`：`R4-T046`；`priority`：P0；`执行对象`：分类配置、市场 API、日线计算与报价字段模型；`state`：`VERIFYING`；`failure_count`：0（历史未记录）。
+- `现状`：主连/加权已有标准序列判断但没有完整分类入口；夜盘仍作为产品筛选分类；列表字段和近 N 日收益率没有统一的真实快照链路。
+- `问题原因`：类别显示和数据序列能力未统一，页面不能一次获得排序字段和缺失原因。
+- `业务目标`：以 `cn-future-main`/`cn-future-weighted` 作为“国内期货主连合约/国内期货加权合约”，删除夜盘入口但保留交易时段元数据；为列表、看板、详情提供可追溯日线快照、能力与近 3/5/10/22/44 交易日收益率。
+- `影响范围`：对应续期需求 3、6、7、11、18、19、20，扩展 T012/T043；不重写 Silver、不在 UI 解析来源特有 L8/L9。
+- `依赖关系`：使用既有标准标的 `seriesKind=MAIN|WEIGHTED`、K 线查询缓存；被 T045 排序与 T047 图表 overlay 消费。
+- `涉及文件`：`market_classification.json`、`market_classification.py`、`web_api/market.py`、`market_list_metrics.py`、`QuoteValues.vue`、`test_market_list_metrics.py`、`test_web_market_api.py`、`test_market_classification.py`。
+- `实现方案`：分类目录成为唯一市场名称来源；市场 API 为每个逻辑标的批量读取一个真实来源的最多 45 根日线，缓存以数据/计算版本失效，返回字段能力、来源、截至日、缺失原因和快照。收益率公式为 `100 × (最新有效日线收盘 / 前 N 根有效日线收盘 − 1)`；去重、排除部分/失败 bar，零基准、历史不足和非有限值为缺失。报价字段统一为固定槽位，标签使用开/收/高/低/结/量/额，日期按 bar 实际日期计算星期。
+- `边界条件`：不能按自然日补周末/节假日；不同来源或复权口径不混用；不适用市值/持仓/沉淀资金显示 `—` 而非 0；全零持仓属于真实值；静态市值/沉淀资金不随十字光标变化。
+- `兼容性要求`：保留分页 API 契约和夜盘采集/交易时段 metadata；报价支持资产字段能力差异、分钟线日期+星期+时间、日线及以上日期+星期。
+- `验收标准`：分类目录包含主连/加权、没有夜盘选项；六家交易所的实际可用序列由既有目录规则决定而非造数；收益率/重复交易日/零基准/历史不足可单测；字段数值位宽变化不移动横向槽位。
+- `测试结果`：`test_market_list_metrics.py`、`test_market_classification.py`、`test_web_market_api.py` 共 48 项通过；Ruff 通过；前端构建/报价交互回归通过。
+- `最终输出`：统一分类与快照/收益率服务；真实本地可用品种覆盖以运行数据为准，本轮没有伪造缺失合约，状态 `VERIFYING`。
+
+### R4-T047 — 详情工作台、图表 overlay 与高频交互（2026-09-06）
+
+- `task_id`：`R4-T047`；`priority`：P0；`执行对象`：`KLineChart.vue`、`MarketView.vue`、主题 token 与画线/指标图例；`state`：`VERIFYING`；`failure_count`：1（本次 ECharts 图元 ID 非字符串，已以类型守卫修复）。
+- `现状`：详情报价曾占图外高度，工具栏在左，副图为柱+折线，快速指针经过响应式状态链路时易残影；二级工具菜单还可能被容器裁切。
+- `问题原因`：报价、绘制、工具浮层和图例没有明确分层，高频 pointer 触发全图更新；不同副图量纲共用不适合的呈现形式。
+- `业务目标`：详情以视口受限的三列工作台呈现左侧当前市场列表、中间图表、最右工具栏；报价内嵌图表顶部，指标图例透明；使用快速准星与独立双轴柱形副图。
+- `影响范围`：对应续期需求 14～20、22，并收敛 T032～T039/T043；不迁移 WebGL、不新增图标库。
+- `依赖关系`：依赖 T045 详情上下文、T046 字段能力；供 T048 定向图表验收。
+- `涉及文件`：`KLineChart.vue`、`QuoteValues.vue`、`ChartIcon.vue`、`MarketView.vue`、`design/tokens.ts`、`chart-workbench-r4.spec.ts`、`market-drawing-preferences.spec.ts`。
+- `实现方案`：报价 overlay 为 ECharts 绘图区留出测量边界；工具栏右置、菜单向左并提升到画布上方；指标颜色只在设置面板，跨周期复用同一图标，删除使用 `×`。副图使用成交量和成交额/真实持仓量独立轴的重叠柱，第二指标底层透明，成交量上层；标题/轴分别用粉/蓝 token。`pointermove` 保存最新 index、每动画帧一次更新 hover/emit，bar 未变不更新报价，清除 frame/监听；非字符串图元 ID 被安全忽略。
+- `边界条件`：无持仓量能力才用成交额，且缺额不回退换手率；坐标轴须容纳负号/大数；overlay 不拦截 Canvas；浮层 resize 后不能出视窗；Esc、重放、画线和菜单的既有语义不回归。
+- `兼容性要求`：五类 K 线菜单均为“图标+中文”；涨跌换色继续影响双柱基础涨跌语义；浅/深主题由 token 决定；详情打开时锁定 `html/body` 滚动，关闭/卸载时恢复原值。
+- `验收标准`：图表有效区域增高、报价槽位稳定、工具菜单可点击；光标工具/鼠标为十字；快速移动不重建 series；量与额/持仓双轴柱层级/透明度正确；详情无 document 级滚动条。
+- `测试结果`：`chart-workbench-r4.spec.ts` 的笔刷、指标/图标/回放、趋势线刷新、盈亏比及信号导航场景分别通过；`market-list-r4.spec.ts` 验证右置工具栏和 scroll lock。首次盈亏比场景发现 ECharts `target.id` 类型异常，修复后通过；`npm run build` 通过。
+- `最终输出`：右置绘图工作台、透明指标图例、图内报价、双柱副图及 rAF 准星更新通道；本轮未进行长时间真实设备帧耗时基准，状态 `VERIFYING`。
+
+### R4-T048 — 续期定向验收、发布与可追溯交付（2026-09-06）
+
+- `task_id`：`R4-T048`；`priority`：P0；`执行对象`：R4 台账、定向测试、`.gitignore`、Git 发布；`state`：`VERIFYING`；`failure_count`：1（历史画线偏好场景在右置工具栏后出现已失效的直接工具定位，已迁移为分组选择；不计入产品运行失败）。
+- `现状`：历史 T032～T044 是分组记录，测试有旧卡片断言，尚未完成本续期的提交/远端核对。
+- `问题原因`：产品结构变更后，验收需要迁移为列表/路由/详情场景；用户明确禁止跨端全量验证。
+- `业务目标`：保留历史编号及证据，新增本续期台账；完成受影响 Python、Web 类型/构建、定向 Playwright、代码审查、敏感文件审查与正常推送。
+- `影响范围`：22 项需求的最终状态、测试证据、源代码和文档；不运行 `verify.ps1`、Android、全量 pytest 或全量 E2E。
+- `依赖关系`：依赖 T045/T046/T047 实现完成。
+- `涉及文件`：`Plan_R4.md`、`docs/CONTEXT.md`、`docs/ARCHITECTURE.md`、`docs/Experience.md`、`docs/Log.md`、`.gitignore`、受影响测试。
+- `实现方案`：迁移失效卡片断言到列表双击/详情 URL；新增大分类/排序纯逻辑 Playwright；确认既有忽略规则已经覆盖 `web_dist`、Playwright 结果、缓存、数据与凭据；最后检查暂存 diff、敏感词/大文件、远端 URL、commit SHA 和远端 SHA。
+- `边界条件`：不删除有效测试以换绿；失败或未进行的真实数据/人工性能验收保持 `VERIFYING`；不能把测试截图或构建产物提交。
+- `兼容性要求`：保留历史 R4 记录，且只维护本文件，不创建 R5；当前分支为 `master`，不强推。
+- `验收标准`：定向检查均通过、工作区干净、提交存在、远端 `qingdaofuRyo/MarketListener` SHA 一致。
+- `测试结果`：Ruff 通过；`pytest desktop/tests/test_market_list_metrics.py desktop/tests/test_market_classification.py desktop/tests/test_web_market_api.py desktop/tests/test_web_app.py -q` 为 54 项通过；`npm run build`（含 `vue-tsc --noEmit`）通过。`market-list-r4.spec.ts` 两项通过；图表工作台的自由笔刷/激光笔、指标/图标/回放、趋势线刷新、盈亏比、目标行情导航五个场景逐项通过。未执行 Android、`verify.ps1`、全量 pytest/Playwright、长期帧耗时或真实本地数据全交易所覆盖。
+- `最终输出`：代码、测试和文档已进入发布前暂存审查；因上述有意不执行的全量/人工范围，状态保持 `VERIFYING`，不可据此声称全量封板。
+
 ### R4-T001 — 网页端国内期货数据页面
 
 - `type`：期货数据工程与网页产品；`priority`：P0；`state`：VERIFYING；`failure_count`：0。

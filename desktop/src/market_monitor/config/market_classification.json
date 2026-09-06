@@ -34,13 +34,14 @@
     {"id": "future-sgx", "label": "新加坡SGX"},
     {"id": "cn-macro", "label": "中国-宏观指标"},
     {"id": "cn-future-index", "label": "国内期货-指数"},
+    {"id": "cn-future-main", "label": "国内期货主连合约"},
+    {"id": "cn-future-weighted", "label": "国内期货加权合约"},
     {"id": "cn-future-shfe", "label": "上海期货交易所"},
     {"id": "cn-future-ine", "label": "上海国际能源交易中心"},
     {"id": "cn-future-dce", "label": "大连商品交易所"},
     {"id": "cn-future-czce", "label": "郑州商品交易所"},
     {"id": "cn-future-cffex", "label": "中国金融期货交易所"},
-    {"id": "cn-future-gfex", "label": "广州期货交易所"},
-    {"id": "cn-future-night", "label": "国内期货-商品期货夜盘"}
+    {"id": "cn-future-gfex", "label": "广州期货交易所"}
   ],
   "exchangeAliases": {
     "SSE": ["SSE", "SH", "XSHG"],

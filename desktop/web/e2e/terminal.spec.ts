@@ -22,6 +22,11 @@ async function expectCleanTerminal(page: Page): Promise<void> {
   }
 }
 
+async function chooseDrawingTool(page: Page, group: string, tool: string): Promise<void> {
+  await page.getByRole("button", { name: group, exact: true }).click();
+  await page.getByRole("menuitem", { name: tool, exact: true }).click();
+}
+
 test("all terminal routes are reachable and render clean text", async ({
   page,
 }) => {
@@ -317,14 +322,10 @@ test("market workbench defaults to a resizable list and opens a full-screen char
   page,
 }) => {
   await page.goto("/market/");
-  await expect(page.locator("h1.page-title")).toContainText("目标行情");
+  await expect(page.getByRole("navigation", { name: "行情导航" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "全部行情", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "目标行情", exact: true })).toBeVisible();
   await expect(page.locator(".all-section h2")).toContainText("全部行情");
-  await expect(
-    page.getByRole("navigation", { name: "目标行情市场筛选" }),
-  ).toContainText("全部市场");
-  await expect(
-    page.getByRole("navigation", { name: "目标行情策略筛选" }),
-  ).toContainText("全部策略");
   await expect(
     page.locator(".all-toolbar").getByRole("button", { name: "查询" }),
   ).toBeVisible();
@@ -335,7 +336,7 @@ test("market workbench defaults to a resizable list and opens a full-screen char
   ).toBeVisible();
   await expect(page.locator(".flag-column-title")).toHaveText("标记");
   await expect(page.locator(".sequence-column-title")).toHaveText("序号");
-  await expect(page.locator(".list-table-header")).toContainText("数据源");
+  await expect(page.locator(".list-table-header")).toContainText("近44日涨幅");
   const firstFlag = page.locator(".row-flag").first();
   if (await firstFlag.count()) {
     await firstFlag.click();
@@ -345,29 +346,16 @@ test("market workbench defaults to a resizable list and opens a full-screen char
     await page.getByRole("menuitem", { name: "红色" }).click();
     await expect(page.locator(".instrument-row.flagged").first()).toBeVisible();
   }
-  await page.getByRole("button", { name: "卡片视图" }).click();
-  const firstQuote = page.locator(".quote-card").first();
   // The desktop terminal can be launched before a local collector has written
   // any instruments.  Layout assertions still apply; chart interaction is
   // conditional on the local data that makes it meaningful.
-  if ((await firstQuote.count()) === 0) {
+  const firstRow = page.locator(".row-main").first();
+  if ((await firstRow.count()) === 0) {
     await expect(page.locator(".all-toolbar")).toBeVisible();
     return;
   }
-  await expect(
-    page.locator(".market-pagination .el-pagination__sizes"),
-  ).toBeVisible();
-  await expect(page.locator(".mini-kline").first()).toHaveCSS(
-    "height",
-    "300px",
-  );
-  await expect(firstQuote).toBeVisible({ timeout: 15_000 });
-  await expect(firstQuote).toContainText("数据源");
-  await expect(firstQuote.locator(".mini-kline")).toBeVisible();
-  if (await firstQuote.locator(".quote-panel").count()) {
-    await expect(firstQuote.locator(".quote-panel .quote-pair")).toHaveCount(7);
-  }
-  await firstQuote.click();
+  await expect(firstRow).toBeVisible({ timeout: 15_000 });
+  await firstRow.dblclick();
   await expect(page.locator(".workbench-overlay")).toBeVisible({
     timeout: 15_000,
   });
@@ -377,13 +365,13 @@ test("market workbench defaults to a resizable list and opens a full-screen char
     ).toHaveCount(7);
   }
   await expect(
-    page.locator(".drawing-toolbar").getByRole("button", { name: "水平线" }),
+    page.locator(".drawing-toolbar").getByRole("button", { name: "线条工具" }),
   ).toBeVisible();
   await expect(
-    page.locator(".drawing-toolbar").getByRole("button", { name: "垂直线" }),
+    page.locator(".drawing-toolbar").getByRole("button", { name: "笔刷与激光笔" }),
   ).toBeVisible();
   await expect(
-    page.locator(".drawing-toolbar").getByRole("button", { name: "箱体线" }),
+    page.locator(".drawing-toolbar").getByRole("button", { name: "图形与盈亏比" }),
   ).toBeVisible();
   await expect(
     page.locator(".drawing-toolbar").getByRole("button", { name: "文本框" }),
@@ -402,11 +390,10 @@ test("rectangle drawing previews hover, creates on two clicks, and drags endpoin
 }) => {
   test.setTimeout(60_000);
   await page.goto("/market/");
-  await page.getByRole("button", { name: "卡片视图" }).click();
-  const firstQuote = page.locator(".quote-summary").first();
-  if ((await firstQuote.count()) === 0) return;
+  const firstRow = page.locator(".row-main").first();
+  if ((await firstRow.count()) === 0) return;
 
-  await firstQuote.click();
+  await firstRow.dblclick();
   const overlay = page.locator(".workbench-overlay");
   await expect(overlay).toBeVisible({ timeout: 20_000 });
 
@@ -418,7 +405,7 @@ test("rectangle drawing previews hover, creates on two clicks, and drags endpoin
   await page.getByRole("button", { name: "删除全部画线" }).click();
   await clearResponse;
 
-  await page.getByRole("button", { name: "箱体线" }).click();
+  await chooseDrawingTool(page, "图形与盈亏比", "箱体线");
   const canvas = page.locator(".workbench-chart canvas").first();
   const chartRoot = page.locator(".workbench-chart .chart-root");
   const box = await canvas.boundingBox();
@@ -502,10 +489,9 @@ test("brush drawing saves a simplified path and exposes the shared toolbar", asy
 }) => {
   test.setTimeout(60_000);
   await page.goto("/market/");
-  await page.getByRole("button", { name: "卡片视图" }).click();
-  const firstQuote = page.locator(".quote-summary").first();
-  if ((await firstQuote.count()) === 0) return;
-  await firstQuote.click();
+  const firstRow = page.locator(".row-main").first();
+  if ((await firstRow.count()) === 0) return;
+  await firstRow.dblclick();
   await expect(page.locator(".workbench-overlay")).toBeVisible({
     timeout: 20_000,
   });
@@ -516,7 +502,7 @@ test("brush drawing saves a simplified path and exposes the shared toolbar", asy
   );
   await page.getByRole("button", { name: "删除全部画线" }).click();
   await clearResponse;
-  await page.getByRole("button", { name: "笔刷" }).click();
+  await chooseDrawingTool(page, "笔刷与激光笔", "笔刷");
   const canvas = page.locator(".workbench-chart canvas").first();
   const box = await canvas.boundingBox();
   expect(box).toBeTruthy();
@@ -602,7 +588,7 @@ test("brush drawing saves a simplified path and exposes the shared toolbar", asy
     brushPopover.getByRole("button", { name: "跨周期" }),
   ).toHaveClass(/active/);
 
-  await page.getByRole("button", { name: "笔刷" }).click();
+  await chooseDrawingTool(page, "笔刷与激光笔", "笔刷");
   const cancelledRequest = page.waitForRequest(
     (candidate) =>
       candidate.method() === "PUT" &&
@@ -632,10 +618,9 @@ test("brush coalesces 10k pointer moves into one bounded save", async ({
 }) => {
   test.setTimeout(60_000);
   await page.goto("/market/");
-  await page.getByRole("button", { name: "卡片视图" }).click();
-  const firstQuote = page.locator(".quote-summary").first();
-  if ((await firstQuote.count()) === 0) return;
-  await firstQuote.click();
+  const firstRow = page.locator(".row-main").first();
+  if ((await firstRow.count()) === 0) return;
+  await firstRow.dblclick();
   await expect(page.locator(".workbench-overlay")).toBeVisible({
     timeout: 20_000,
   });
@@ -646,7 +631,7 @@ test("brush coalesces 10k pointer moves into one bounded save", async ({
   );
   await page.getByRole("button", { name: "删除全部画线" }).click();
   await clearResponse;
-  await page.getByRole("button", { name: "笔刷" }).click();
+  await chooseDrawingTool(page, "笔刷与激光笔", "笔刷");
   const canvas = page.locator(".workbench-chart canvas").first();
   const box = await canvas.boundingBox();
   expect(box).toBeTruthy();

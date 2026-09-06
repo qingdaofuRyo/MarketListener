@@ -15,7 +15,10 @@ export default createRouter({
   history: createWebHistory(),
   routes: [
     { path: "/", component: HomeView },
-    { path: "/market/", component: MarketView },
+    { path: "/market/", redirect: "/market/all/" },
+    { path: "/market/all/", component: MarketView },
+    { path: "/market/targets/", component: MarketView },
+    { path: "/market/instrument/:instrumentId/", component: MarketView, props: true },
     { path: "/settings/", component: SettingsView },
     { path: "/data/", component: DataView },
     { path: "/data-sources/", component: DataSourcesView },

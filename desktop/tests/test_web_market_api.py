@@ -229,9 +229,9 @@ def test_market_instruments_paginate_search_and_filter(tmp_path: Path) -> None:
 
     sh = client.get("/api/market/instruments", params={"categoryKey": "a-sh"})
     assert sh.json()["total"] == 1
-    night = client.get("/api/market/instruments", params={"categoryKey": "cn-future-night"})
-    assert night.json()["total"] == 1
-    assert night.json()["items"][0]["nightSession"] == "21:00-02:30"
+    retired_night = client.get("/api/market/instruments", params={"categoryKey": "cn-future-night"})
+    assert retired_night.json()["total"] == 0
+    assert futures.json()["items"][0]["nightSession"] == "21:00-02:30"
 
 
 def test_market_categories_expose_ordered_r3_filter_contract(tmp_path: Path) -> None:
@@ -246,7 +246,7 @@ def test_market_categories_expose_ordered_r3_filter_contract(tmp_path: Path) -> 
         "a-lof", "a-reit",
         "hk-index", "hk-stock", "global-index", "future-comex", "future-nymex", "future-cbot",
         "cn-future-index", "cn-future-shfe", "cn-future-ine", "cn-future-dce", "cn-future-czce",
-        "cn-future-cffex", "cn-future-gfex", "cn-future-night",
+        "cn-future-cffex", "cn-future-gfex", "cn-future-main", "cn-future-weighted",
     }
     public_ids = {item["id"] for item in items}
     assert not {"other", "a-index", "tdx-board-index", "tdx-industry-index", "global-future", "cn-future-commodity", "a-repo", "a-other-repo"} & public_ids

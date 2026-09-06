@@ -26,7 +26,7 @@ export async function setup(page: Page) {
     const url = new URL(route.request().url()), path = url.pathname;
     let result: unknown = {};
     if (path.endsWith("cache-status")) result = { dataVersion: "r4" };
-    else if (path.endsWith("categories")) result = { items: [{ id: "all", label: "全部市场" }] };
+    else if (path.endsWith("categories")) result = { items: [{ id: "cn-future-main", label: "国内期货主连合约" }, { id: "cn-future-weighted", label: "国内期货加权合约" }] };
     else if (path.endsWith("/instruments")) result = { items: [instrument], total: 1 };
     else if (path.endsWith("drawings/batch")) result = { items: { [id]: drawings } };
     else if (path.endsWith("bars/batch")) result = { items: { [id]: bars } };
@@ -41,8 +41,7 @@ export async function setup(page: Page) {
     await route.fulfill({ json: result });
   });
   await page.goto("/market/");
-  await page.getByRole("button", { name: "卡片视图" }).click();
-  await page.locator(".quote-summary").first().click();
+  await page.locator(".row-main").first().dblclick();
   await expect(page.locator(".workbench-overlay")).toBeVisible();
   await expect(page.locator(".workbench-chart .el-loading-mask")).toHaveCount(0);
   return { drawings: () => drawings, saves: () => saves, requests };
@@ -101,7 +100,10 @@ test("indicator library, icon types, direct controls, quotes and replay work tog
   await expect(legend).toContainText("移动平均线");
   await expect.poll(() => state.requests.length).toBeGreaterThan(0);
   await legend.getByRole("button", { name: "跨周期移动平均线" }).click();
-  await expect(legend.getByLabel("颜色移动平均线")).toBeVisible();
+  await expect(legend.getByLabel("颜色移动平均线")).toHaveCount(0);
+  await legend.getByRole("button", { name: "设置移动平均线" }).click();
+  await expect(dialog.getByText("颜色", { exact: true })).toBeVisible();
+  await page.keyboard.press("Escape");
   await overlay.getByRole("button", { name: /^指标/ }).click();
   await expect(dialog.getByRole("button", { name: "取消收藏移动平均线" })).toBeVisible();
   await dialog.getByRole("button", { name: /相对强弱指数 RSI/ }).click();
@@ -133,10 +135,10 @@ test("indicator library, icon types, direct controls, quotes and replay work tog
   await expect.poll(() => state.requests.at(-1)?.size).toBe(80);
   await expect(overlay.getByRole("button",{name:"警报",exact:true})).toHaveCount(0);
   await expect(overlay.getByRole("button",{name:"指标",exact:true})).toBeVisible();
-  const quote=overlay.locator(".instrument-quote-line");
-  for(const field of ["振幅","涨跌","成交额","持仓量","沉淀资金","总市值","流通市值"]) await expect(quote).toContainText(field);
+  const quote=overlay.locator(".workbench-chart .quote-panel");
+  for(const field of ["振幅","涨跌","额","持仓量","沉淀资金","总市值","流通市值"]) await expect(quote).toContainText(field);
   await expect(quote).not.toContainText("00:00");
-  await expect(quote.locator('[data-field="收盘价"] strong')).not.toHaveCSS("color","rgb(0, 0, 0)");
+  await expect(quote.locator('[data-field="收"] strong')).not.toHaveCSS("color","rgb(0, 0, 0)");
   await page.screenshot({ path: "test-results/r4-chart-workbench.png", fullPage: false });
   await page.keyboard.press("Escape");
   await expect(overlay).toHaveCount(0);
@@ -155,10 +157,10 @@ test("trend line uses two logical anchors and survives reopening", async ({ page
   expect(state.drawings()[0].type).toBe("trend");
   expect(state.drawings()[0].points).toHaveLength(2);
   await page.reload();
-  await page.locator(".quote-summary").first().click();
+  await expect(page.locator(".workbench-overlay")).toBeVisible();
   await expect(chart).toHaveAttribute("data-drawing-count", "1");
 });
-test("grouped risk reward drawings use three prices and card periods are dropdowns",async({page})=>{
+test("grouped risk reward drawings use three prices and list board periods are dropdowns",async({page})=>{
   const state=await setup(page);
   await page.getByRole("button",{name:"图形与盈亏比",exact:true}).click();
   await page.getByRole("menuitem",{name:"多头盈亏比",exact:true}).click();
@@ -170,10 +172,9 @@ test("grouped risk reward drawings use three prices and card periods are dropdow
   expect(state.drawings()[0].type).toBe("long_position");
   expect(state.drawings()[0].points).toHaveLength(3);
   await page.keyboard.press("Escape");
-  await page.getByRole("combobox",{name:"卡片 K 线周期",exact:true}).selectOption("1h");
-  await expect(page.locator(".mini-kline .quote-panel time")).toHaveCount(0);
-  await page.getByRole("button",{name:"列表视图",exact:true}).click();
-  await expect(page.getByRole("combobox",{name:"上看板 K 线周期",exact:true})).toBeVisible();
+  const topPeriod = page.getByRole("combobox",{name:"上看板 K 线周期",exact:true});
+  await topPeriod.selectOption("1h");
+  await expect(topPeriod).toHaveValue("1h");
 });
 
 test("market filters use only opening signals and ongoing cycles show later operations",async({page})=>{
@@ -188,6 +189,7 @@ test("market filters use only opening signals and ongoing cycles show later oper
     await route.fulfill({json:{items:scans?[{instrumentId:id,name:'浦发银行',symbol:'600000',direction:'long',openingStrategyId:'entry',openedAt:event.at,latestSignal:event}]:[],events:scans?[event]:[],scanned:1,total:1,nextOffset:null}});
   });
   await page.reload();
+  await page.getByRole("button", { name: "目标行情", exact: true }).click();
   const filters=page.getByRole('navigation',{name:'目标行情策略筛选'});
   await expect(filters).toContainText('突破开仓');
   await expect(filters).not.toContainText('回调加仓');
