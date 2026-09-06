@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://marketlistener.local/contracts/strategy-resource.schema.json",
+  "title": "Versioned strategy-system resource",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "resource_kind",
+    "id",
+    "version",
+    "display_name",
+    "origin",
+    "supported_asset_types",
+    "status",
+    "created_at",
+    "updated_at",
+    "dependencies",
+    "capabilities",
+    "definition"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "resource_kind": {"enum": ["strategy_function", "indicator", "strategy"]},
+    "id": {"type": "string", "pattern": "^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$", "maxLength": 128},
+    "version": {"type": "integer", "minimum": 1},
+    "display_name": {"type": "string", "minLength": 1, "maxLength": 128},
+    "origin": {"enum": ["builtin", "custom", "community", "plugin"]},
+    "supported_asset_types": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/assetType"}
+    },
+    "status": {"enum": ["draft", "active", "deprecated", "disabled"]},
+    "created_at": {"type": "string", "format": "date-time"},
+    "updated_at": {"type": "string", "format": "date-time"},
+    "dependencies": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/dependency"}
+    },
+    "capabilities": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "enum": ["market_data_input", "plot_create", "account_read", "position_read", "order_intent_create"]
+      }
+    },
+    "definition": {"type": "object"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"resource_kind": {"const": "strategy_function"}}},
+      "then": {
+        "properties": {
+          "dependencies": {"maxItems": 0},
+          "capabilities": {"const": ["market_data_input"]}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"resource_kind": {"const": "indicator"}}},
+      "then": {
+        "properties": {
+          "dependencies": {"items": {"$ref": "#/$defs/functionDependency"}},
+          "capabilities": {"const": ["market_data_input", "plot_create"]}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"resource_kind": {"const": "strategy"}}},
+      "then": {
+        "properties": {
+          "dependencies": {"items": {"$ref": "#/$defs/functionDependency"}},
+          "capabilities": {"const": ["market_data_input", "account_read", "position_read", "order_intent_create"]}
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "assetType": {
+      "enum": [
+        "STOCK", "B_SHARE", "INDEX", "FUTURE", "OPTION", "FUND", "ETF", "LOF", "REIT", "BOND",
+        "CONVERTIBLE_BOND", "EXCHANGEABLE_BOND", "PLEDGED_REPO", "REPO", "COMMODITY", "CRYPTO", "FX_RATE", "MACRO"
+      ]
+    },
+    "dependency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["resource_kind", "id", "version"],
+      "properties": {
+        "resource_kind": {"enum": ["strategy_function", "indicator", "strategy"]},
+        "id": {"type": "string", "pattern": "^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$", "maxLength": 128},
+        "version": {"type": "integer", "minimum": 1}
+      }
+    },
+    "functionDependency": {
+      "allOf": [
+        {"$ref": "#/$defs/dependency"},
+        {"properties": {"resource_kind": {"const": "strategy_function"}}}
+      ]
+    }
+  }
+}

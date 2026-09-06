@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://marketlistener.local/contracts/strategy-report.schema.json",
+  "title": "Reproducible strategy backtest report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "report_id", "run_id", "strategy_id", "strategy_version", "definition_hash", "dependency_lock", "version_fingerprint",
+    "instrument_id", "data_version", "run_mode", "status", "currency", "contract_multiplier", "period",
+    "metrics", "metric_unavailable_reasons", "open_position", "equity_points", "markers", "trades"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "report_id": {"type": "string", "pattern": "^report_bt_[0-9a-f]{24}$"},
+    "run_id": {"type": "string", "pattern": "^bt_[0-9a-f]{24}$"},
+    "strategy_id": {"type": "string"},
+    "strategy_version": {"type": "integer", "minimum": 1},
+    "definition_hash": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+    "dependency_lock": {"type": ["object", "null"]},
+    "version_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "instrument_id": {"type": "string"},
+    "data_version": {"type": "string"},
+    "run_mode": {"const": "backtest"},
+    "status": {"enum": ["ready", "partial", "unavailable"]},
+    "currency": {"type": "string"},
+    "contract_multiplier": {"type": "number", "exclusiveMinimum": 0},
+    "period": {"type": "object", "required": ["first_bar_at", "last_bar_at", "bars_count"]},
+    "metrics": {"type": "object"},
+    "metric_unavailable_reasons": {"type": "object", "additionalProperties": {"type": "string"}},
+    "open_position": {"type": ["object", "null"]},
+    "equity_points": {"type": "array", "items": {"type": "object"}},
+    "markers": {"type": "array", "items": {"type": "object"}},
+    "trades": {"type": "array", "items": {"type": "object"}}
+  }
+}

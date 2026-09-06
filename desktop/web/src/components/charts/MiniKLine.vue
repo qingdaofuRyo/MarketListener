@@ -36,8 +36,9 @@ async function flushBatches(): Promise<void> {
   }));
 }
 
-async function load(): Promise<void> { if (!visible.value || loading.value || bars.value.length) return; loading.value = true; try { bars.value = await queueBars(props.instrumentId, props.period, props.limit, props.dataVersion); } catch { bars.value = []; } finally { loading.value = false; } }
-watch(() => props.dataVersion, () => { bars.value = []; void load(); });
+let loadRevision = 0;
+async function load(): Promise<void> { if (!visible.value || loading.value || bars.value.length) return; const revision = ++loadRevision; loading.value = true; try { const result = await queueBars(props.instrumentId, props.period, props.limit, props.dataVersion); if (revision === loadRevision) bars.value = result; } catch { if (revision === loadRevision) bars.value = []; } finally { if (revision === loadRevision) loading.value = false; } }
+watch(() => [props.dataVersion, props.period, props.instrumentId], () => { loadRevision++; bars.value = []; loading.value = false; void load(); });
 onMounted(() => { if (!root.value || !('IntersectionObserver' in window)) { visible.value = true; void load(); return; } observer = new IntersectionObserver((entries) => { if (entries.some((entry) => entry.isIntersecting)) { visible.value = true; observer?.disconnect(); void load(); } }, { rootMargin: "300px" }); observer.observe(root.value); });
 onBeforeUnmount(() => observer?.disconnect());
 </script>

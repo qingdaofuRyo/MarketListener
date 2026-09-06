@@ -193,6 +193,7 @@ export async function apiDelete<T>(path: string, body?: unknown): Promise<T> {
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   if (!response.ok) throw new Error(await errorMessage(response));
+  if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
 }
 

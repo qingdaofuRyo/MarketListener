@@ -48,6 +48,7 @@ Thumbs.db
 
 # Runtime data stores / local backups (never uploaded to git).
 data_control/
+data_control_*/
 data_control_old_20260808/
 # TDX normalization audit/migration outputs when a custom data root points at the repository.
 /tdx_local_migration/
@@ -60,6 +61,8 @@ data_control_old_20260808/
 *.sqlite3
 *.sqlite-wal
 *.sqlite-shm
+*.sqlite3-wal
+*.sqlite3-shm
 *.db
 *.db-wal
 *.db-shm
@@ -95,6 +98,17 @@ desktop/web/node_modules/
 desktop/web/test-results/
 desktop/web/playwright-report/
 desktop/web/playwright/.cache/
+# Playwright can write here when invoked from the repository root.
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/
+desktop/web/blob-report/
+desktop/web/coverage/
+/coverage/
+.coverage
+.coverage.*
+htmlcov/
 *.tsbuildinfo
 desktop/src/market_monitor/web_dist/
 

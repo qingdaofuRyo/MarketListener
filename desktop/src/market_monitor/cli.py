@@ -19,6 +19,7 @@ from market_monitor.futures_structure import (
 )
 from market_monitor.futures_calendar import sync_futures_trading_calendar
 from market_monitor.futures_rule_sync import sync_futures_rule_snapshots
+from market_monitor.external_market_sync import ExternalMarketSyncError, sync_cboe_vix_history
 from market_monitor.tdx_local import run_tdx_local_import
 from market_monitor.ths_market import run_ths_market_snapshot
 from market_monitor.configuration import ConfigurationError, load_local_configuration
@@ -141,6 +142,11 @@ def build_parser() -> argparse.ArgumentParser:
         "futures-calendar-sync", help="同步并持久化中国期货统一交易日历"
     )
     futures_calendar.add_argument("--data-root", type=Path, default=Path("data_control"))
+    vix_sync = subcommands.add_parser(
+        "vix-sync", help="从 CBOE 官方 CSV 校验并同步本地 VIX 标准序列"
+    )
+    vix_sync.add_argument("--data-root", type=Path, default=Path("data_control"))
+    vix_sync.add_argument("--timeout-seconds", type=float, default=20.0)
     tdx_local = subcommands.add_parser("import-tdx-local", help="增量导入通达信金融终端本地 A 股、港股日线与 5 分钟线")
     tdx_local.add_argument("--data-root", type=Path, default=Path("data_control"))
     tdx_local.add_argument("--tdx-root", type=Path, default=None, help="通达信金融终端安装目录")
@@ -262,6 +268,8 @@ def main(argv: list[str] | None = None) -> int:
             return _futures_rule_sync(args)
         if args.command == "futures-calendar-sync":
             return _futures_calendar_sync(args)
+        if args.command == "vix-sync":
+            return _vix_sync(args)
         if args.command == "import-tdx-local":
             return _import_tdx_local(args)
         if args.command == "ths-market":
@@ -510,6 +518,27 @@ def _futures_calendar_sync(args: argparse.Namespace) -> int:
         "SUCCESS",
         EXIT_SUCCESS,
         message=f"中国期货交易日历同步结束：{summary['tradingDayCount']} 个有效交易日",
+    )
+    return EXIT_SUCCESS
+
+
+def _vix_sync(args: argparse.Namespace) -> int:
+    try:
+        summary = sync_cboe_vix_history(
+            args.data_root,
+            timeout_seconds=args.timeout_seconds,
+        )
+    except ExternalMarketSyncError as error:
+        _emit("PARTIAL_FAILURE", EXIT_PARTIAL_FAILURE, message=f"VIX 同步未通过来源校验：{error}")
+        return EXIT_PARTIAL_FAILURE
+    print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
+    _emit(
+        "SUCCESS",
+        EXIT_SUCCESS,
+        message=(
+            f"CBOE VIX 本地标准序列已同步：{summary['pointCount']} 点，"
+            f"截至 {summary['asOfDate']}"
+        ),
     )
     return EXIT_SUCCESS
 

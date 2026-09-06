@@ -33,6 +33,7 @@ from .web_api import market as market_api
 from .web_api import sources as sources_api
 from .web_api import stats as stats_api
 from .web_api import strategy as strategy_api
+from .web_api import signals as signals_api
 from .web_api import watchlist as watchlist_api
 
 
@@ -76,6 +77,7 @@ def create_web_app(
     app.include_router(sources_api.router)
     app.include_router(watchlist_api.router)
     app.include_router(strategy_api.router)
+    app.include_router(signals_api.router)
     app.include_router(stats_api.router)
     app.include_router(futures_api.router)
     app.include_router(data_sections_api.router)

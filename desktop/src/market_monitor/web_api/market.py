@@ -8,18 +8,23 @@ executes arbitrary SQL, shell commands or third-party requests.
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
+from functools import lru_cache
 from hashlib import sha256
 import json
 import math
 from pathlib import Path
 import re
-from typing import Any
+from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from market_monitor.aggregation import aggregate_bars, aggregate_daily_bars
+from market_monitor.chart_drawings import (
+    ChartDrawingValidationError,
+    validate_fibonacci_retracement,
+)
 from market_monitor.market_data_version import market_data_version
 from market_monitor.market_classification import (
     UNCLASSIFIED_CATEGORY,
@@ -36,6 +41,14 @@ from market_monitor.futures import (
     resolve_futures_contract_spec,
 )
 from market_monitor.industry_graph.f10 import CompanyRepository
+from market_monitor.indicator_calculation import (
+    IndicatorCalculationError,
+    calculate_indicator_instance,
+    calculate_legacy_indicator_series,
+    indicator_warmup,
+)
+from market_monitor.external_market import load_vix_series
+from market_monitor.indicator_registry import build_builtin_indicator_registry, build_indicator_registry
 from market_monitor.tdx_local import _cn_classification
 from market_monitor.unclassified_instruments import scan_unclassified_tdx
 
@@ -89,13 +102,35 @@ _CONTINUOUS_LABELS = {"SECONDARY": "次连", "MAIN": "主连", "WEIGHTED": "加�
 # The v3 revision changes the public market taxonomy and removes the
 # unclassified review section from the market page.  Persisted v2 category
 # payloads must not leak the old overlapping labels into the new UI.
-_PRESENTATION_SCHEMA_VERSION = "market-categories-r4-v3"
+_PRESENTATION_SCHEMA_VERSION = "market-categories-r4-v4"
 _TDX_SECURITY_NAMES_PATH = Path(__file__).resolve().parents[1] / "config" / "tdx_security_names.json"
 _TDX_COMMODITY_INDEX_NAMES_PATH = Path(__file__).resolve().parents[1] / "config" / "tdx_commodity_index_names.json"
+_TDX_FUTURES_INDEX_NAMES_PATH = Path(__file__).resolve().parents[1] / "config" / "tdx_futures_index_names.json"
+
+
+@lru_cache(maxsize=1)
+def _tdx_futures_index_names() -> dict[str, str]:
+    return json.loads(_TDX_FUTURES_INDEX_NAMES_PATH.read_text(encoding="utf-8"))
+
+
 _TDX_SECURITY_NAMES: dict[str, str] | None = None
 _TDX_COMMODITY_INDEX_NAMES: dict[str, str] | None = None
 _TDX_SECURITY_NAMES_STAMP: tuple[int, int] | None = None
 _TDX_COMMODITY_INDEX_NAMES_STAMP: tuple[int, int] | None = None
+_INDICATOR_REGISTRY = build_builtin_indicator_registry()
+
+
+def _indicator_registry_for_data_root(data_root: Path):
+    """Load built-ins plus valid custom chart indicators for this local data root."""
+
+    directory = data_root / "strategies" / "indicator_resources"
+    documents: list[dict[str, Any]] = []
+    if directory.is_dir():
+        for path in sorted(directory.glob("*@*.json")):
+            document = load_json(path, default=None)
+            if isinstance(document, dict):
+                documents.append(document)
+    return build_indicator_registry(documents)
 
 
 def _tdx_security_names() -> dict[str, str]:
@@ -422,6 +457,8 @@ def _normalize_tdx_instrument(item: dict[str, Any]) -> dict[str, Any]:
             if series_kind and not item.get("seriesKind"):
                 result["seriesKind"] = series_kind
         name = _tdx_security_names().get(f"{exchange}.{symbol}") if exchange and symbol else None
+        if str(item.get("seriesKind") or "").upper() in {"COMMODITY_INDEX", "OPTION_VOLATILITY_INDEX", "FUTURES_UNDERLYING_INDEX"}:
+            name = _tdx_futures_index_names().get(f"{exchange}.{symbol}") or name
         if not name and str(item.get("seriesKind") or "").upper() == "COMMODITY_INDEX":
             name = _tdx_commodity_index_names().get(symbol)
         if name:
@@ -923,6 +960,17 @@ def _chart_indicators(value: str) -> list[dict[str, str]]:
     return [{"id": name} for name in names]
 
 
+def _indicator_series(
+    bars: list[dict[str, Any]], requested: list[dict[str, Any]]
+) -> dict[str, list[float | None]]:
+    """Compatibility adapter backed by the shared R4 calculation service."""
+
+    try:
+        return calculate_legacy_indicator_series(_INDICATOR_REGISTRY, bars, requested)
+    except (IndicatorCalculationError, ValueError, TypeError) as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
 @router.get("/instruments/{instrument_id}/chart")
 def market_chart_bootstrap(
     instrument_id: str,
@@ -980,118 +1028,105 @@ def market_chart_bootstrap(
     )
 
 
+class IndicatorPlotStyleRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    color: str | None = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
+    line_width: float | None = Field(default=None, alias="lineWidth", ge=0.5, le=8)
+    line_type: Literal["solid", "dashed", "dotted"] | None = Field(default=None, alias="lineType")
+
+
+class IndicatorStyleRequest(IndicatorPlotStyleRequest):
+    plot_styles: dict[str, IndicatorPlotStyleRequest] = Field(default_factory=dict, alias="plotStyles")
+
+
+class IndicatorInstanceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    instance_id: str = Field(alias="instanceId", min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._:-]+$")
+    definition_id: str = Field(alias="definitionId", min_length=1, max_length=128, pattern=r"^[a-z0-9._-]+$")
+    version: int = Field(ge=1)
+    parameters: dict[str, int | float] = Field(default_factory=dict)
+    style: IndicatorStyleRequest = Field(default_factory=IndicatorStyleRequest)
+    visible: bool = True
+    placement: Literal["overlay", "pane"]
+    range_start: int | None = Field(default=None, alias="rangeStart", ge=0)
+    range_end: int | None = Field(default=None, alias="rangeEnd", ge=0)
+
+
 class IndicatorSeriesRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
     period: str
     start: int = Field(default=0, ge=0)
     size: int = Field(default=60, ge=1, le=5_000)
     indicators: list[dict[str, Any]] = Field(default_factory=list, max_length=12)
-
-
-def _rolling_ma(values: list[float | None], lookback: int) -> list[float | None]:
-    output: list[float | None] = []
-    for index in range(len(values)):
-        window = values[max(0, index - lookback + 1): index + 1]
-        output.append(sum(window) / lookback if len(window) == lookback and all(value is not None for value in window) else None)
-    return output
-
-
-def _rolling_sd(values: list[float | None], lookback: int) -> list[float | None]:
-    averages = _rolling_ma(values, lookback)
-    output: list[float | None] = []
-    for index, average in enumerate(averages):
-        window = values[max(0, index - lookback + 1): index + 1]
-        output.append(
-            math.sqrt(sum((float(value) - average) ** 2 for value in window) / lookback)
-            if average is not None and len(window) == lookback and all(value is not None for value in window) else None
-        )
-    return output
-
-
-def _ema(values: list[float | None], lookback: int) -> list[float | None]:
-    output: list[float | None] = []
-    value: float | None = None
-    ratio = 2 / (lookback + 1)
-    for item in values:
-        if item is None:
-            output.append(None)
-        else:
-            value = float(item) if value is None else value + ratio * (float(item) - value)
-            output.append(value)
-    return output
-
-
-def _indicator_series(bars: list[dict[str, Any]], requested: list[dict[str, Any]]) -> dict[str, list[float | None]]:
-    close = [_number(bar.get("close")) for bar in bars]
-    high = [_number(bar.get("high")) for bar in bars]
-    low = [_number(bar.get("low")) for bar in bars]
-    output: dict[str, list[float | None]] = {}
-    for config in requested:
-        indicator_id = str(config.get("id") or "").lower()
-        lookback = int(config.get("lookback") or 20)
-        if lookback < 1 or lookback > 2_000:
-            raise HTTPException(status_code=422, detail="指标回看期必须在 1 至 2000 之间")
-        if indicator_id == "ma":
-            output["ma"] = _rolling_ma(close, lookback)
-        elif indicator_id == "sd":
-            output["sd"] = _rolling_sd(close, lookback)
-        elif indicator_id == "bollinger":
-            multiplier = float(config.get("multiplier") or 2)
-            middle = _rolling_ma(close, lookback)
-            deviation = _rolling_sd(close, lookback)
-            output["bollingerMiddle"] = middle
-            output["bollingerUpper"] = [value + multiplier * deviation[index] if value is not None and deviation[index] is not None else None for index, value in enumerate(middle)]
-            output["bollingerLower"] = [value - multiplier * deviation[index] if value is not None and deviation[index] is not None else None for index, value in enumerate(middle)]
-        elif indicator_id == "hsar":
-            top_percent = float(config.get("topPercent") or 20)
-            amount = max(1, math.ceil(lookback * top_percent / 100))
-            resistance: list[float | None] = []
-            support: list[float | None] = []
-            for index in range(len(bars)):
-                highs = [value for value in high[max(0, index - lookback + 1):index + 1] if value is not None]
-                lows = [value for value in low[max(0, index - lookback + 1):index + 1] if value is not None]
-                resistance.append(sum(sorted(highs, reverse=True)[:amount]) / amount if len(highs) == lookback else None)
-                support.append(sum(sorted(lows, reverse=True)[:amount]) / amount if len(lows) == lookback else None)
-            output["hsarResistance"] = resistance
-            output["hsarSupport"] = support
-        elif indicator_id == "atr":
-            atr_lookback = int(config.get("atrLookback") or 14)
-            center_lookback = int(config.get("centerLookback") or 20)
-            multiplier = float(config.get("multiplier") or 2)
-            true_range: list[float | None] = []
-            previous: float | None = None
-            for index in range(len(bars)):
-                if high[index] is None or low[index] is None:
-                    true_range.append(None)
-                elif previous is None:
-                    true_range.append(high[index] - low[index])
-                else:
-                    true_range.append(max(high[index] - low[index], abs(high[index] - previous), abs(low[index] - previous)))
-                if close[index] is not None:
-                    previous = close[index]
-            center = _ema(close, center_lookback)
-            atr = _rolling_ma(true_range, atr_lookback)
-            output["atrMiddle"] = center
-            output["atrUpper"] = [value + multiplier * atr[index] if value is not None and atr[index] is not None else None for index, value in enumerate(center)]
-            output["atrLower"] = [value - multiplier * atr[index] if value is not None and atr[index] is not None else None for index, value in enumerate(center)]
-        elif indicator_id == "volume":
-            output["volume"] = [_number(bar.get("volume")) for bar in bars]
-        elif indicator_id:
-            raise HTTPException(status_code=422, detail=f"未知图形指标：{indicator_id}")
-    return output
+    instances: list[IndicatorInstanceRequest] = Field(default_factory=list, max_length=12)
 
 
 @router.post("/instruments/{instrument_id}/indicator-series")
 def market_indicator_series(instrument_id: str, request: Request, body: IndicatorSeriesRequest) -> dict[str, Any]:
     data_root = _data_root(request)
+    indicator_registry = _indicator_registry_for_data_root(data_root)
     instrument, selected_period, _available = _resolve_period(data_root, instrument_id, body.period)
-    warmup = max([int(item.get("lookback") or 20) for item in body.indicators] or [1]) + 2
+    if len(body.indicators) + len(body.instances) > 12:
+        raise HTTPException(status_code=422, detail="指标实例最多选择 12 项")
+    warmups: list[int] = []
+    for item in body.indicators:
+        try:
+            legacy_lookback = int(item.get("lookback") or item.get("atrLookback") or 20)
+        except (TypeError, ValueError) as error:
+            raise HTTPException(status_code=422, detail="指标回看期必须是整数") from error
+        if not 1 <= legacy_lookback <= 2_000:
+            raise HTTPException(status_code=422, detail="指标回看期必须在 1 至 2000 之间")
+        warmups.append(legacy_lookback + 2)
+    for instance in body.instances:
+        try:
+            definition = indicator_registry.resolve(instance.definition_id, instance.version)
+            warmups.append(indicator_warmup(definition, instance.parameters))
+        except (KeyError, IndicatorCalculationError):
+            # The isolated instance result will carry the structured failure.
+            warmups.append(2)
+    warmup = max(warmups or [1])
     fetch_start = max(0, body.start - warmup)
     bars, _total, _earliest, _latest = _history_window(data_root, instrument, selected_period, fetch_start, body.size + warmup)
-    series = _indicator_series([{_camel_key(key): value for key, value in bar.items()} for bar in bars], body.indicators)
+    camel_bars = [{_camel_key(key): value for key, value in bar.items()} for bar in bars]
     trim = body.start - fetch_start
-    return clean({"instrumentId": instrument_id, "period": selected_period, "start": body.start,
-                  "series": {key: values[trim:trim + body.size] for key, values in series.items()}})
+    series = _indicator_series(camel_bars, body.indicators)
+    calculated: list[dict[str, Any]] = []
+    for instance in body.instances:
+        payload = instance.model_dump(by_alias=True, exclude_none=True)
+        try:
+            definition = indicator_registry.resolve(instance.definition_id, instance.version)
+            calculation_id = definition.calculation_id or definition.indicator_id
+        except KeyError:
+            calculation_id = ""
+        calculation_bars = (
+            camel_bars[trim:trim + body.size]
+            if calculation_id in {"indicator.volume_profile", "indicator.vix"}
+            else camel_bars
+        )
+        calculated.append(
+            calculate_indicator_instance(
+                indicator_registry,
+                calculation_bars,
+                payload,
+                asset_type=str(instrument.get("assetType") or ""),
+                external_series=(load_vix_series(data_root) if calculation_id == "indicator.vix" else None),
+            )
+        )
+    for item in calculated:
+        item["series"] = {
+            key: values if ("profile" in item or "external" in item) else values[trim:trim + body.size]
+            for key, values in item["series"].items()
+        }
+    return clean(
+        {
+            "instrumentId": instrument_id,
+            "period": selected_period,
+            "start": body.start,
+            "size": min(body.size, max(0, len(bars) - trim)),
+            "series": {key: values[trim:trim + body.size] for key, values in series.items()},
+            "instances": calculated,
+        }
+    )
 
 
 class ChartDrawingsRequest(BaseModel):
@@ -1139,6 +1174,11 @@ def market_save_drawings(instrument_id: str, request: Request, body: ChartDrawin
     if len(json.dumps(body.items, ensure_ascii=False, separators=(",", ":"))) > 1_000_000:
         raise HTTPException(status_code=422, detail="画线文档超过 1 MB 限制")
     for item in body.items:
+        if item.get("type") == "fibonacci_retracement":
+            try:
+                validate_fibonacci_retracement(item)
+            except ChartDrawingValidationError as error:
+                raise HTTPException(status_code=422, detail=str(error)) from error
         if item.get("type") != "brush":
             continue
         points = item.get("points")

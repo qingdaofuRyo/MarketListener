@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://marketlistener.local/contracts/strategy-backtest-result.schema.json",
+  "title": "Deterministic event-driven strategy backtest result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "run_id", "status", "unavailable_reason", "strategy_id", "strategy_version",
+    "definition_hash", "version_fingerprint", "function_references", "dependency_lock", "parameters", "parameter_fingerprint", "instrument_id",
+    "data_version", "data_fingerprint", "run_mode", "currency", "contract_multiplier", "bars_count",
+    "first_bar_at", "last_bar_at", "initial_cash", "final_equity", "equity_points", "order_intents",
+    "fills", "trades", "markers", "errors", "final_state", "resume_state"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "run_id": {"type": "string", "pattern": "^bt_[0-9a-f]{24}$"},
+    "status": {"enum": ["ready", "partial", "unavailable"]},
+    "unavailable_reason": {"type": ["string", "null"]},
+    "strategy_id": {"type": "string"},
+    "strategy_version": {"type": "integer", "minimum": 1},
+    "definition_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "version_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "function_references": {"type": "array", "items": {"type": "object"}},
+    "dependency_lock": {"$ref": "#/$defs/dependencyLock"},
+    "parameters": {"type": "object"},
+    "parameter_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "instrument_id": {"type": "string", "minLength": 1},
+    "data_version": {"type": "string", "minLength": 1},
+    "data_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "run_mode": {"const": "backtest"},
+    "currency": {"type": "string", "pattern": "^[A-Z]{3,8}$"},
+    "contract_multiplier": {"type": "number", "exclusiveMinimum": 0},
+    "bars_count": {"type": "integer", "minimum": 0},
+    "first_bar_at": {"type": ["string", "null"]},
+    "last_bar_at": {"type": ["string", "null"]},
+    "initial_cash": {"type": "number", "exclusiveMinimum": 0},
+    "final_equity": {"type": "number"},
+    "equity_points": {"type": "array", "items": {"$ref": "#/$defs/equityPoint"}},
+    "order_intents": {"type": "array", "items": {"$ref": "#/$defs/gatedIntent"}},
+    "fills": {"type": "array", "items": {"$ref": "#/$defs/fill"}},
+    "trades": {"type": "array", "items": {"$ref": "#/$defs/trade"}},
+    "markers": {"type": "array", "items": {"type": "object"}},
+    "errors": {"type": "array", "items": {"type": "object"}},
+    "final_state": {"type": ["object", "null"]},
+    "resume_state": {"type": ["object", "null"]}
+  },
+  "$defs": {
+    "versionedResource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["resource_kind", "id", "version", "definition_hash"],
+      "properties": {
+        "resource_kind": {"type": "string"},
+        "id": {"type": "string", "minLength": 1},
+        "version": {"type": "integer", "minimum": 1},
+        "definition_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "dependencyLock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["strategy", "strategy_functions", "indicators", "parameters", "market_data", "engine"],
+      "properties": {
+        "strategy": {"$ref": "#/$defs/versionedResource"},
+        "strategy_functions": {"type": "array", "items": {"$ref": "#/$defs/versionedResource"}},
+        "indicators": {"type": "array", "items": {"$ref": "#/$defs/versionedResource"}},
+        "parameters": {
+          "type": "object", "additionalProperties": false,
+          "required": ["values", "fingerprint"],
+          "properties": {"values": {"type": "object"}, "fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}
+        },
+        "market_data": {
+          "type": "object", "additionalProperties": false,
+          "required": ["resource_kind", "instrument_id", "data_version", "data_fingerprint", "bars_count", "first_bar_at", "last_bar_at", "query"],
+          "properties": {
+            "resource_kind": {"const": "market_bars"}, "instrument_id": {"type": "string", "minLength": 1},
+            "data_version": {"type": "string", "minLength": 1}, "data_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "bars_count": {"type": "integer", "minimum": 0}, "first_bar_at": {"type": ["string", "null"]},
+            "last_bar_at": {"type": ["string", "null"]},
+            "query": {"type": "object", "additionalProperties": false, "properties": {"period": {"type": "string"}, "limit": {"type": "integer", "minimum": 1}}}
+          }
+        },
+        "engine": {
+          "type": "object", "additionalProperties": false, "required": ["id", "version"],
+          "properties": {"id": {"const": "event_backtest"}, "version": {"const": 1}}
+        }
+      }
+    },
+    "equityPoint": {
+      "type": "object",
+      "required": ["time", "bar_index", "cash", "position_quantity", "close", "equity", "drawdown_percent", "currency"]
+    },
+    "gatedIntent": {
+      "type": "object",
+      "required": ["intent", "signal_index", "fill_index", "capability", "run_mode", "risk_decision", "execution_status", "reason", "adapter_id"],
+      "properties": {
+        "intent": {"type": "object"},
+        "signal_index": {"type": "integer", "minimum": 0},
+        "fill_index": {"type": "integer", "minimum": 0},
+        "capability": {"const": "order_intent_create"},
+        "run_mode": {"const": "backtest"},
+        "risk_decision": {"enum": ["accepted", "rejected", "not_evaluated"]},
+        "execution_status": {"enum": ["accepted", "rejected", "disabled"]},
+        "reason": {"type": "string"},
+        "adapter_id": {"type": ["string", "null"]}
+      }
+    },
+    "fill": {
+      "type": "object",
+      "required": ["fill_id", "intent_id", "instrument_id", "side", "position_effect", "filled_at", "bar_index", "base_price", "price", "quantity", "contract_multiplier", "notional", "commission", "slippage_cost", "currency", "reason", "adapter_id"]
+    },
+    "trade": {
+      "type": "object",
+      "required": ["trade_id", "instrument_id", "direction", "entry_time", "exit_time", "entry_price", "exit_price", "quantity", "contract_multiplier", "gross_pnl", "commission", "slippage_cost", "pnl", "pnl_percent", "holding_bars", "entry_reason", "exit_reason", "currency"]
+    }
+  }
+}

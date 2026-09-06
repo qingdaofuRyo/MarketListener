@@ -169,8 +169,8 @@ _PROVIDERS: tuple[dict[str, Any], ...] = (
         "assetTypes": ["MACRO", "INDEX"],
         "periods": ["1d"],
         "fields": ["date", "close"],
-        "fieldNotes": "当前实现的全球指数/宏观接口仅保证日期和收盘价。",
-        "status": "IMPLEMENTED_UNVERIFIED",
+        "fieldNotes": "CBOE VIX 日线已由 vix-sync 校验为本地标准序列；东方财富 DXY 仍须按独立来源证据判断。",
+        "status": "IMPLEMENTED_CBOE_VALIDATED",
     },
 )
 

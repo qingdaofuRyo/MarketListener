@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://marketlistener.local/contracts/strategy-execution-result.schema.json",
+  "title": "Risk-gated strategy execution result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "capability",
+    "run_mode",
+    "risk_decision",
+    "execution_status",
+    "reason",
+    "intent",
+    "adapter_id",
+    "idempotent",
+    "audited_at"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "capability": {"const": "order_intent_create"},
+    "run_mode": {"enum": ["backtest", "paper", "live"]},
+    "risk_decision": {"enum": ["accepted", "rejected", "not_evaluated"]},
+    "execution_status": {"enum": ["accepted", "rejected", "disabled"]},
+    "reason": {"type": "string", "minLength": 1, "maxLength": 1000},
+    "intent": {"$ref": "#/$defs/orderIntent"},
+    "adapter_id": {"type": ["string", "null"], "maxLength": 128},
+    "idempotent": {"type": "boolean"},
+    "audited_at": {"type": "string", "format": "date-time"}
+  },
+  "$defs": {
+    "orderIntent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version", "intent_id", "strategy_id", "strategy_version", "run_mode",
+        "instrument_id", "side", "position_effect", "order_type", "quantity", "signal_time", "created_at"
+      ],
+      "properties": {
+        "schema_version": {"const": 1},
+        "intent_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"},
+        "strategy_id": {"type": "string", "pattern": "^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$", "maxLength": 128},
+        "strategy_version": {"type": "integer", "minimum": 1},
+        "run_mode": {"enum": ["backtest", "paper", "live"]},
+        "instrument_id": {"type": "string", "minLength": 1, "maxLength": 160},
+        "side": {"enum": ["buy", "sell"]},
+        "position_effect": {"enum": ["open", "close"]},
+        "order_type": {"enum": ["market", "limit", "stop"]},
+        "quantity": {"type": "number", "exclusiveMinimum": 0},
+        "limit_price": {"type": "number", "exclusiveMinimum": 0},
+        "stop_price": {"type": "number", "exclusiveMinimum": 0},
+        "signal_time": {"type": "string", "format": "date-time"},
+        "created_at": {"type": "string", "format": "date-time"}
+      }
+    }
+  }
+}

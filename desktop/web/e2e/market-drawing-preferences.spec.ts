@@ -4,9 +4,11 @@ interface DrawingPoint { time: string; price: number }
 interface Drawing {
   id: string;
   type: string;
+  version?: number;
   points: DrawingPoint[];
+  levels?: Array<{ ratio: number; label: string }>;
   crossPeriod?: boolean;
-  style?: { color?: string; fillColor?: string; width?: number; lineStyle?: string };
+  style?: { color?: string; fillColor?: string; width?: number; lineStyle?: string; locked?: boolean };
 }
 
 const instrumentId = "CN.SSE.STOCK.600000";
@@ -25,8 +27,9 @@ const bars = Array.from({ length: 60 }, (_, index) => {
   };
 });
 
-async function mockMarket(page: Page): Promise<{ drawings: () => Drawing[] }> {
+async function mockMarket(page: Page): Promise<{ drawings: () => Drawing[]; saves: () => Drawing[][] }> {
   let drawings: Drawing[] = [];
+  const saves: Drawing[][] = [];
   const instrument = { instrumentId, symbol: "600000", name: "浦发银行", market: "CN", assetType: "STOCK", latestPrice: 14.72, actualSource: "fixture" };
   const fulfill = (route: Route, json: unknown) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(json) });
 
@@ -41,12 +44,15 @@ async function mockMarket(page: Page): Promise<{ drawings: () => Drawing[] }> {
     if (path === "/api/market/drawings/batch") return fulfill(route, { items: { [instrumentId]: drawings }, total: 1 });
     if (path.endsWith("/chart")) return fulfill(route, { bars, series: {}, drawings, total: bars.length, start: 0, size: bars.length, period: "1d", availablePeriods: ["1d"], hasMore: false, latestBarAt: bars.at(-1)?.barOpenTime, dataVersion: "e2e" });
     if (path.endsWith("/drawings")) {
-      if (route.request().method() === "PUT") drawings = (route.request().postDataJSON() as { items: Drawing[] }).items;
+      if (route.request().method() === "PUT") {
+        drawings = (route.request().postDataJSON() as { items: Drawing[] }).items;
+        saves.push(drawings);
+      }
       return fulfill(route, { items: drawings });
     }
     return route.continue();
   });
-  return { drawings: () => drawings };
+  return { drawings: () => drawings, saves: () => saves };
 }
 
 test("first market request waits for the current data version so ETF names are fresh", async ({ page }) => {
@@ -92,6 +98,29 @@ async function drawRectangle(page: Page, leftRatio: number, rightRatio: number):
   await expect(chartRoot).toHaveAttribute("data-rectangle-preview", "true");
   await page.mouse.click(first.x, first.y);
   await expect(chartRoot).toHaveAttribute("data-rectangle-anchor", "true");
+  await page.mouse.move(second.x, second.y);
+  const requestPromise = page.waitForRequest(request => request.method() === "PUT" && request.url().includes("/drawings"));
+  await page.mouse.click(second.x, second.y);
+  const request = await requestPromise;
+  return (request.postDataJSON() as { items: Drawing[] }).items.at(-1)!;
+}
+
+async function drawFibonacci(page: Page, leftRatio: number, rightRatio: number): Promise<Drawing> {
+  await page.getByRole("button", { name: "斐波回撤" }).click();
+  await expect(page.getByRole("button", { name: "斐波回撤" })).toHaveClass(/active/);
+  const canvas = page.locator(".workbench-chart canvas").first();
+  const chartRoot = page.locator(".workbench-chart .chart-root");
+  await expect(page.locator(".workbench-chart .el-loading-mask")).toHaveCount(0);
+  await expect(canvas).toBeVisible();
+  await page.waitForTimeout(100);
+  const box = await canvas.boundingBox();
+  if (!box) throw new Error("K 线画布不可用");
+  const first = { x: box.x + box.width * leftRatio, y: box.y + box.height * 0.32 };
+  const second = { x: box.x + box.width * rightRatio, y: box.y + box.height * 0.58 };
+  await page.mouse.move(first.x, first.y);
+  await expect(chartRoot).toHaveAttribute("data-fibonacci-preview", "true");
+  await page.mouse.click(first.x, first.y);
+  await expect(chartRoot).toHaveAttribute("data-fibonacci-anchor", "true");
   await page.mouse.move(second.x, second.y);
   const requestPromise = page.waitForRequest(request => request.method() === "PUT" && request.url().includes("/drawings"));
   await page.mouse.click(second.x, second.y);
@@ -260,6 +289,80 @@ test("horizontal, vertical, and text drawings keep independent 80-colour default
   }
 });
 
+test("fibonacci retracement saves logical anchors, configurable levels, and drawing controls", async ({ page }) => {
+  test.setTimeout(60_000);
+  const state = await mockMarket(page);
+  await page.goto("/market/");
+  await page.getByRole("button", { name: "卡片视图" }).click();
+  await page.locator(".quote-summary").first().click();
+  await expect(page.locator(".workbench-overlay")).toBeVisible();
+
+  const drawing = await drawFibonacci(page, 0.26, 0.68);
+  const chartRoot = page.locator(".workbench-chart .chart-root");
+  expect(drawing.type).toBe("fibonacci_retracement");
+  expect(drawing.version).toBe(1);
+  expect(drawing.points).toHaveLength(2);
+  expect(drawing.crossPeriod).toBe(true);
+  expect(drawing.levels?.map(level => level.ratio)).toEqual([0, 0.236, 0.382, 0.5, 0.618, 0.786, 1]);
+  await expect(chartRoot).toHaveAttribute("data-fibonacci-count", "1");
+  await expect(page.getByRole("textbox", { name: "Fibonacci 比例" })).toBeVisible();
+
+  const canvas = page.locator(".workbench-chart canvas").first();
+  const box = await canvas.boundingBox();
+  if (!box) throw new Error("K 线画布不可用");
+  const firstAnchor = { x: box.x + box.width * 0.26, y: box.y + box.height * 0.32 };
+  const secondAnchor = { x: box.x + box.width * 0.68, y: box.y + box.height * 0.58 };
+  const beforeEndpointDrag = state.drawings()[0]!;
+  await page.mouse.move(firstAnchor.x, firstAnchor.y);
+  await page.mouse.down();
+  await page.mouse.move(firstAnchor.x + 30, firstAnchor.y + 22, { steps: 6 });
+  await page.mouse.up();
+  await expect.poll(() => state.drawings()[0]?.points[0]?.time).not.toBe(beforeEndpointDrag.points[0].time);
+  expect(state.drawings()[0]?.points[1]).toEqual(beforeEndpointDrag.points[1]);
+
+  const beforeMove = state.drawings()[0]!;
+  const center = { x: (firstAnchor.x + secondAnchor.x) / 2, y: (firstAnchor.y + secondAnchor.y) / 2 };
+  await page.mouse.move(center.x, center.y);
+  await page.mouse.down();
+  await page.mouse.move(center.x + 28, center.y + 16, { steps: 6 });
+  await page.mouse.up();
+  await expect.poll(() => state.drawings()[0]?.points[0]?.time).not.toBe(beforeMove.points[0].time);
+  const moved = state.drawings()[0]!;
+  const indexes = (item: Drawing) => item.points.map(point => bars.findIndex(bar => bar.barOpenTime === point.time));
+  const [beforeStart, beforeEnd] = indexes(beforeMove);
+  const [movedStart, movedEnd] = indexes(moved);
+  expect(movedStart - beforeStart).toBe(movedEnd - beforeEnd);
+
+  const levelRequest = page.waitForRequest(request => request.method() === "PUT" && request.url().includes("/drawings"));
+  const levels = page.getByRole("textbox", { name: "Fibonacci 比例" });
+  await levels.fill("0, 0.5, 1");
+  await levels.press("Tab");
+  const revised = ((await levelRequest).postDataJSON() as { items: Drawing[] }).items.find(item => item.id === drawing.id)!;
+  expect(revised.levels?.map(level => level.ratio)).toEqual([0, 0.5, 1]);
+
+  await page.locator(".drawing-popover").getByRole("button", { name: "跨周期" }).click();
+  await expect.poll(() => state.drawings()[0]?.crossPeriod).toBe(false);
+  await page.locator(".drawing-popover").getByRole("button", { name: "跨周期" }).click();
+  await expect.poll(() => state.drawings()[0]?.crossPeriod).toBe(true);
+  await page.locator(".drawing-popover").getByRole("button", { name: "锁定" }).click();
+  await expect.poll(() => state.drawings()[0]?.style?.locked).toBe(true);
+
+  await page.reload();
+  await page.locator(".quote-summary").first().click();
+  await expect(chartRoot).toHaveAttribute("data-fibonacci-count", "1");
+  expect(state.drawings()[0]).toMatchObject({
+    type: "fibonacci_retracement",
+    version: 1,
+    crossPeriod: true,
+    levels: [{ ratio: 0 }, { ratio: 0.5 }, { ratio: 1 }],
+  });
+
+  const deleteRequest = page.waitForRequest(request => request.method() === "PUT" && request.url().includes("/drawings"));
+  await page.getByRole("button", { name: "删除全部画线" }).click();
+  await deleteRequest;
+  await expect(chartRoot).toHaveAttribute("data-fibonacci-count", "0");
+});
+
 test.describe("touch brush gesture", () => {
   test.use({ hasTouch: true, isMobile: true, viewport: { width: 390, height: 844 } });
 
@@ -316,4 +419,5 @@ test.describe("touch brush gesture", () => {
     expect(drawing.points.length).toBeGreaterThanOrEqual(2);
     await expect(page.locator(".drawing-popover")).toBeVisible();
   });
+
 });

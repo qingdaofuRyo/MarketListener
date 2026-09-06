@@ -2,6 +2,30 @@
 
 本文件记录实际发生的变更与验证，不记录凭据、私钥或个人数据。
 
+## 2026-09-06 - R4 GitHub 发布准备
+
+- 用户授权把本地累计代码、测试、契约和文档发布到 `https://github.com/qingdaofuRyo/MarketListener`。核对 `origin` fetch/push 均为该仓库，发布前 fetch 确认本地 `master` 与远端无分叉。
+- `.gitignore` 补充根目录 Playwright 结果/报告、blob 报告、覆盖率产物、带后缀本地数据备份及 SQLite3 WAL/SHM。发现的根目录 `test-results/.last-run.json` 只作忽略，不删除本地文件；行情数据、数据库、私钥、构建产物与依赖继续不入库。
+- 发布仅汇总现有 R4 实现，不把 `VERIFYING` 改写为全量验收通过。沿用此前记录的针对性验证，不重新运行全量或 Android 验证；提交前检查精确暂存内容、敏感模式、大文件和 diff 空白错误，实际远端提交以 Git 记录为准。
+
+## 2026-09-06 - R4 分组工具与四类信号监控
+
+- 登记 R4-T038～T044，覆盖用户新七项需求；领域建模将当前“操作信号策略/信号监控轮次”与旧回测资源及真实账户头寸分开。用户明确确认同标的同方向启用全部已启用后续策略、平仓优先结束规则。
+- 左栏改为线条、箱体/Fibonacci/多空盈亏比、笔刷/激光笔分组菜单；盈亏比用三价格锚点。K 线类型使用图标，常用功能前加图标、指标不显示数量，移除警报。回放改底部图标栏、图上选起点、暂停/倍速/单步/快进。指标图例直接显示跨周期、颜色、显隐和删除。
+- 详情与卡片/列表共享完整分色报价，不显示报价时间；日线以上轴标签不显示 00:00；沉淀资金与市值不随鼠标移动。卡片及上下看板周期改下拉，并用请求修订号防止切换时迟到响应覆盖。
+- 新 `/api/signals` 支持四类无账户信号的创建、编辑、启停、可恢复删除和本地扫描，页面不再显示原默认策略或无关回测操作。旧 custom 资源和回测文件未删除。扫描按版本/bar 去重、按标的/方向持久监控，平仓优先结束；开仓市场筛选不影响已开仓后续监控。历史缺口超过 500 根报不可用；活动集合采用 ID 游标分批，避免平仓造成偏移跳号。
+- 从本机期货通名称表提取来源隔离的期货指数简称；当前国内期货指数 128 个标的的“名称含代码”占位项由定向检查确认降为 0，未修改 Silver。缓存展示版本升为 v4，名称来源哈希见 Plan_R4。
+- 验证：Vue 构建与相关 Ruff 通过，信号/策略 Definition 定向 pytest 16 项通过，两个桌面 Playwright 文件 7 项通过（24.8 秒）。测试覆盖保存/恢复、信号状态与去重、图表回放和工具、报价、行情开仓筛选及后续信号图上标记；不是全市场策略实扫或真实账户验收。截图置于忽略的 `desktop/web/test-results/`。不全量验证、不新增移动端、不继续扩大审计、不提交或推送；任务处于用户体验 `VERIFYING`。
+
+## 2026-09-06 - R4 标的详情图表交互改版
+
+- 用户六项需求登记为 R4-T032～T037，代码直接修改本地 MarketListener 工作树；保留已有未提交内容，没有提交或推送。左侧工具按线条/图形/注释分组，新增两点趋势线和约 1.2 秒淡出的激光笔；激光轨迹只在 Canvas 内存中存在，不调用保存画线接口。笔刷绘制和移动改为连续时间/价格坐标，绕过 OHLC 吸附。
+- 指标按钮改为居中 860px 弹窗，复用策略页版本化指标目录与收藏键；提供搜索、主图/副图分类、星标收藏及点击名称添加。主图左上方显示实例图例，支持颜色显隐、删除、参数/样式及跨周期设置，迟到计算响应不会恢复已删除实例。
+- 加入实心/空心/平均 K 线、折线和面积图；平均 K 线不替换原始报价或策略输入。回放支持当前已加载窗口内的进度、播放/暂停、单步、速度及退出；按前缀重新请求指标，隐藏策略结果和持久画线，回放价格不参与警报判断。警报保存在本机浏览器，当前标的详情打开时每 15 秒读取最新本地 bar，达到阈值后停用，可手动重新启用；没有关闭页面后的后台通知能力。
+- 功能按钮置顶靠左，名称/代码/报价缩成一行，周期置底，“坐标反转”改名“坐标翻转”；Esc 处理嵌套弹窗后退出普通详情，并清理回放计时器。报价/警报时间明确使用北京时间。
+- Vue 类型检查与生产构建通过，仅有既有大包警告。桌面定向 Playwright 8 项通过（24.2 秒）：显示公式、吸附开启时自由笔刷、激光笔无持久化、指标收藏及跨周期/主副图、五种类型、回放长度/播放、警报触发及 Esc、趋势线刷新、原有矩形/笔刷/Fibonacci 与策略指标联动。测试使用合成 API 夹具，不是实际行情来源覆盖验收；截图保存在 `desktop/web/test-results/`。
+- 过程中修正了测试夹具缺少 `availablePeriods`、Element Plus 内部输入不可直接点击，以及关闭弹窗残留输入焦点拦截 Esc 的问题。按用户要求不运行全量验证、Android 或移动端设计，不继续扩大审计；相关任务处于 `VERIFYING`，等待用户查看实际效果。
+
 ## 2026-08-03 - Day 0 实现与自动化验证
 
 - 建立桌面数据生产端、Android 消费端、共享契约、Provider 探针、标准标的、Bronze/Silver、质量规则、交易时段聚合、不可变行情包和 Ed25519 签名校验。
@@ -393,3 +417,131 @@
 - 依据沪深交易所证券代码区间，将质押式回购与其他回购的内部判定改为互斥；本机其他回购库存为 0，因此公开筛选只保留“债券质押式回购”，删除泛化“A股-债券回购”空分类。行情页删除待分类标的区块，内部只读审计接口继续用于质量排查。
 - 合并上传的中证 2,983 条、国证 1,463 条、华证 726 条指数简称和通达信 `ds_stk.dat` 来源名称，打包名称表共 13,796 项；名称键包含交易所/编制方。新导入读取终端名称文件，既有 Silver 在 API 展示层补全中文简称，不触发全量 K 线重建。
 - 定向 pytest 52 项、Ruff、Vue 生产构建和行情页 Playwright 2 项通过。真实 API 的 17,706 个正式逻辑标的经展示归一后已无“名称与代码完全相同”项；未运行全套 pytest、完整 Playwright、Android 或 `verify.ps1`，任务保持 `VERIFYING`。
+
+## 2026-09-03 - R4 策略三层契约、函数注册表与基础函数库
+
+- `Plan_R4.md` 新增 R4-T013～R4-T031，并以 `Market Data → Strategy Function → Indicator/Strategy` 固定依赖边界。新增 ADR-0010、共享资源 Schema、Python/TypeScript 领域类型及旧策略定义适配；只有桌面 Strategy 可产生 `OrderIntent`，仍须经过 Risk Engine 和 Execution Adapter，任何资源都不能直连 Order API。
+- 建立版本化 `StrategyFunctionRegistry`，现有策略函数 ID 保持兼容，同时新增 `technical.sma` 等 19 个稳定命名函数。只读 API 支持搜索、分类、资产类型、版本、详情和本地引用反查，公开纯函数能力而不公开账户、绘图或执行能力。
+- 新增确定性纯函数实现：SMA、EMA、highest/lowest/stddev、RSI、ATR、MACD、Bollinger/Keltner/Donchian、Stochastic、crossover/crossunder、价格/成交量变化率、真实波幅、结构化涨跌数量和显式单位市值比较。定向 Ruff 与 27 项注册表、函数库、策略 API 测试通过；尚未执行全量回归，R4-T013～R4-T015 保持 `VERIFYING`。
+
+## 2026-09-03 - R4 Indicator/Strategy Registry 与策略页三分区
+
+- 新增版本化 Indicator Registry，首期 14 个指标具备中英文名、分类、主/副图 placement、参数、Plot、资产范围和精确函数依赖；Volume Profile 与 VIX 在实现/数据源就绪前返回明确禁用原因。旧 `ma/hsar/sd/bollinger/atr/volume` ID 作为 deprecated 兼容项继续可读。
+- `/strategy` 改为“指标 / 策略函数 / 策略”三个一级 Tab，按 Section 懒加载；指标和函数提供搜索、分类、资产、来源、收藏卡片及详情抽屉，当前 Section 写入 URL。指标“添加到当前图表”写入版本化待加载实例，实际动态 Pane 消费由 R4-T019 完成。
+- 已保存策略通过 Strategy Registry 补齐 `id@version`、来源、启用状态、运行模式、回测状态、资产范围和创建/更新时间；支持复制与启停，禁用策略不能运行，Live 始终显示“实盘交易接口尚未配置”。策略相关 pytest 89 项、全 Python Ruff、Vue 生产构建和策略页定向 Playwright 1 项通过；浏览器用例首次因 Tab 文本非精确匹配失败，修正测试定位后复跑通过，R4-T016 `failure_count=1`。完整回归尚未执行，R4-T016/R4-T017 保持 `VERIFYING`。
+
+## 2026-09-03 - R4 版本化 Strategy Definition 与 Rule AST
+
+- 新增 `strategy-definition.schema.json` 和 Python 语义校验器。权威规则树支持递归 `AND/OR/NOT`、函数结果嵌套、精确 `functionId+version`、参数/序列/字面量操作数、比较符类型检查、资产适用性、最大 12 层/200 节点及 Live 禁用门控；可表达 `SMA(close,20) > SMA(close,60)`，不执行任意 Python/JS。
+- 新增不可覆盖且版本必须连续递增的 Definition Resource API，以及详情、复制、启停新版本和自定义策略删除；旧 `dsl_v1/formula_v1/builder_v1` 路径继续兼容。策略列表合并展示最新结构化版本。
+- 新建策略默认进入结构化表单，覆盖标的/周期、开平仓模板、仓位、止损止盈、成本与回测资金；旧可视化条件及安全 Python 仅标识为兼容入口。契约/API 定向测试、Ruff、Vue 构建与策略页 Playwright 通过。状态版本测试首次发现未来时间戳导致倒序，改为严格单调推进后复跑通过，R4-T018 `failure_count=1`，任务保持 `VERIFYING`。
+
+## 2026-09-03 - R4 K 线 Indicator Instance 与动态 Pane
+
+- 新增 `indicator_calculation.py`，版本化 Indicator Instance 只通过注册定义调用共享 Strategy Function；行情 Web API 删除重复 MA/EMA/ATR 实现，保留旧平面 series 兼容适配。每个实例独立返回 definition/version/参数/样式/placement、Plot、严格对齐序列及不可用原因，Chaikin/Twiggs/RVI 在 R4-T023 公式审定前改为明确禁用。
+- 行情详情改为注册表驱动的实例管理器，支持多个主图/副图指标、显示隐藏、删除、参数、颜色、线宽、线型与本地恢复；参数更新只调用 indicator-series。策略页“添加到当前图表”会消费一次性待加载实例并打开当前标的，KLineChart 为每个副图实例建立独立 Grid/X/Y Axis，全部 X 轴共享游标与缩放。
+- 结构化策略编辑同时保留 `createdAt`、未显示的 universe/参数/执行/风险设置；无法由基础模板无损表达的 Rule AST 或仓位/止损类型会禁用保存，避免静默覆盖。定向 Ruff、36 项指标/行情 pytest、Vue 生产构建及策略→行情场景 A/B Playwright 通过。该浏览器用例前三次分别发现外层浮层层级、选项定位和内层 Teleport 层级问题，修复后通过，R4-T019 `failure_count=3`；未运行完整回归。
+
+## 2026-09-03 - R4 OrderIntent 权限边界与运行模式门控
+
+- 新增自包含的 `order-intent` 与 `strategy-execution-result` 契约，以及 `strategy_execution.py` 能力上下文、订单意图、风险引擎端口、执行适配器端口、幂等存储和允许字段审计。只有服务端从精确 `active` Strategy Definition 签发的桌面上下文可以生成意图；Strategy Function、Indicator、Android、定义变更、版本错配和客户端伪造 `resourceType` 均在后端拒绝。
+- 所有合法意图固定先经过定义风控，再进入对应的 Backtest/Paper 隔离模拟适配器；适配器拒绝没有本次风险许可的直接调用。两个模式使用不同适配器 ID，均明确未触达真实 Order API；Live 能力只读状态为 `DISABLED`，写请求固定返回 409。
+- 新增只读 `/api/strategy/execution/capabilities` 和受控 `/api/strategy/order-intents`，精确加载已保存策略版本，并返回 capability、runMode、riskDecision、executionStatus、reason。策略页展示服务端能力状态。定向 Ruff 与 8 项权限、绕过、模式、幂等、审计及 API 测试通过；首次测试发现结果 Schema 相对引用会尝试远程解析，改为自包含契约后复跑通过，R4-T022 `failure_count=1`。完整回归尚未执行，任务保持 `VERIFYING`。
+
+## 2026-09-03 - R4 基础回测引擎、内置策略与 Strategy Report
+
+- 新增确定性 `strategy_backtest.py`，由本地 Silver bar 驱动，递归 Rule AST 只读取当前及过去 bar，信号在 bar 收盘后生效并在定义的下一根 open/close 成交。每笔模拟交易仍经过 `OrderIntent → Risk Engine → Backtest Execution Adapter`，结果可追溯多空、仓位、金字塔/再入场、止损止盈、手续费、滑点、合约乘数、权益/回撤、fills、trades、markers 与状态恢复快照；不调用真实 Order API。
+- 增加只读 `MA Crossover` 与 `Donchian+ATR` 内置策略，MA 策略与指标精确共用 `technical.sma@1`。定向测试覆盖无未来数据、延迟 open/close 成交、多空、成本、保护性出场、空数据、确定性和恢复；测试/接口读取实际本地 Silver 夹具，不以扫描时间线冒充回测。
+- 新增 Strategy Report 契约和报告/CSV API。收益、年化、胜率、平均盈亏、PF、回撤、持仓、连赢亏、成本和最终权益均由回测明细重算；零分母、无交易和年化溢出保留 `null + reason`，未平仓仅单列未实现 PnL。行情全屏页使用同一运行记录展示 K 线 markers、报告、交易表与 UTF-8 BOM CSV，参数调整只重跑回测。
+- 定向 Python 策略测试、Ruff、Vue 生产构建、策略页和场景 D Playwright 均通过。报告 API 断言曾因浮点精度过严失败一次，页面断言曾将 `formatNumber` 的尾零显示当作固定精度失败一次，均修正后复跑通过；R4-T020 保持 `VERIFYING`，R4-T021 `failure_count=2` 并保持 `VERIFYING`，未运行全量 pytest、完整 Playwright、Android 或 `verify.ps1`。
+
+## 2026-09-03 - R4 高级技术 Indicator 套件
+
+- 发布三个 active 副图定义与纯 Strategy Function：Chaikin Volatility 采用公开 `EMA(H-L)` 历史百分比变化；Relative Volatility Index 固定为 Dorsey 1993 close-based 标准差涨跌分桶/Wilder 平滑变体，范围 0 至 100，不与 Relative Vigor Index 混同。注册表及详情抽屉公开公式、来源链接、字段、暖机和限制。
+- Twiggs® Volatility 的公开资料仅明确其使用 ATR，核心算法为专有实现；因此新增 `volatility.atr_percent@1` 和清晰命名的“Twiggs 波动率（ATR% 公开变体）”，公式为 `100 × Wilder ATR / close`，不宣称复现原始专有公式。三项不读取成交量，字段缺失返回 `MISSING_FIELD`，局部缺失保持对齐 `null`。
+- 固定向量、无未来数据、暖机、参数边界、字段/资产过滤、函数注册表、计算隔离均通过；Vue 构建和策略页→K 线动态 Pane Playwright 也通过。浏览器用例首次在展开 RSI 样式控件后把第二个 combobox 误当“添加指标”选择器，改为精确选择首个添加控件后复跑通过，R4-T023 `failure_count=1`，完整回归尚未执行，任务保持 `VERIFYING`。
+
+## 2026-09-05 - R4 Volume Profile 高级图表
+
+- 新增 `market.volume_profile@1` 与 active 的 `indicator.volume_profile@1`。指定闭区间内每根 K 线的完整成交量只按 HLC3 归入一个等宽价格桶；结果返回归集算法、请求/有效桶数、POC、70% 相邻扩张价值区、桶量/占比及范围元数据。缺少或全零 `volume` 均保持不可用，未从 `amount` 推导成交量。
+- 全屏 K 线在主图右侧绘制当前可见区间 profile，并在缩放或滚轮变化后防抖重新计算；范围不匹配的旧结果不会渲染。固定向量/API 覆盖边界、守恒、缺失/空量、窗口裁剪和性能，Playwright 覆盖添加、缩放重算与删除。定向 Ruff、57 项 Python 测试、Vue 构建和场景浏览器测试通过；首次测试遗漏 `pytest` 导入，补正后复跑，R4-T024 `failure_count=1`，完整回归、主题截图与人工视觉验收尚未执行，任务保持 `VERIFYING`。
+
+## 2026-09-05 - R4 Fibonacci Retracement 画线工具
+
+- 发布 `drawing.fibonacci_retracement@1`，作为策略页指标目录中的 `drawing_tool` 入口，而非策略函数或普通指标。双锚点、版本、最多 16 个 `{ratio,label}`、样式和跨周期设置均保存在个人画线文档；0% 定义为第二锚点、100% 为第一锚点，反向锚点按同一公式保留用户波段方向。
+- K 线支持预览、双击点创建、端点独立拖动、整体移动、比例编辑、锁定、跨周期、颜色/线宽/线型、删除和刷新恢复。为避免并发打开图表时旧 GET 覆盖本地新保存，画线加载改为按本地编辑修订号丢弃迟到结果。Python 覆盖公式、反向锚点、文档边界和旧格式兼容；Playwright 覆盖完整鼠标操作与持久化。定向 Ruff、62 项 Python 测试、Vue 构建和场景测试通过；构建及浏览器测试共经历 5 次可复现修正后通过，R4-T025 保持 `VERIFYING`，触摸和主题截图回归尚未执行。
+
+## 2026-09-05 - R4 VIX 外部市场指标能力门
+
+- 新增只读 VIX 本地标准序列门：只接受 `external_market/vix/series.json` 中固定 `US.CBOE.INDEX.VIX`、非空来源、`sourceStatus=PASS`、唯一有限交易日点和匹配最新点的 `asOfDate`。缺源、来源失败或非法文档均以 `MISSING_DATASOURCE` 返回；没有浏览器第三方请求，也绝不使用当前标的 OHLC 合成数值。
+- 通过门的点仅依交易日精确对齐；美中市场日期差或任意缺口输出 `null`、不前值填充，当前图窗无交集则为 `NO_ALIGNED_POINTS`。副图实例/API 返回并显示外部标的、来源、截至日、覆盖和匹配点；指标管理器显示来源、数据截至日和对齐交易日数。
+- fixture/API/浏览器用例覆盖缺源、失败来源、部分日期、时区日期、资产切换、无交集和来源展示。定向 Ruff、48 项 Python 测试、Vue 构建和策略页→行情页定向 Playwright 通过；浏览器测试发现覆盖数插值写法错误，随后一次因静态产物未重建仍失败，重建后通过，R4-T026 `failure_count=2` 且保持 `VERIFYING`。当前数据根目录没有真实 PASS VIX 序列，未执行独立来源探针或完整回归，不能宣称真实 VIX 覆盖。
+
+## 2026-09-05 - R4 Strategy Visual Builder 递归化
+
+- 结构化策略编辑器从固定的均线/阈值模板迁移到递归 Rule AST：开仓与平仓独立支持 AND/OR/NOT、条件、函数操作数嵌套、复制、按钮/拖动排序和撤销，所有变更保持在与领域类型同构的 camelCase AST；保存时才转换为 Schema snake_case，未写入 UI 节点 ID 或可执行字符串。
+- 函数和每一参数位由策略函数注册表的精确签名驱动，编辑器提供依赖预览与节点级本地资产/签名/逻辑错误，最终仍调用 Definition 验证 API。仓位模型、止损止盈类型、最大回撤、加仓和再入场均可编辑；固定价格不再被百分比最大值截断。复杂已发布树及非默认风险配置可以重开并保存为下一版本。
+- Python Definition/API 24 项、Ruff、Vue 构建和两项定向 Playwright（含 640 px 窄屏、键盘、嵌套、排序、复制、撤销、资产错误及复杂树回存）通过。构建发现联合操作数类型缩窄、验证按钮未调用异步校验及 fixed-price 截断三个问题，均已修正；R4-T027 `failure_count=3`，完整回归、主题/手感和真实复杂策略回测仍未执行，保持 `VERIFYING`。
+
+## 2026-09-05 - R4 策略版本锁与历史回测复现
+
+- 发布 `technical.atr@2` 并保留 `technical.atr@1`；Rule AST 运行时将版本传入函数执行器，因此旧调用不会被新实现静默替换。Strategy Function Registry/API 可精确读取两个版本，固定 ATR 向量验证 v1 行为保持一致。
+- 回测及 Report 新增 `definitionHash` 和完整 `dependencyLock`：锁内有策略与函数的定义哈希、空 Indicator 列表、参数值/哈希、行情数据版本/哈希/查询窗口及引擎版本。版本指纹改由锁、币种和合约乘数计算。
+- 新增历史复现端点与策略页版本抽屉：复现只解析锁定资源，先校验函数/策略哈希，并用原窗口重算；缺策略版本、缺函数版本、定义变化或数据变化均返回结构化冲突，绝不回落 latest。报告面板显示锁摘要并提供“复现此版本”。
+- 已发布结构化资源的删除改为 `deprecated` 归档新版本，返回已引用回测；旧未版本化资源可迁移为 `id@version`，原件存于迁移备份，未被回测引用时才可回滚。专项报告测试发现预版本锁回测缺少新字段；报告现以 `definitionHash/dependencyLock=null` 保留其可读性，复现入口仍拒绝无锁记录，不伪造依赖。定向 pytest 43 项、Ruff、Vue 生产构建和 3 项 Playwright 通过；未执行完整回归、真实历史资源迁移或主题/手感检查，R4-T028 `failure_count=1` 且保持 `VERIFYING`。
+
+## 2026-09-05 - R4 桌面策略传输包
+
+- 发布固定 `target=desktop` 的 Strategy Transfer ZIP：包内只有 custom Rule-AST 定义、Strategy Function 精确 lock、测试向量、两份本地权威 Schema 与 SHA-256 manifest；绝不打包账户、凭据、回测运行、行情或真实订单。读取器在持久化前限制包/总解压大小，拒绝未知、重复、绝对及穿越路径，验证摘要、本地 Schema、AST 与函数版本；任意代码/未知能力和缺失依赖都不能通过。
+- 包可以由 Ed25519 签名 manifest，预览会验证签名与公钥指纹；未签名包仍只能在同一桌面白名单内导入，绝不成为 Android 包。Android 继续只接收 ADR-0008 的受信任声明式 DSL 格式。策略页为自定义结构化策略提供导出，导入先展示依赖、签名、Android 边界与冲突，再要求用户明确取消、改名或作为连续新版本写入。
+- 31 项定向 Python、Ruff、Vue 生产构建与导入 Playwright 通过。浏览器场景首跑因 Element Plus radio 内层拦截指针事件超时，改为点击可访问标签后复跑通过；完整回归、发布签名密钥配置和跨设备 Android DSL 验收未执行，R4-T029 `failure_count=1` 且保持 `VERIFYING`。
+
+## 2026-09-05 - R4 策略模板与来源信任预留
+
+- 发布不可变 `MA Crossover`、`Donchian + ATR` 和空白模板目录；前两项锁定 builtin 来源版本，空白模板用不触发交易的合法 AST 占位。模板 API/向导先显示函数依赖、资产、参数和风险预览及免责声明，确认后仅创建含 `templateSource` 溯源的 custom v1 并打开结构化编辑器；builtin 不会被改写。
+- Definition Schema 预留 community/plugin origin 与发布者、签名指纹/校验、信任和审核状态，但没有任何社区、联网、下载、排名或发布实现。这两类 fixture 固定 disabled，页面标为待审核并禁用加载/编辑/复制；服务端拒绝回测、OrderIntent、状态升级和删除，即使 fixture 填写 trusted 也不能提升权限。
+- 模板 16 项、来源边界 12 项定向 Python、Ruff、Vue 生产构建以及模板、来源只读两个 Playwright 场景通过；未运行完整回归、主题手感、发布密钥配置或未来审核/信任升级流程，R4-T030/T031 均保持 `VERIFYING`。
+
+## 2026-09-05 - R4 策略桌面筛选补全
+
+- 已保存策略列表补齐分类、来源、资产类型、回测/模拟/实盘模式、状态和收藏筛选，并在行内提供持久化收藏入口；增加显式“回测”操作，复用唯一的当前图表隔离回测与 Strategy Report 链路。筛选只作用于当前已经按 Section 懒加载的定义元数据，不触发行情计算或回测。
+- 定向策略筛选 Playwright 与 Vue 生产构建通过。按当前开发安排没有将此增量作为全量验证或移动端设计的一部分，R4-T017 继续保持 `VERIFYING`。
+
+## 2026-09-05 - R4 策略指标目录进入标的详情
+
+- 标的详情 K 线“指标”按钮改为明确消费策略页同一版本化指标目录：只允许 `resourceKind=indicator` 的 `indicator.*` 定义进入选择器，Fibonacci 等绘图工具继续走独立工具入口。选择器与创建实例两层均按当前标的资产类型限制，避免把期货专用指标显示为股票可用项。
+- 定向 Playwright 验证策略页目录的 MA/RSI 等指标可在详情页添加并计算，且 FUTURE-only fixture 不会显示在 STOCK 详情；Vue 生产构建通过。未运行全量验证，R4-T019 保持 `VERIFYING`。
+
+## 2026-09-05 - R4 策略方向与可用周期编辑
+
+- 结构化策略表单增加独立的“交易方向”选择，保存为规范的 `direction=long|short`；编辑既有 Definition 会恢复其方向，旧数据缺字段时兼容地默认做多。`4h` 已与行情层实际支持周期对齐，纳入策略 Definition Schema 和桌面周期选择器。
+- 定向 Python Schema 用例、结构化编辑器 Playwright（新建短仓/4h 及短仓旧定义重开保存）和 Vue 生产构建均通过。未运行全量验证或移动端设计，R4-T018 保持 `VERIFYING`。
+
+## 2026-09-05 - R4 策略函数引用关系可见化
+
+- 策略函数详情现展示注册表派生的 `referencedBy`：分别列出引用该精确函数版本的 Indicator 与 Strategy。该展示只消费 Definition 元数据，不触发行情读取、回测或策略运行。
+- 新增定向 Playwright，覆盖指标与策略引用同时可见；未运行全量验证或移动端设计，R4-T014 保持 `VERIFYING`。
+- 函数详情同时显示注册表完整 `inputs`（包括必填 series 输入和类型）与 `output` 返回类型，避免只显示可调参数而遗漏函数签名。相同定向场景覆盖这三类元数据。
+
+## 2026-09-05 - R4 策略止盈减仓
+
+- Strategy Definition 新增向后兼容的可选 `scale_out`。新策略保存 `{enabled, ratio_percent}`；编辑器以 0 表示关闭、1–99 表示首次触及止盈时按比例减仓。启用减仓而未启用止盈会被 Definition 校验拒绝，100% 不作为“减仓”接受，完整平仓继续由原有止盈控制表达。
+- 回测将减仓作为受风险门控的部分 `close` OrderIntent，按平仓比例分摊累计开仓手续费/滑点，保留剩余仓位与其成本，并以 `take_profit_scale_out` 写入 fill、trade 和图表标记。旧 Definition 缺字段时仍按原全平止盈运行；止损/止盈同根触发仍优先止损。
+- Schema/回测定向 pytest 19 项、策略编辑器 Playwright 2 项和 Vue 生产构建通过。未运行全量验证或移动端设计，R4-T018/R4-T020 保持 `VERIFYING`。
+
+## 2026-09-05 - R4 自定义指标安全副本与行情详情联动
+
+- 指标注册表增加 custom 资源加载与版本解析。自定义指标不是任意公式/脚本：只能复制 active 的已发布 chart Indicator 计算模板，且服务端强制其 Strategy Function 精确依赖、参数名称/类型/范围、Plot、placement 与 `market_data_input + plot_create` 能力保持一致；仅允许显示元数据、资产子集、状态和参数默认值发生版本化变化。
+- 策略 API 提供指标自定义资源的创建、追加版本、复制与删除；策略函数反向引用会包含本地自定义指标。行情详情的实例计算按 `calculationId` 运行原始已发布算法，而非按自定义 ID 另建实现，因此同样继承暖机、字段门、Volume Profile 可见区间和 VIX 本地标准序列对齐约束。
+- 策略页提供“新建自定义指标”、复制、编辑为新版本和删除操作；标的详情的“指标”按钮直接使用同一版本化目录，新增/复制后不会被五分钟持久缓存阻挡。定向 Python 20 项、Ruff、Vue 生产构建及两项 Playwright（策略→行情、自定义指标“新建→连续新版本”）通过；后者首次发现保存按钮只引用函数而未实际调用，修正并复跑通过，R4-T016 `failure_count=3`。未运行全量验证或移动端设计，R4-T016/R4-T019 保持 `VERIFYING`。
+
+## 2026-09-05 - R4 CBOE VIX 受控本地同步
+
+- CBOE 官方 `VIX_History.csv` 已独立探测可用（HTTP 206、`text/csv`）；新增 `market-monitor vix-sync`。该命令只向固定 CBOE URL 读取 CSV，严格验证 DATE/CLOSE、有限非负值和唯一交易日，并将来源 URL、内容 SHA-256、取得时间、PASS 证据和全量点原子写入 `data_control/external_market/vix/series.json`。
+- 同步后的图表仍只通过本地 `load_vix_series` 读取，不引入浏览器请求、前值填充或当前标的 OHLC 推导。2026-09-05 实际写入 9,266 点、截至 2026-09-04，真实本地加载状态为 `ready`；DXY 的东方财富端点未因 CBOE 成功而被提升为已验证。
+- 外部序列同步、原有本地质量门、VIX 指标计算与 API 定向 pytest 11 项及 Ruff 通过；未运行全量验证或移动端设计，R4-T026 保持 `VERIFYING`。
+
+## 2026-09-05 - R4 策略与行情联动定向复验
+
+- 当前工作树的 19 个策略/指标/VIX/画线后端测试文件共 190 项通过，另有 41 项共享 JSON Schema 夹具通过；相关 Python 源码与测试 Ruff 通过，Vue 生产构建通过。直接加载运行时注册表确认 39 个 Function、21 个 Indicator/绘图资源、两项内置 Strategy、三项 Template，且 `technical.atr@1/@2` 同时存在。该集合覆盖三层资源/函数注册、指标计算、自定义资源、递归 Definition、回测/报告、订单权限、旧 DSL 兼容、传输包、模板、来源信任边界、策略与行情 API、Fibonacci 锚点/比例校验，以及 CBOE VIX 本地质量门与受控同步。
+- 10 个策略页 Playwright 场景通过，覆盖递归 AST、复杂版本回存、报告、传输包、模板、来源拒绝、函数引用、筛选和自定义指标连续新版本；另有 3 个行情场景通过，覆盖目录/函数分层、独立 Pane（含高级指标与 VIX 溯源）及 Fibonacci 逻辑锚点。该定向复验不包含全量 pytest、完整 Playwright、Android 或移动端设计，所有相关 R4 任务维持 `VERIFYING`。

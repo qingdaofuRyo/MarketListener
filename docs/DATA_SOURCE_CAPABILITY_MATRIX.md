@@ -22,7 +22,7 @@
 | 全球指数 | AKShare | 已实现；当前为少量存量 | 1d | `index_global_hist_em` 等适配调用；无全市场承诺。 |
 | 国内期货主连、次连、加权、月份合约与指数 | 通达信期货通本地缓存；AKShare 主连备用 | 已实现 `bulk-futures` 增量导入 | 通达信原始 5m/1d；可派生 15m/30m/1h/2h/4h/周月季年 | 28/29/30/47/66 覆盖郑商所、大商所、上期所、中金所、广期所，INE 按产品拆分；另含 `42#` 商品指数、`68#` 波动率/期权指数、大商所 `*-F` 与中金所 L0～L3/标的指数。期货通中的证券指数重复前缀不导入。 |
 | 国际重点期货 | AKShare | 已实现受控目录增量导入 | 1d | 东财 `00Y` 真实连续合约与新浪 `AHD/OIL`；无原生加权时明确不支持，不自行构造。 |
-| 美元指数、VIX | 东方财富 / CBOE，腾讯回退 | 已实现；Gold 指标 | 1d | 东财 kline API、CBOE VIX CSV；当前为指标而不是统一 bars。 |
+| 美元指数、VIX | 东方财富 / CBOE，腾讯回退 | 已实现；VIX 另有本地标准序列 | 1d | 东财 kline API、CBOE VIX CSV；`vix-sync` 只接受 CBOE CSV，原子写入带来源、SHA-256、取得时间和 PASS 证据的本地序列；当前为指标而不是统一 bars。 |
 
 ## Provider / Adapter 事实
 
@@ -37,7 +37,7 @@ Each local inventory category also exposes `sourceDetails`: its stored source id
 | Baostock | `baostock.login`、`query_history_k_data_plus` | CN 股票 1d/30m | SDK 登录 | 2026-08-12 首次 10 秒超时；30 秒复测未在本任务运行时限内产出报告。当前没有可验证 PASS 结论，不能提升为可用来源。 |
 | JQData | `jqdatasdk.auth` 和价格接口 | CN 股票/ETF/指数/期货（以探测能力为准） | 用户名/密码、授权 | `BLOCKED_CONFIGURATION`，不能显示为当前可用。 |
 | Tushare Pro | `TUSHARE_TOKEN`、`pro_api`、`daily`/`stk_mins`/`stock_basic` | CN 股票日线/分钟、清单与财务（以积分权限为准） | token 与接口积分/权限 | `BLOCKED_CONFIGURATION`，不能显示为当前可用。 |
-| 东财/CBOE/腾讯 | 东财 `push2his.eastmoney.com/api/qt/stock/kline/get`；CBOE VIX CSV；腾讯回退 | DXY/VIX 日线指标 | 公共端点 | collector 已实现，TLS/网络可能导致部分失败。 |
+| 东财/CBOE/腾讯 | 东财 `push2his.eastmoney.com/api/qt/stock/kline/get`；CBOE VIX CSV；腾讯回退 | DXY/VIX 日线指标 | 公共端点 | collector 已实现，TLS/网络可能导致部分失败。2026-09-05 以 CBOE 官方 `VIX_History.csv` 实测 HTTP 206，新增 `vix-sync` 严格校验 DATE/CLOSE、重复交易日与有限数值，写入本地 `external_market/vix/series.json` 后由页面仅本地读取；实际写入 9,266 点、截至 2026-09-04。DXY 的东方财富来源仍未由此提升为已验证。 |
 | 同花顺行情中心 | `q.10jqka.com.cn` 市场页与指数页快照 | A 股涨跌家数、涨停/跌停家数、昨日涨停平均收益率、指数表格 | 网站会话/反爬策略 | 已实现 `ths-market` 可恢复快照任务；公开页可获取首批指数，翻页请求会返回登录/授权限制。使用已登录浏览器 Cookie 的自动化仍需在可用浏览器会话中另行验证。 |
 | 通达信金融终端本地证券文件 | `C:\tongdaxin\vipdoc` 的 `.day/.lc5` | 沪深北及港股日线/五分钟，含 A/B 股、指数、ETF、LOF、REIT、转债、回购、基本汇率与宏观 | 本机已下载文件；无网络认证 | `tdx-cn-v2` 已实现资产级价格精度、逐行成交量倍率、原始值追溯、隔离质量门、只读审计和可回滚来源替换。金融终端拥有 `10/12/16/17/18/27/31/38/48/62/69/102#`；`27#HZ`、`49#`、`98#` 已退役。普通增量可用 `--ds-prefix` 限定，查询缓存只刷新新增分区。 |
 | TickDB | 无活动来源 | 无本地原始目录、无 Silver、无活动下载器 | 不适用 | **REMOVED**；只保留 2026-08-24 历史审计，不参与正式导入、回退或质量判定。 |

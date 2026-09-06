@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://marketlistener.local/contracts/strategy-template.schema.json",
+  "title": "Read-only Strategy template",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "template_id", "version", "display_name", "source_strategy_id", "source_strategy_version", "default_overrides", "disclaimer"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "template_id": {"type": "string", "pattern": "^template\\.[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$"},
+    "version": {"type": "integer", "minimum": 1},
+    "display_name": {"type": "string", "minLength": 1, "maxLength": 128},
+    "description": {"type": "string", "maxLength": 4000},
+    "source_strategy_id": {"type": ["string", "null"]},
+    "source_strategy_version": {"type": ["integer", "null"], "minimum": 1},
+    "default_overrides": {"type": "object", "additionalProperties": true},
+    "disclaimer": {"type": "string", "minLength": 1, "maxLength": 1000},
+    "preview": {
+      "type": "object", "additionalProperties": false,
+      "required": ["parameters", "risk", "position_sizing", "stop_loss"],
+      "properties": {
+        "parameters": {"type": "object"},
+        "risk": {"type": "object"},
+        "position_sizing": {"type": "object"},
+        "stop_loss": {"type": "object"}
+      }
+    },
+    "supported_asset_types": {"type": "array", "items": {"type": "string"}},
+    "dependencies": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "version"],
+        "properties": {"id": {"type": "string"}, "version": {"type": "integer", "minimum": 1}}
+      }
+    }
+  }
+}

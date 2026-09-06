@@ -32,6 +32,7 @@
 - [ADR-0007：按能力注册和路由数据源](adr/0007-capability-based-provider-routing.md)
 - [ADR-0008：Android 使用声明式策略 DSL](adr/0008-android-declarative-strategy-dsl.md)
 - [ADR-0009：Canonical 周期与本地派生 K 线](adr/0009-canonical-timeframe-and-derived-bars.md)
+- [ADR-0010：策略计算、可视化与交易权限分层](adr/0010-strategy-calculation-visualization-execution-boundaries.md)
 
 ## 三、Agent 修改权限
 

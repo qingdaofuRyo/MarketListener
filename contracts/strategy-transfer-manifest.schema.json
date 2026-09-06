@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://marketlistener.local/contracts/strategy-transfer-manifest.schema.json",
+  "title": "Desktop Strategy transfer package manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "package_id", "created_at", "target", "strategy", "dependency_lock", "files", "test_vectors_sha256"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "package_id": {"type": "string", "pattern": "^strategy-transfer-[0-9a-f]{16}$"},
+    "created_at": {"type": "string", "format": "date-time"},
+    "target": {"const": "desktop"},
+    "strategy": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "version", "definition_hash"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "version": {"type": "integer", "minimum": 1},
+        "definition_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "dependency_lock": {
+      "type": "object", "additionalProperties": false,
+      "required": ["strategy", "strategy_functions", "indicators"],
+      "properties": {
+        "strategy": {"$ref": "#/$defs/lockedStrategy"},
+        "strategy_functions": {
+          "type": "array", "uniqueItems": true,
+          "items": {"$ref": "#/$defs/lockedStrategy"}
+        },
+        "indicators": {"const": []}
+      }
+    },
+    "files": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "definitions/strategy.json", "dependency-lock.json", "test-vectors.json",
+        "schemas/strategy-definition.schema.json", "schemas/strategy-transfer-manifest.schema.json"
+      ],
+      "properties": {
+        "definitions/strategy.json": {"$ref": "#/$defs/hash"},
+        "dependency-lock.json": {"$ref": "#/$defs/hash"},
+        "test-vectors.json": {"$ref": "#/$defs/hash"},
+        "schemas/strategy-definition.schema.json": {"$ref": "#/$defs/hash"},
+        "schemas/strategy-transfer-manifest.schema.json": {"$ref": "#/$defs/hash"}
+      }
+    },
+    "test_vectors_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "signature": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["algorithm", "file", "key_id", "public_key"],
+          "properties": {
+            "algorithm": {"const": "ed25519"},
+            "file": {"const": "signature.ed25519"},
+            "key_id": {"$ref": "#/$defs/hash"},
+            "public_key": {"type": "string", "pattern": "^[A-Za-z0-9+/]+={0,2}$", "maxLength": 128}
+          }
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "lockedStrategy": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "version", "definition_hash"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "version": {"type": "integer", "minimum": 1},
+        "definition_hash": {"$ref": "#/$defs/hash"}
+      }
+    }
+  }
+}

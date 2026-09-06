@@ -89,10 +89,54 @@ TickDB 从未进入 Silver，本地原始目录已由用户于 2026-08-28 删除
 
 ## 公式、策略与账户分析
 
+### 当前四类操作信号（R4-T040/T041）
+
+- 当前策略页只消费 `SignalStrategyManager.vue` 与 `web_api/signals.py`：开仓、加仓、减仓、平仓、方向、周期及 Rule AST，不包含市场资产范围、账户资金、仓位、风险或成交配置。新规则复用 `strategy_definition.py` 的类型/函数版本/深度校验和 `evaluate_rule_series` 的纯规则求值；只有信号适配路径关闭资产白名单限定，旧 Definition 校验默认不变，缺行情字段仍保持不可用。
+- `signal_monitor.py` 按标的+方向维护独立轮次，开仓开始、加减仓观察、平仓优先结束；同根新开仓后不触发后续动作。首次只消费最新已结束 bar，后续按精确策略版本与时间游标消费新增序列，排除显式 partial 和未来结束时间。跨周期使用结束时间排序，行情页标记按源 bar 时间与对应周期定位。
+- `strategies/signals/definitions.json` 保存当前信号定义，递增版本防止迟到编辑覆盖；删除保留 tombstone。`monitor.json` 原子保存轮次、消费游标及最多 2,000 条近期事件。它们是独立个人观察数据，不是账户持仓，不与旧资源文件、历史回测结果混写。
+- `/api/signals/scan` 由本地页面显式调用，开仓按市场筛选，已有轮次继续检查所有启用同向后续策略。每批最多 100 标的，每周期取最近 500 根；超过窗口的已知监控缺口报错且不推进游标。按标的游标分页，平仓后从活动集合移除不导致下一批跳号。前端手动启动开仓扫描；行情页打开时每 30 秒检查活动轮次，无页面关闭后的常驻调度。
+- 旧策略/回测/执行 API 与不可变定义保留作历史兼容，当前页面移除对应入口及默认列表；未自动删除或把历史策略转换为操作信号。以下回测描述仅适用于该历史子系统。
+
 - 桌面公式引擎只允许白名单语法和函数，限制表达式大小、幂运算和历史窗口，不允许任意 Python、文件或网络访问。
 - 时间序列指标禁止未来数据；缺失历史和除零返回不可用原因而非伪造数值。
-- 策略结果是观察信号，不是自动交易指令。
+- 策略扫描结果仍是观察信号，不是自动交易指令；事件驱动回测仅在隔离的 Backtest 执行适配器中模拟订单、成交、成本和权益，绝不触达真实 Order API。
 - 账户分析使用独立本地个人数据，支持 FIFO、持仓、CSV 和回收站；不能随行情包替换而丢失。
+
+版本化策略资源使用单向依赖：
+
+```text
+Market Data ------------------> Market Indicator --------> Chart
+                \-> Strategy Function -> Derived Indicator -^
+External PASS Series ----------> External Market Indicator -^
+Strategy Function ---------------------------------------> Strategy -> OrderIntent -> Risk Engine -> Execution Adapter -> Order API
+```
+
+- `StrategyFunctionRegistry` 是唯一算法目录。函数确定、无副作用，行情序列、基本面值和参数全部显式传入。
+- 由当前行情推导的 Indicator 只依赖精确版本的 Strategy Function 并增加 Plot/样式元数据；External Market Indicator 是显式例外，只能读取受来源门保护的外部标准序列。两者都不能访问账户、持仓、订单或执行端口，策略也不能将任一 Indicator 当作执行依赖。
+- `indicator_calculation.py` 只把已注册 Indicator Definition 解析成对齐的 Indicator Instance 序列；单实例错误以不可用状态隔离，Web 适配器不得复制 SMA/ATR 等算法。K 线保存的是 definitionId/version/parameters/style/visible/placement，计算结果不是新的权威行情。
+- 高级副图同样通过 Strategy Function：Chaikin Volatility 使用 `EMA(H-L)` 的历史百分比变化，RVI 固定为 Dorsey 1993 的 close-based 变体；两者公开公式、字段、暖机及限制随注册定义返回。Twiggs® 原始算法未公开，`indicator.twiggs_volatility` 明确标记为 `100 × Wilder ATR / close` 的公开 ATR% 变体，不声称与专有实现一致。
+- `indicator.volume_profile` 是主图的范围型 Plot：`market.volume_profile@1` 只把当前可见闭区间内每根 bar 的完整 `volume` 分配给其 HLC3 所在等宽价格桶，再以 POC 为起点按相邻桶成交量扩张价值区。响应携带算法、代表价格、归集、范围、桶数和价值区比例版本化元数据；缺失/零成交量保持不可用，绝不从 `amount` 推导。KLineChart 只渲染与本地图窗范围一致的结果，缩放后由行情页防抖重算，不持久化计算结果或屏幕像素。
+- `drawing.fibonacci_retracement@1` 是 Strategy Function/Indicator 体系外的版本化 `drawing_tool`。每条文档保存两个逻辑时间/价格锚点及带标签的有限比例；`price = anchorEnd + (anchorStart − anchorEnd) × ratio` 使 0% 对应第二锚点、100% 对应第一锚点，并保留反向画出的波段方向。KLineChart 只由这些逻辑数据绘制线条、价格标签、两个端点及命中区；保存接口限制两个有限锚点、2–16 个不重复的 `[-10,10]` 比例和 `version=1`，不迁移或拒绝历史非 Fibonacci 文档。画线读取以本地编辑修订号防止迟到 GET 覆盖未完成保存。
+- `indicator.vix@1` 是 External Market Indicator，不调用 Strategy Function，也不能以当前标的 OHLC 合成。唯一生产者是受控的 `market-monitor vix-sync`：它从固定的 CBOE `VIX_History.csv` 拉取完整 CSV，验证日期/收盘价、日期唯一性和有限数值后，把 URL、内容 SHA-256、取得时间、PASS 与全量点原子写入数据根目录的 `external_market/vix/series.json`。计算层只读取该本地文件，并要求固定 `US.CBOE.INDEX.VIX` 映射、`sourceStatus=PASS`、来源、有限且唯一的交易日点和与最新点一致的 `asOfDate`。它按 bar 的显式交易日精确查找，缺失/美中日期差为 `null`，不作时区重写或前值填充；响应显式保留 `externalInstrumentId/source/asOfDate/coverage/points/status/reason`。浏览器从本地 API 读取结果并显示溯源信息，不直连外部服务；没有该 PASS 文件或当前窗口无交集时只返回结构化不可用状态。
+- 策略页的 `StrategyRuleTreeEditor` 仅持有与 `VersionedStrategyDefinition` 同构的 camelCase Rule AST：编辑动作替换树的一小段，复制/排序/撤销也只移动 AST 值；保存边界才将字段转换为契约 snake_case。因此复杂历史树可再次编辑并发布下一版本，任何临时 UI 身份均不会进入权威 JSON。`StrategyOperandEditor` 依函数注册表提供每一输入位的类型、默认值与可选嵌套函数，并先按当前策略资产做本地诊断；`POST /definition/validate` 仍是函数版本、类型、深度和资产的最终可信验证。仓位、止损、止盈、最大回撤、加仓/再入场均属于 Definition，固定价格不采用百分比控件上限。
+- Strategy 同样只依赖 Strategy Function，不能以 Indicator 作为执行依赖。桌面 Strategy 可以产生 `OrderIntent`，但只有风险与执行端口能将已接受意图转成外部订单。
+- `strategy_execution.py` 是唯一订单意图组合边界：服务端从已持久化的精确 Strategy Definition 生成不可由请求伪造的 Capability Context，随后固定执行 `OrderIntent → Risk Engine → 对应运行模式 Execution Adapter`。适配器要求本次风险许可，不能直接接收未裁决意图；幂等记录按 `intentId` 不可覆盖，审计事件只写允许字段而不写账户权益、请求正文或凭据。
+- Backtest 与 Paper 使用两个隔离模拟适配器，结果明确说明没有触达真实 Order API；Live 没有可注册适配器，能力查询返回 `DISABLED`，写请求返回 409。Android、Indicator 与 Strategy Function 均无法取得 `order_intent_create` 能力。旧 `dsl_v1/formula_v1/builder_v1` 定义通过适配层继续读取。
+- `strategy_backtest.py` 从本地 Silver 的精确数据版本读取 bar，在信号 bar 收盘后评估 Rule AST，再按定义以下一根 open/close 生成模拟成交；止损止盈、仓位、费用、滑点和合约乘数均写入 `OrderIntent/fill/trade/equity point`。两项内置策略为 `MA Crossover`（复用 `technical.sma@1`）与 `Donchian+ATR`。每次运行把 `definitionHash` 和完整 `dependencyLock` 持久化：策略/每个函数的精确版本与定义哈希、显式空的图表指标锁、参数值/哈希、数据版本/哈希/查询窗口及引擎版本。`technical.atr@1` 与 `@2` 是两个可并存的运行时身份，AST 执行器不会把 v1 调用替换为 v2。
+- 已发布的结构化策略仅可写入连续的新 `id@version.json`；删除是生成 `deprecated` 归档版本，不删除历史定义。旧未版本化资源的迁移先把原件存入迁移专属备份，只有没有被回测引用时才能回滚。`POST /api/strategy/backtests/{runId}/reproduce` 只按已存 dependency lock 的精确版本重跑，并先验证策略/函数定义哈希与行情哈希；缺失或变化返回结构化冲突，绝不使用 latest 代替历史版本。
+- `strategy_report.py` 只由该运行记录的 equity/fill/trade 明细计算指标，零分母与数值溢出保留结构化不可用原因。预版本锁的旧运行仍可生成报告，但将 `definitionHash/dependencyLock` 明确返回 `null`，不得据此声称可复现；新运行必须具备完整锁。`/api/strategy/backtests/{runId}/report` 和 `/trades.csv` 与图表 marker/交易表消费同一记录，修改参数仅重新回测，不重新请求行情窗口。
+- `strategy_transfer.py` 的桌面传输 ZIP 只打包一个已发布 custom Rule-AST Definition、其精确 Strategy Function lock、定义/传输 Manifest Schema 和哈希测试向量；不包含账户、凭据、运行记录、行情或 OrderIntent。`manifest` 为每个内容文件记录 SHA-256，读取器先限制压缩包和总解压尺寸、拒绝重复/未知/路径穿越项并比对本地 allow-list Schema，之后才重新验证 AST 和依赖锁。包可附 Ed25519 manifest 签名并验证嵌入公钥指纹，但 `target=desktop` 永不转化为 Android 兼容声明；Android 仍只接受 ADR-0008 的受信任、声明式 DSL 包。`/packages/preview` 全程无写入，`/packages/import` 只允许无冲突无损导入，或由用户明确改名/创建连续新版本，绝不覆盖 immutable `id@version`。
+- `strategy_templates.py` 的三项 builtin 模板是只读元数据和确定 Definition 来源：`MA Crossover`、`Donchian + ATR` 与 Schema 合法但不触发交易的空白起点。创建操作只复制为新的 custom v1 并写入 `templateSource(templateId/version/sourceStrategyVersion/defaultOverrides)`，不会改动内置来源。创建向导先显示精确函数依赖、资产范围、参数和风险预览，以及不构成收益承诺的免责声明。
+- Definition 契约为未来 `community/plugin` 预留 `trustMetadata(publisher, signature, trustState, reviewStatus)`，但本轮没有社区服务、下载或信任升级端点。此类资源只有 `disabled` 状态可被识别/展示；不论 fixture 是否声称已签名或 trusted，当前服务端和页面均拒绝其回测、订单、编辑、复制和状态升级。只有未来经 ADR 批准的审核/授权边界才能改变这一默认拒绝。
+- 持久化契约是 `contracts/strategy-resource.schema.json`，网页 camelCase 类型位于 `desktop/web/src/domain/strategyTypes.ts`；权限决策见 ADR-0010。
+
+## R4 标的详情显示层（2026-09-06）
+
+- `chartPresentation.ts` 定义五种图表显示类型与平均 K 线变换。变换只进入 ECharts 主价格序列与显示坐标范围，原始报价、Indicator/Strategy 输入和标准行情不变。
+- `KLineChart.vue` 的自由笔刷在相邻 bar 像素位置间插值逻辑时间，保持价格连续，不使用 OHLC 吸附；趋势线保存两个逻辑锚点。`LaserCanvas.vue` 仅保留短时屏幕轨迹，不产生 ChartDrawing，不写本地数据文件。
+- `MarketView.vue` 复用策略指标目录提供大弹窗、共享收藏和实例悬浮图例。跨周期及样式属于浏览器实例偏好，不改变注册表定义。回放只消费当前窗口的前缀，指标 API 请求同步裁切；回放期间隐藏既有策略结果和持久画线，退出恢复原窗口。
+- R4-T039 已按用户要求移除价格警报界面、轮询及计算函数，历史浏览器偏好不自动删除。回放控件位于底部，图标选择起点、播放/暂停、倍速、单步和快进；图上点击选起点仍裁切所有指标请求，不接入真实账户。
+- `QuoteValues.vue` 由详情、列表及卡片复用，无报价日期时间；开收、量额及涨跌分红绿，其余按字段分色。沉淀资金读取已加载窗口末端快照，总/流通市值读取标的最新元数据，三者不随鼠标悬浮改变；缺失仍为破折号。日线以上时间轴仅显示日期。工具组菜单及图表类型使用项目 SVG 图标，不复制参考站源码。
 
 ## Android 数据边界
 

@@ -191,8 +191,90 @@ _Avoid_：手机客户端（用于暗示它依赖在线服务器时）
 _Avoid_：数据库备份、同步文件
 
 **策略包（Strategy Package）**：
-包含声明式策略 DSL、版本、参数定义、输入要求、共享测试向量和签名的可导入集合。Android 只解释白名单 DSL 节点，不执行 Python。
+面向 Android 的受信任、签名声明式 DSL 可导入集合，包含版本、参数定义、输入要求和共享测试向量。Android 只解释白名单 DSL 节点，不执行 Python。
 _Avoid_：脚本文件、Python 包、插件（除非以后真的形成通用插件体系）
+
+**桌面策略传输包（Desktop Strategy Transfer Package）**：
+只面向桌面端的 ZIP 格式，包含一个 custom Rule-AST Strategy Definition、精确 Strategy Function Dependency Lock、权威 Schema、测试向量和每个内容的 SHA-256；可附 Ed25519 Manifest 签名。导入预览必须在内存中完成布局、尺寸、摘要、Schema、AST、函数版本和冲突校验，且只能由明确的改名/连续新版本操作写入。它固定 `target=desktop`，即使签名有效也不是 Android 策略包。
+_Avoid_：凭据、账户、运行数据、真实订单、Android 兼容性声明、任意代码
+
+## 策略系统
+
+**操作信号策略（Action Signal Strategy）**：
+按指定周期及规则产生开仓、加仓、减仓或平仓之一的观察信号，适用于字段满足要求的各类市场，不包含账户资金、仓位或成交模型。
+_Avoid_：真实下单策略、回测资源、已成交订单
+
+**信号监控轮次（Signal Monitoring Cycle）**：
+同一标的同一多空方向从开仓信号开始、到平仓信号结束的一轮观察；期间才监测同向加仓、减仓和平仓信号，同一时点平仓优先。
+_Avoid_：真实持仓、账户头寸、自动交易
+
+**盈亏比画线（Risk/Reward Drawing）**：
+以用户设定的开仓参考价、止损参考价和目标参考价显示多头或空头风险收益距离之比的图形，不表示实际订单或策略触发。
+_Avoid_：真实盈亏、收益预测、止损指令
+
+**策略函数（Strategy Function）**：
+接收明确输入并返回确定性结果的无副作用、可版本化计算单元，可同时被指标和策略引用。
+_Avoid_：指标算法副本、带账户状态的函数、下单函数
+
+**指标（Indicator）**：
+把行情或外部市场数据经策略函数计算后的结果投影到 K 线主图或副图的可视化资源；它不读取账户、订单或持仓，也不产生订单意图。
+_Avoid_：策略、交易信号、直接下单指标
+
+**指标实例（Indicator Instance）**：
+某个指标确定版本在一张当前图表上的一次配置，拥有独立参数、样式、可见性和主图或副图位置；同一指标可同时存在多个实例。
+_Avoid_：指标定义、共享算法副本、固定图表键
+
+**VIX 外部市场指标（VIX External Market Indicator）**：
+仅将有来源证据且 `sourceStatus=PASS` 的本地 `US.CBOE.INDEX.VIX` 标准日序列按显式交易日投影到当前图表副图；响应同时带来源、数据截至日、覆盖与精确对齐点。无源、来源失败或无重叠交易日均不可用，日期缺口为 `null`。
+_Avoid_：从当前标的 OHLC 计算 VIX、前值填充、浏览器直连第三方、把 fixture 当作真实来源
+
+**成交量分布（Volume Profile）**：
+在一个显式、闭区间的 K 线窗口中，将每根 bar 的全部 `volume` 归入其 HLC3 所在的等宽价格桶所得的主图范围型 Plot；POC 是量最大的桶，价值区从 POC 向相邻桶按成交量扩张。缺少或为零的成交量即不可用，不能由 `amount` 替代。
+_Avoid_：逐价格成交明细、由成交额猜测的成交量、冻结在旧缩放区间的横向柱图
+
+**斐波那契回撤画线（Fibonacci Retracement Drawing）**：
+由用户明确绘制的两个逻辑时间/价格锚点和带标签比例构成的 `drawing_tool`；第 0 比例在第二锚点、第 1 比例在第一锚点，其他价格从二者线性回撤计算。它是个人画线数据，不是市场指标或策略输入。
+_Avoid_：技术指标、Strategy Function、屏幕像素坐标、由行情自动推断的锚点
+
+**相对波动指数（Relative Volatility Index, RVI）**：
+Donald Dorsey 的 0 至 100 波动方向指标：将滚动标准差按收盘价涨跌日拆分并平滑。本项目固定采用 1993 close-based 版本，不能与 Relative Vigor Index 同名缩写混用。
+_Avoid_：Relative Vigor Index、未声明版本的 RVI
+
+**Twiggs 波动率公开变体（Twiggs Volatility ATR% Public Variant）**：
+以 `100 × Wilder ATR / close` 可复算的 ATR 百分比实现，用于表达“基于 ATR 的公开变体”；Twiggs® 原始专有算法未被声称为已复现。
+_Avoid_：Twiggs® 精确公式、未标注来源的同名指标
+
+**策略（Strategy）**：
+当前页面中的策略指操作信号策略：按周期和规则产生开仓、加仓、减仓或平仓观察信号，不限定市场范围，不涉及账户成交；它不依赖指标作为计算输入。
+_Avoid_：指标脚本、真实持仓、下单指令、历史回测策略
+
+**历史回测策略（Legacy Backtest Strategy）**：
+先前轮次中组合标的范围、规则、仓位和风控以模拟订单意图的版本化研究资源；它与当前操作信号策略是不同资源，已有定义和运行结果仍是历史证据。
+_Avoid_：当前策略页默认资源、信号监控轮次、真实交易
+
+**订单意图（Order Intent）**：
+策略提出但尚未执行的结构化开平仓请求，必须通过风险引擎后才能交给执行适配器。
+_Avoid_：真实订单、成交、策略信号
+
+**能力上下文（Capability Context）**：
+由桌面服务端根据已保存且通过校验的精确资源版本签发的运行权限，包含资源层、平台和允许能力；客户端提交的 `resourceType` 或按钮可见性都不是授权依据。
+_Avoid_：前端权限、客户端自报角色、可修改的权限标签
+
+**风险裁决（Risk Decision）**：
+风险引擎对一个订单意图和当次账户/行情上下文作出的 `accepted/rejected/not_evaluated` 结构化结论；没有 `accepted` 裁决不得进入执行适配器。
+_Avoid_：策略信号、执行结果、前端确认
+
+**执行适配器（Execution Adapter）**：
+只接收已绑定风险许可且运行模式一致的订单意图的隔离端口。回测与模拟盘使用不同适配器；未配置并验收的实盘适配器不存在于可用能力中。
+_Avoid_：策略内下单函数、通用券商对象、把模拟接受称为真实成交
+
+**策略运行模式（Strategy Run Mode）**：
+策略执行的隔离环境，规范值为回测、模拟和实盘；未配置合格执行适配器时实盘模式不可用。
+_Avoid_：把回测或模拟标记为实盘
+
+**策略报告（Strategy Report）**：
+针对确定策略版本、参数版本和数据版本生成的可复现回测结果，包含绩效、权益、交易记录、成本和不可用原因。
+_Avoid_：实盘业绩、只有汇总值的扫描结果
 
 **热数据（Hot Market Data）**：
 Android 端为日常查询和轻量扫描保留的近期标准行情及派生结果。
@@ -212,6 +294,26 @@ _Avoid_：更新时间（不能表达数据是否完整）
 描述策略身份、输入、参数、声明式计算图、输出和版本的稳定契约。
 _Avoid_：策略结果
 
+**策略模板（Strategy Template）**：
+不可变的 builtin 创建起点，公开 `templateId/version/sourceStrategyVersion/defaultOverrides`、依赖、风险/参数预览和非收益承诺说明；选择它必须生成独立 custom Strategy，不能编辑或共享修改模板来源。
+_Avoid_：可变共享策略、盈利承诺、未校验的配置片段
+
+**来源信任元数据（Strategy Trust Metadata）**：
+为未来 `community/plugin` 资源预留的发布者、可选签名键指纹及验证结论、信任状态和审核状态。当前它只支持识别与显示：community/plugin 固定 disabled，且无论签名或信任字段如何声明都不能执行、复制、升级或获得订单权限。
+_Avoid_：当前已实现的社区市场、自动信任升级、由前端或签名直接授予执行权
+
+**依赖锁（Dependency Lock）**：
+一次回测持久化的精确可复现依赖快照：Strategy 与每个 Strategy Function 的 `id/version/definitionHash`、图表指标依赖列表、参数值及哈希、行情版本/哈希/查询窗口和回测引擎版本。当前 Rule AST 不能执行图表 Indicator，因此其列表必须显式为空而不是以 latest 代替。
+_Avoid_：只记录策略名称、运行时查最新资源、缺失版本时静默回退
+
+**历史回测复现（Historical Backtest Reproduction）**：
+仅使用某回测运行的 Dependency Lock 所列精确版本和原行情窗口重新执行的校验流程。任一策略/函数定义哈希或行情哈希不一致、版本缺失时必须以结构化错误停止，不能输出伪造的“复现成功”。
+_Avoid_：更新后重新回测、latest 回放、忽略数据版本差异
+
+**策略规则树编辑器（Strategy Rule Tree Editor）**：
+对 `entryRules` 或 `exitRules` 的规范 Rule AST 进行递归可视编辑的界面能力；AND/OR/NOT、条件、函数调用、操作数及排序直接映射到树值，函数签名和资产适用性来自注册表，保存时才按契约转换字段名。
+_Avoid_：模板降级、可执行表达式字符串、临时 UI 节点 ID、绕过服务端版本/类型校验
+
 **策略 DSL（Strategy DSL）**：
 由版本化 Schema 约束的声明式策略语言，只允许已登记的指标、运算符、条件和信号输出；不包含任意代码、网络或文件访问。
 _Avoid_：Python 脚本、可执行插件
@@ -219,6 +321,14 @@ _Avoid_：Python 脚本、可执行插件
 **策略运行（Strategy Run）**：
 某个策略版本在指定数据版本和参数版本上的一次执行记录。
 _Avoid_：策略
+
+**回测运行（Backtest Run）**：
+Strategy Run 的隔离回测形式：规则仅使用当根及历史 bar，在信号 bar 结束后按已声明的下一根成交时点模拟 `OrderIntent → Risk Decision → Backtest Fill`，并锁定策略、函数、参数及数据指纹。
+_Avoid_：扫描结果、实盘订单、使用未来价格的回放
+
+**回测成交（Backtest Fill）**：
+由 Backtest Execution Adapter 依据已接受 Order Intent、成交模型、费用和滑点生成的模拟成交事实；它不是券商回报或真实成交。
+_Avoid_：真实订单、策略信号、无成本的虚拟交易
 
 **策略信号（Strategy Signal）**：
 策略运行产生的候选标的、触发条件、观察理由和风险标签，不代表投资建议或自动交易指令。

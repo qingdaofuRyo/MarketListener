@@ -11,6 +11,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from market_monitor.market_query_cache import get_kline_query_store
+from market_monitor.indicator_registry import build_builtin_indicator_registry
 from market_monitor.storage import MarketStore, PartitionKey
 from market_monitor.web_app import create_web_app
 from market_monitor.web_api.market import _normalize_future_name, _normalize_tdx_instrument
@@ -41,6 +42,37 @@ def _data_root(tmp_path: Path) -> Path:
 def _app(tmp_path: Path) -> tuple[FastAPI, TestClient]:
     application = create_web_app(_data_root(tmp_path))
     return application, TestClient(application, client=("127.0.0.1", 50000))
+
+
+def _custom_ma_indicator_document() -> dict[str, object]:
+    source = build_builtin_indicator_registry().resolve("indicator.ma", 1)
+    return {
+        "schema_version": 1,
+        "resource_kind": "indicator",
+        "id": "indicator.user.market_demo",
+        "version": 1,
+        "display_name": "行情页自定义均线",
+        "origin": "custom",
+        "supported_asset_types": ["STOCK"],
+        "status": "active",
+        "created_at": "2026-09-05T08:00:00+08:00",
+        "updated_at": "2026-09-05T08:00:00+08:00",
+        "dependencies": [
+            {"resource_kind": "strategy_function", "id": function_id, "version": function_version}
+            for function_id, function_version in source.dependencies
+        ],
+        "capabilities": ["market_data_input", "plot_create"],
+        "definition": {
+            "english_name": "Market Custom Moving Average",
+            "category": source.category,
+            "category_label": source.category_label,
+            "description": "行情详情指标按钮使用的自定义均线。",
+            "placement": source.placement,
+            "parameters": [{**source.parameters[0], "default": 2}],
+            "plots": [dict(item) for item in source.plots],
+            "calculation_id": "indicator.ma",
+        },
+    }
 
 
 def test_market_overview_is_local_and_compact(tmp_path: Path) -> None:
@@ -604,6 +636,209 @@ def test_market_chart_bootstrap_and_visible_card_batch_share_local_cache(tmp_pat
     assert status.json()["rows"] == 4
 
 
+def test_versioned_indicator_instances_are_aligned_and_fail_independently(tmp_path: Path) -> None:
+    _application, client = _app(tmp_path)
+
+    response = client.post(
+        "/api/market/instruments/CN.SSE.STOCK.600519/indicator-series",
+        json={
+            "period": "1d",
+            "start": 0,
+            "size": 2,
+            "instances": [
+                {
+                    "instanceId": "ma-one",
+                    "definitionId": "indicator.ma",
+                    "version": 1,
+                    "parameters": {"lookback": 2},
+                    "placement": "overlay",
+                    "visible": True,
+                    "style": {"color": "#f59e0b", "lineWidth": 2, "lineType": "dashed"},
+                },
+                {
+                    "instanceId": "missing",
+                    "definitionId": "indicator.not_found",
+                    "version": 1,
+                    "parameters": {},
+                    "placement": "pane",
+                    "visible": True,
+                    "style": {},
+                },
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["start"] == 0
+    assert body["size"] == 2
+    assert body["series"] == {}
+    assert body["instances"][0]["status"] == "ready"
+    assert body["instances"][0]["series"]["ma"] == [None, 1515.0]
+    assert body["instances"][0]["style"] == {
+        "color": "#f59e0b",
+        "lineWidth": 2.0,
+        "lineType": "dashed",
+        "plotStyles": {},
+    }
+    assert body["instances"][1]["status"] == "unavailable"
+    assert body["instances"][1]["unavailableCode"] == "DEFINITION_NOT_FOUND"
+
+
+def test_custom_indicator_from_strategy_catalog_calculates_in_market_detail(tmp_path: Path) -> None:
+    _application, client = _app(tmp_path)
+    created = client.post("/api/strategy/indicator-resources", json=_custom_ma_indicator_document())
+    assert created.status_code == 201, created.text
+
+    response = client.post(
+        "/api/market/instruments/CN.SSE.STOCK.600519/indicator-series",
+        json={
+            "period": "1d",
+            "start": 0,
+            "size": 2,
+            "instances": [
+                {
+                    "instanceId": "strategy-library-custom-ma",
+                    "definitionId": "indicator.user.market_demo",
+                    "version": 1,
+                    "parameters": {},
+                    "placement": "overlay",
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    instance = response.json()["instances"][0]
+    assert instance["status"] == "ready"
+    assert instance["displayName"] == "行情页自定义均线"
+    assert instance["series"]["ma"] == [None, 1515.0]
+
+
+def test_indicator_instance_rejects_unregistered_shape_before_calculation(tmp_path: Path) -> None:
+    _application, client = _app(tmp_path)
+    response = client.post(
+        "/api/market/instruments/CN.SSE.STOCK.600519/indicator-series",
+        json={
+            "period": "1d",
+            "instances": [
+                {
+                    "instanceId": "bad id with spaces",
+                    "definitionId": "indicator.ma",
+                    "version": 1,
+                    "parameters": {},
+                    "placement": "overlay",
+                }
+            ],
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_volume_profile_api_uses_visible_range_and_never_substitutes_amount(tmp_path: Path) -> None:
+    _application, client = _app(tmp_path)
+
+    response = client.post(
+        "/api/market/instruments/CN.SSE.STOCK.600519/indicator-series",
+        json={
+            "period": "1d",
+            "start": 0,
+            "size": 2,
+            "instances": [
+                {
+                    "instanceId": "profile-one",
+                    "definitionId": "indicator.volume_profile",
+                    "version": 1,
+                    "parameters": {"bins": 4, "valueAreaPercent": 70},
+                    "placement": "overlay",
+                    "rangeStart": 0,
+                    "rangeEnd": 1,
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    instance = response.json()["instances"][0]
+    profile = instance["profile"]
+    assert instance["status"] == "ready"
+    assert instance["series"] == {}
+    assert profile["range"]["rangeSemantics"] == "inclusive_visible_indices_in_requested_window"
+    assert profile["range"]["inputBarCount"] == 2
+    assert profile["allocation"] == "full_bar_volume_to_hlc3_bucket"
+    assert profile["priceRepresentative"] == "HLC3"
+    assert sum(item["volume"] for item in profile["buckets"]) == pytest.approx(profile["totalVolume"])
+    assert sum(item["share"] for item in profile["buckets"]) == pytest.approx(100)
+
+
+def test_vix_api_requires_pass_source_then_aligns_only_matching_dates(tmp_path: Path) -> None:
+    data_root = _data_root(tmp_path)
+    client = TestClient(create_web_app(data_root), client=("127.0.0.1", 50000))
+    request = {
+        "period": "1d",
+        "start": 0,
+        "size": 2,
+        "instances": [
+            {
+                "instanceId": "vix-one",
+                "definitionId": "indicator.vix",
+                "version": 1,
+                "parameters": {},
+                "placement": "pane",
+            }
+        ],
+    }
+
+    missing = client.post("/api/market/instruments/CN.SSE.STOCK.600519/indicator-series", json=request)
+
+    assert missing.status_code == 200
+    assert missing.json()["instances"][0]["unavailableCode"] == "MISSING_DATASOURCE"
+
+    path = data_root / "external_market" / "vix" / "series.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps(
+            {
+                "schemaVersion": 1,
+                "externalInstrumentId": "US.CBOE.INDEX.VIX",
+                "source": "fixture: verified VIX standard series",
+                "sourceStatus": "PASS",
+                "asOfDate": "2026-08-07",
+                "points": [
+                    {"tradingDate": "2026-08-06", "value": 19.25},
+                    {"tradingDate": "2026-08-07", "value": 17.5},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    response = client.post("/api/market/instruments/CN.SSE.STOCK.600519/indicator-series", json=request)
+
+    assert response.status_code == 200
+    instance = response.json()["instances"][0]
+    assert instance["status"] == "ready"
+    assert instance["series"] == {"vix": [19.25, 17.5]}
+    assert instance["external"] == {
+        "externalInstrumentId": "US.CBOE.INDEX.VIX",
+        "source": "fixture: verified VIX standard series",
+        "asOfDate": "2026-08-07",
+        "sourcePointCount": 2,
+        "status": "ready",
+        "reason": None,
+        "coverage": {
+            "inputBarCount": 2,
+            "matchedBarCount": 2,
+            "sourcePointCount": 2,
+            "firstInputDate": "2026-08-06",
+            "lastInputDate": "2026-08-07",
+        },
+        "points": [
+            {"barIndex": 0, "tradingDate": "2026-08-06", "value": 19.25},
+            {"barIndex": 1, "tradingDate": "2026-08-07", "value": 17.5},
+        ],
+    }
+
+
 def test_chart_bootstrap_returns_complete_drawing_document(tmp_path: Path) -> None:
     _application, client = _app(tmp_path)
     items = [
@@ -628,6 +863,40 @@ def test_brush_drawing_validates_points_without_migrating_legacy_items(tmp_path:
     assert client.put("/api/market/instruments/CN.SSE.STOCK.600519/drawings", json={"items": [{**brush, "points": [{"time": "2026-08-07", "price": "NaN"}, brush["points"][1]]}]}).status_code == 422
     too_many = [{"time": "2026-08-07T09:30:00", "price": 1500} for _ in range(2_049)]
     assert client.put("/api/market/instruments/CN.SSE.STOCK.600519/drawings", json={"items": [{**brush, "points": too_many}]}).status_code == 422
+
+
+def test_fibonacci_drawing_persists_versioned_logical_anchors_and_rejects_invalid_levels(tmp_path: Path) -> None:
+    _application, client = _app(tmp_path)
+    fibonacci = {
+        "id": "fib-one",
+        "type": "fibonacci_retracement",
+        "version": 1,
+        "period": "1d",
+        "crossPeriod": True,
+        "points": [
+            {"time": "2026-08-07T09:30:00", "price": 1500.0},
+            {"time": "2026-08-08T09:30:00", "price": 1600.0},
+        ],
+        "levels": [
+            {"ratio": 0.0, "label": "0.0%"},
+            {"ratio": 0.618, "label": "61.8%"},
+            {"ratio": 1.0, "label": "100.0%"},
+        ],
+        "style": {"color": "#2196f3", "lineStyle": "dashed"},
+    }
+
+    saved = client.put(
+        "/api/market/instruments/CN.SSE.STOCK.600519/drawings",
+        json={"items": [fibonacci]},
+    )
+
+    assert saved.status_code == 200
+    assert saved.json()["items"] == [fibonacci]
+    invalid = {**fibonacci, "levels": [{"ratio": 0, "label": "0"}]}
+    assert client.put(
+        "/api/market/instruments/CN.SSE.STOCK.600519/drawings",
+        json={"items": [invalid]},
+    ).status_code == 422
 
 
 def test_drawings_index_and_batch_delete(tmp_path: Path) -> None:
