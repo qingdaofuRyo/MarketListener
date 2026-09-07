@@ -1017,8 +1017,8 @@
 
 ### R4-T048-S2 — 验收与发布
 
-- `task_id`：`R4-T048-S2`；`priority`：P0；`执行对象`：定向 Web 验收、文档和 Git 发布；`status`：`TESTING`；`failure_count`：0（历史未记录）。
-- `现状/业务目标`：实现和定向验收完成，待最终审计、暂存、提交、push 和远端 SHA 核验。
+- `task_id`：`R4-T048-S2`；`priority`：P0；`执行对象`：定向 Web 验收、文档和 Git 发布；`status`：`DONE`；`failure_count`：0（历史未记录）。
+- `现状/业务目标`：实现、定向验收、审计、暂存、提交、push 和远端 SHA 核验均已完成。
 - `影响/依赖`：依赖上述三个续2任务；按约束不运行 Android、`verify.ps1`、全量 pytest 或全量 E2E。
 - `测试结果`：`npm run build` 通过（仅保留既有大包体积 warning）；`market-list-r4.spec.ts` 2 项、`chart-workbench-r4.spec.ts` 6 项、`market-layout-r4-s2.spec.ts` 2 项通过。
-- `最终输出`：Git 发布完成后更新为 `DONE`，未完成前不得伪造完成状态。
+- `最终输出`：实现提交 `5fa6c1bd66684454e7a03256ad1096784beb86ac` 已正常推送至 `origin/master`，远端 SHA 已与本地一致；本条收尾文档由后续文档提交留痕。
