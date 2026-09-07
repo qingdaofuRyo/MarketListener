@@ -7,6 +7,7 @@ import {
   ref,
   watch,
 } from "vue";
+import { storeToRefs } from "pinia";
 import { useRoute, useRouter } from "vue-router";
 import KLineChart, {
   type ChartDrawing,
@@ -20,14 +21,12 @@ import KLineChart, {
 import DrawingColorPicker from "../components/charts/DrawingColorPicker.vue";
 import { DRAWING_COLOR_PRESETS } from "../components/charts/drawingPalette";
 import ChartIcon from "../components/charts/ChartIcon.vue";
-import QuoteValues from "../components/charts/QuoteValues.vue";
 import { chartTypes, type ChartType } from "../domain/chartPresentation";
 import {
   DEFAULT_MARKET_CATEGORY,
   editableTarget,
   nextSortState,
   sortMarketInstruments,
-  type MarketSortState,
   type SortableMarketInstrument,
 } from "../domain/marketList";
 import {
@@ -42,6 +41,7 @@ import type {
   IndicatorParameterDefinition,
   VolumeProfile,
 } from "../domain/strategyTypes";
+import { useMarketStore } from "../stores/market";
 
 interface Instrument extends SortableMarketInstrument {
   instrumentId: string;
@@ -73,10 +73,6 @@ interface Instrument extends SortableMarketInstrument {
   nightSession?: string;
   actualSource?: string;
   source?: string;
-}
-interface Strategy {
-  strategyId: string;
-  displayName: string;
 }
 interface MarketCategory {
   id: string;
@@ -402,54 +398,23 @@ const drawingStyleDefaults = ref<Record<DrawingKind, ChartDrawingStyle>>({
 const categories = ref<MarketCategory[]>(fallbackCategories);
 const route = useRoute();
 const router = useRouter();
-const strategies = ref<Strategy[]>([]);
-const allItems = ref<Instrument[]>([]);
+const marketStore = useMarketStore();
+const { category, query, sort: listSort } = storeToRefs(marketStore);
+const allItems = ref<Instrument[]>(marketStore.items as Instrument[]);
 const allTotal = ref(0);
 const listElement = ref<HTMLElement>();
-const category = ref(DEFAULT_MARKET_CATEGORY);
-const query = ref("");
 const page = ref(1);
-const listSort = ref<MarketSortState>({ field: null, direction: null });
-const marketTab = computed<"all" | "targets">(
-  () => route.path.includes("/targets/") ? "targets" : "all",
-);
 const loading = ref(false);
 const error = ref("");
-const targetItems = ref<Instrument[]>([]);
-const targetLoading = ref(false);
 interface SignalEvent {instrumentId:string;strategyName:string;action:string;direction:string;at:string;barAt?:string;period?:string;price?:number}
-interface MonitorItem extends Instrument {direction:string;openedAt:string;openingStrategyId:string;latestSignal?:SignalEvent}
-interface MonitorResponse {items:MonitorItem[];events:SignalEvent[];nextOffset?:number|null;nextAfterId?:string|null;scanned?:number;total?:number;issueCount?:number}
-const monitoredItems=ref<MonitorItem[]>([]), monitorEvents=ref<SignalEvent[]>([]);
-const scanProgress=ref(""), signalError=ref("");
-let signalScanSerial=0, monitorTimer: ReturnType<typeof setInterval> | undefined;
+interface MonitorResponse {events:SignalEvent[]}
+const monitorEvents=ref<SignalEvent[]>([]);
 const operationLabels: Record<string,string> = {open:"开仓",add:"加仓",reduce:"减仓",close:"平仓"};
 const signalChartMarkers = computed<StrategyChartMarker[]>(()=>monitorEvents.value.filter(event=>event.instrumentId===selected.value?.instrumentId && event.period===history.value.period && typeof event.price==='number').map(event=>({kind:['open','add'].includes(event.action)?'entry' as const:'exit' as const,label:operationLabels[event.action],reason:event.strategyName,time:event.barAt||event.at,price:event.price!,barIndex:displayedBars.value.findIndex(bar=>Date.parse(bar.barOpenTime||bar.tradingDate||'')===Date.parse(event.barAt||event.at))})).filter(item=>item.barIndex>=0));
-function applyMonitor(data:MonitorResponse) {
-  monitoredItems.value=data.items.map(item=>({...item,latestPrice:item.latestPrice ?? item.lastClose}));
-  monitorEvents.value=data.events;
-  targetItems.value=monitoredItems.value.filter(item=>!selectedTargetStrategies.value.length||selectedTargetStrategies.value.includes(item.openingStrategyId));
-}
-async function loadMonitor() {try{applyMonitor(await apiGet<MonitorResponse>("/api/signals/monitor",undefined,{force:true}));}catch(reason){signalError.value=String(reason);}}
-async function scanSignals(monitoringOnly=false) {
-  if(targetLoading.value)return;
-  const serial=++signalScanSerial;targetLoading.value=true;signalError.value="";
-  let offset:number|null=0, scanned=0, issues=0;
-  let afterId:string|undefined;
-  const strategyIds=[...selectedTargetStrategies.value], categoryKeys=[...selectedTargetMarkets.value];
-  try {
-    while(offset!==null && serial===signalScanSerial) {
-      const result:MonitorResponse=await apiPost("/api/signals/scan",{strategyIds,categoryKeys,offset,afterId,limit:40,monitoringOnly});
-      if(serial!==signalScanSerial)break;
-      scanned+=result.scanned||0;issues+=result.issueCount||0;applyMonitor(result);
-      scanProgress.value=`已检查 ${scanned} / ${result.total||0} 个标的；${issues} 项字段/暖机不可用`;
-      if(result.nextAfterId){afterId=result.nextAfterId;offset=0;}else offset=result.nextOffset ?? null;
-    }
-  }catch(reason){signalError.value=String(reason);}finally{targetLoading.value=false;}
-}
-const selectedTargetMarkets = ref<string[]>([]);
-const selectedTargetStrategies = ref<string[]>([]);
-const selected = ref<Instrument>();
+async function loadMonitor() { try { monitorEvents.value = (await apiGet<MonitorResponse>("/api/signals/monitor", undefined, { force: true })).events || []; } catch { monitorEvents.value = []; } }
+const selected = ref<Instrument | undefined>(
+  marketStore.items.find((item) => item.instrumentId === marketStore.selectedId) as Instrument | undefined,
+);
 const fullscreen = ref(false);
 const indicatorDialogOpen = ref(false);
 const indicatorSearch = ref("");
@@ -622,7 +587,6 @@ const drawingPopoverDrag = ref<{
 }>();
 const workbenchChart = ref<HTMLElement>();
 const drawingPopoverElement = ref<HTMLElement>();
-const viewportHeight = ref(720);
 let searchTimer: ReturnType<typeof setTimeout> | undefined;
 let serial = 0;
 let indicatorSerial = 0;
@@ -640,12 +604,6 @@ const visibleDrawings = computed(() =>
 );
 const selectedDrawing = computed(() =>
   drawings.value.find((item) => item.id === selectedDrawingId.value),
-);
-const boardChartHeight = computed(() =>
-  Math.max(230, Math.floor((viewportHeight.value - 52 - 66 - 84) / 2)),
-);
-const detailChartHeight = computed(() =>
-  Math.max(360, viewportHeight.value - 136 - (replayActive.value ? 40 : 0)),
 );
 const pageSize = 500;
 const sortedItems = computed(() => sortMarketInstruments(allItems.value, listSort.value));
@@ -1168,6 +1126,12 @@ function compactNumber(value: number): string {
 }
 function toggleListSort(field: ListColumnKey): void {
   listSort.value = nextSortState(listSort.value, field);
+  const next = { ...route.query } as Record<string, string>;
+  if (listSort.value.field && listSort.value.direction) {
+    next.sort = listSort.value.field;
+    next.direction = listSort.value.direction;
+  } else { delete next.sort; delete next.direction; }
+  void router.replace({ path: route.path, query: next });
 }
 function sortMark(field: ListColumnKey): string {
   return listSort.value.field === field ? (listSort.value.direction === "asc" ? "↑" : "↓") : "";
@@ -1186,9 +1150,6 @@ function reorderColumn(target: ListColumnKey): void {
     JSON.stringify(next.map((item) => item.id)),
   );
   draggingColumn.value = undefined;
-}
-function updateViewport(): void {
-  viewportHeight.value = window.innerHeight;
 }
 function startColumnResize(event: PointerEvent, id: ListColumnKey): void {
   event.preventDefault();
@@ -1389,18 +1350,21 @@ async function loadCategories(): Promise<void> {
     categories.value = fallbackCategories;
   }
   const requested = typeof route.query.category === "string" ? route.query.category : "";
+  query.value = typeof route.query.q === "string" ? route.query.q : query.value;
+  const requestedSort = typeof route.query.sort === "string" ? route.query.sort : "";
+  const requestedDirection = route.query.direction === "asc" || route.query.direction === "desc" ? route.query.direction : null;
+  listSort.value = defaultListColumns.some((item) => item.id === requestedSort) && requestedDirection
+    ? { field: requestedSort, direction: requestedDirection }
+    : { field: null, direction: null };
   category.value = categories.value.some((item) => item.id === requested)
     ? requested
     : DEFAULT_MARKET_CATEGORY;
   if (requested !== category.value) {
-    void router.replace({ path: route.path.includes("/targets/") ? "/market/targets/" : "/market/all/", query: { ...route.query, category: category.value } });
+    const path = route.path.includes("/instrument/")
+      ? route.path
+      : route.path.includes("/targets/") ? "/market/targets/" : "/market/all/";
+    void router.replace({ path, query: { ...route.query, category: category.value } });
   }
-}
-async function loadStrategies(): Promise<void> {
-  try { const data=await apiGet<{items:Array<{id:string;displayName:string;action:string;enabled:boolean}>}>("/api/signals/definitions",undefined,{force:true});
-    strategies.value=data.items.filter(item=>item.action==="open"&&item.enabled).map(item=>({strategyId:item.id,displayName:item.displayName}));
-    selectedTargetStrategies.value=selectedTargetStrategies.value.filter(id=>strategies.value.some(item=>item.strategyId===id));
-  }catch{strategies.value=[];}
 }
 async function loadAll(): Promise<void> {
   allAbort?.abort();
@@ -1443,6 +1407,7 @@ async function loadAll(): Promise<void> {
     if (request !== allSerial) return;
     page.value = Math.ceil(received.size / pageSize) || 1;
     allItems.value = [...received.values()];
+    marketStore.items = allItems.value;
     allTotal.value = total;
     if (incomplete) error.value = `当前市场仅取得 ${received.size} / ${total} 个唯一标的，列表未完整。`;
     if (
@@ -1463,7 +1428,6 @@ async function loadAll(): Promise<void> {
     if (request === allSerial) loading.value = false;
   }
 }
-async function loadTargets(): Promise<void> { await loadMonitor(); }
 function resetAll(): void {
   page.value = 1;
   allItems.value = [];
@@ -1476,9 +1440,6 @@ function chooseCategory(value: string): void {
   const nextQuery = { ...route.query, category: category.value };
   void router.replace({ path: "/market/all/", query: nextQuery });
   resetAll();
-}
-function navigateMarket(tab: "all" | "targets"): void {
-  void router.push({ path: tab === "all" ? "/market/all/" : "/market/targets/", query: { ...route.query, category: category.value } });
 }
 watch(
   () => route.query.category,
@@ -1498,28 +1459,15 @@ function search(): void {
 }
 function searchNow(): void {
   if (searchTimer) clearTimeout(searchTimer);
+  void router.replace({ path: route.path, query: { ...route.query, category: category.value, ...(query.value ? { q: query.value } : {}) } });
   resetAll();
-}
-function toggleFilter(selectedValues: string[], id: string): string[] {
-  return selectedValues.includes(id)
-    ? selectedValues.filter((item) => item !== id)
-    : [...selectedValues, id];
-}
-function toggleTargetMarket(id: string): void {
-  selectedTargetMarkets.value =
-    id === "all" ? [] : toggleFilter(selectedTargetMarkets.value, id);
-  void loadTargets();
-}
-function toggleTargetStrategy(id: string): void {
-  selectedTargetStrategies.value =
-    id === "all" ? [] : toggleFilter(selectedTargetStrategies.value, id);
-  void loadTargets();
 }
 function choose(item: Instrument): void {
   selected.value = item;
+  marketStore.select(item.instrumentId);
 }
 function selectRelativeInstrument(event: KeyboardEvent): void {
-  if (fullscreen.value || marketTab.value !== "all" || editableTarget(event.target)) return;
+  if (fullscreen.value || editableTarget(event.target)) return;
   if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
   const items = sortedItems.value;
   if (!items.length) return;
@@ -2107,6 +2055,7 @@ function drawingsForPeriod(period: string): ChartDrawing[] {
     .map((item) => ({ ...item, hidden: hiddenDrawings.value || item.hidden }));
 }
 watch(selected, () => {
+  if (selected.value) marketStore.select(selected.value.instrumentId);
   void loadBoards();
   if (selected.value) void loadDrawings(selected.value.instrumentId);
 });
@@ -2114,20 +2063,16 @@ watch(() => [selected.value?.instrumentId, history.value.period], () => {
   stopReplay(); replayActive.value = false; quoteBar.value = null;
 });
 onMounted(async () => {
-  updateViewport();
-  window.addEventListener("resize", updateViewport);
   window.addEventListener("keydown", onWorkbenchEscape);
   window.addEventListener("keydown", selectRelativeInstrument);
-  monitorTimer=setInterval(()=>{ if(monitoredItems.value.length)void scanSignals(true); },30000);
   window.addEventListener("pointermove", resizePointer);
   window.addEventListener("pointerup", stopResize);
   await loadMarketVersion();
   await Promise.all([
     loadCategories(),
-    loadStrategies(),
     loadIndicatorCatalog(),
   ]);
-  await Promise.all([loadAll(), loadTargets()]);
+  await Promise.all([loadAll(), loadMonitor()]);
   const routeInstrumentId = typeof route.params.instrumentId === "string" ? route.params.instrumentId : "";
   const routeInstrument = allItems.value.find((item) => item.instrumentId === routeInstrumentId);
   if (routeInstrument) await openWorkbench(routeInstrument, false);
@@ -2140,7 +2085,6 @@ onMounted(async () => {
   if (pendingDrawingTool) selectDrawingTool(pendingDrawingTool);
 });
 onBeforeUnmount(() => {
-  signalScanSerial++; if(monitorTimer)clearInterval(monitorTimer);
   stopReplay();
   window.removeEventListener("keydown", onWorkbenchEscape);
   window.removeEventListener("keydown", selectRelativeInstrument);
@@ -2150,7 +2094,6 @@ onBeforeUnmount(() => {
   historyAbort?.abort();
   boardTop.value.abort?.abort();
   boardBottom.value.abort?.abort();
-  window.removeEventListener("resize", updateViewport);
   window.removeEventListener("pointermove", resizePointer);
   window.removeEventListener("pointerup", stopResize);
   setDetailScrollLock(false);
@@ -2160,114 +2103,7 @@ onBeforeUnmount(() => {
 
 <template>
   <main class="market-page">
-    <nav class="market-section-nav" aria-label="行情导航">
-      <button type="button" :class="{active: marketTab === 'all'}" @click="navigateMarket('all')">全部行情</button>
-      <button type="button" :class="{active: marketTab === 'targets'}" @click="navigateMarket('targets')">目标行情</button>
-    </nav>
-    <section v-show="marketTab === 'targets'" class="target-section">
-      <div class="section-heading"><h1 class="page-title">目标行情</h1></div>
-      <div class="target-filters">
-        <div class="filter-row">
-          <span>市场</span>
-          <nav class="target-nav" aria-label="目标行情市场筛选">
-            <button
-              v-for="item in categories"
-              :key="item.id"
-              type="button"
-              :class="{
-                active:
-                  item.id === 'all'
-                    ? selectedTargetMarkets.length === 0
-                    : selectedTargetMarkets.includes(item.id),
-              }"
-              :aria-pressed="
-                item.id === 'all'
-                  ? selectedTargetMarkets.length === 0
-                  : selectedTargetMarkets.includes(item.id)
-              "
-              @click="toggleTargetMarket(item.id)"
-            >
-              {{ item.label }}
-            </button>
-          </nav>
-        </div>
-        <div class="filter-row">
-          <span>策略</span>
-          <nav class="target-nav" aria-label="目标行情策略筛选">
-            <button
-              type="button"
-              :class="{ active: selectedTargetStrategies.length === 0 }"
-              :aria-pressed="selectedTargetStrategies.length === 0"
-              @click="toggleTargetStrategy('all')"
-            >
-              全部策略</button
-            ><button
-              v-for="strategy in strategies"
-              :key="strategy.strategyId"
-              type="button"
-              :class="{
-                active: selectedTargetStrategies.includes(strategy.strategyId),
-              }"
-              :aria-pressed="
-                selectedTargetStrategies.includes(strategy.strategyId)
-              "
-              @click="toggleTargetStrategy(strategy.strategyId)"
-            >
-              {{ strategy.displayName }}
-            </button>
-          </nav>
-        </div>
-      </div>
-      <div class="signal-monitor-actions"><el-button type="primary" :disabled="targetLoading || !strategies.length" @click="scanSignals()">检查开仓信号</el-button><el-button :disabled="targetLoading || !monitoredItems.length" @click="scanSignals(true)">更新已开仓监控</el-button><el-button v-if="targetLoading" @click="signalScanSerial++">停止扫描</el-button><span>{{scanProgress}}</span></div>
-      <p class="muted">只有开仓策略参与市场筛选。“已开仓”仅表示信号监控，不代表真实成交。此页打开时每 30 秒检查已监控标的的本地新增行情。</p>
-      <el-alert v-if="signalError" type="warning" :title="signalError" :closable="false"/>
-      <div v-loading="targetLoading" class="target-rows">
-        <button
-          v-for="item in targetItems"
-          :key="item.instrumentId"
-          type="button"
-          class="target-row"
-          @click="openWorkbench(item)"
-        >
-          <b>{{ item.symbol || item.instrumentId }}</b
-          ><span>{{ item.name || "—" }}</span
-          ><strong>{{ noData(item.latestPrice ?? item.lastClose, 4) }}</strong>
-        </button>
-        <p v-if="!strategies.length && !targetLoading" class="muted">
-          暂无已保存策略。
-        </p>
-        <p v-else-if="!targetItems.length && !targetLoading" class="muted">
-          暂无同时满足当前市场与策略筛选的标的。
-        </p>
-      </div>
-      <details class="signal-monitor-panel" open><summary>已开仓信号监控 · {{monitoredItems.length}}</summary>
-        <div v-for="item in monitoredItems" :key="item.instrumentId+item.direction" class="signal-monitor-row"><button @click="openWorkbench(item)">{{item.name||item.instrumentId}}</button><span>{{item.direction==='long'?'多头':'空头'}}</span><span>最近：{{operationLabels[item.latestSignal?.action || 'open']}} · {{item.latestSignal?.strategyName}}</span></div>
-        <p v-if="!monitoredItems.length" class="muted">暂无进行中的信号监控轮次</p>
-        <details><summary>最近信号记录（含已平仓）</summary><div v-for="(event,index) in [...monitorEvents].reverse()" :key="index" class="signal-monitor-row"><span>{{event.instrumentId}}</span><b>{{operationLabels[event.action]}}</b><span>{{event.strategyName}}</span><time>{{new Date(event.at).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'})}}</time></div></details>
-      </details>
-    </section>
-
-    <section v-show="marketTab === 'all'" class="all-section">
-      <div class="section-heading"><h2>全部行情</h2></div>
-      <div class="all-toolbar">
-        <el-select :model-value="category" placeholder="市场类型" @change="chooseCategory(String($event))"
-          ><el-option
-            v-for="item in categories"
-            :key="item.id"
-            :label="item.label"
-            :value="item.id"
-        /></el-select>
-        <el-input
-          v-model="query"
-          aria-label="搜索全部行情"
-          clearable
-          placeholder="查询代码或名称"
-          @input="search"
-          @keyup.enter="searchNow"
-          @clear="resetAll"
-        />
-        <el-button type="primary" @click="searchNow">查询</el-button>
-      </div>
+    <section class="all-section">
       <el-alert
         v-if="error"
         :title="error"
@@ -2286,6 +2122,12 @@ onBeforeUnmount(() => {
           @scroll.passive="listScroll"
           @wheel.prevent="listWheel"
         >
+          <div class="all-toolbar" aria-label="全部行情查询工具">
+            <el-select :model-value="category" placeholder="市场类型" @change="chooseCategory(String($event))"
+              ><el-option v-for="item in categories" :key="item.id" :label="item.label" :value="item.id" /></el-select>
+            <el-input v-model="query" aria-label="搜索全部行情" clearable placeholder="查询代码或名称" @input="search" @keyup.enter="searchNow" @clear="resetAll" />
+            <el-button type="primary" @click="searchNow">查询</el-button>
+          </div>
           <div class="list-header-row">
             <span class="flag-column-title">标记</span
             ><span class="sequence-column-title">序号</span>
@@ -2416,50 +2258,38 @@ onBeforeUnmount(() => {
         </button>
         <div class="boards">
           <section v-loading="boardTop.loading" class="board">
-            <header>
-              <strong class="board-title">{{ selected?.name || "请选择标的" }}</strong>
-              <div class="board-quote-wrap"><QuoteValues :bar="boardTopQuote" :latest-bar="boardTop.bars.at(-1)" :total-market-cap="selected?.totalMarketCap" :float-market-cap="selected?.floatMarketCap" :swap-colors="swapColors" inline /></div>
-              <select :value="boardTop.period" aria-label="上看板 K 线周期" @change="boardPeriod('top',($event.target as HTMLSelectElement).value)"><option v-for="[id,label] in periodOptions" :key="id" :value="id" :disabled="!boardPeriodAvailable(boardTop,id)">{{label}}</option></select>
-            </header>
             <KLineChart
               :bars="boardTop.bars"
               :period="boardTop.period"
-              :height="boardChartHeight"
+              fill
               :loading-earlier="boardTop.loadingEarlier"
               :drawings="drawingsForPeriod(boardTop.period)"
               :total-market-cap="selected?.totalMarketCap"
               :float-market-cap="selected?.floatMarketCap"
               :future-units="selected?.assetType === 'FUTURE'"
-              hide-quote
               drawings-read-only
               open-on-double-click
               @open-detail="selected && openWorkbench(selected)"
               @hover="boardTopQuote = $event"
               @request-earlier="loadEarlierBoard(boardTop)"
-            />
+            ><template #overlay><div class="board-overlay"><strong>{{ selected?.name || "请选择标的" }}</strong><select :value="boardTop.period" aria-label="上看板 K 线周期" @change="boardPeriod('top',($event.target as HTMLSelectElement).value)"><option v-for="[id,label] in periodOptions" :key="id" :value="id" :disabled="!boardPeriodAvailable(boardTop,id)">{{label}}</option></select></div></template></KLineChart>
           </section>
           <section v-loading="boardBottom.loading" class="board">
-            <header>
-              <strong class="board-title">{{ selected?.name || "请选择标的" }}</strong>
-              <div class="board-quote-wrap"><QuoteValues :bar="boardBottomQuote" :latest-bar="boardBottom.bars.at(-1)" :total-market-cap="selected?.totalMarketCap" :float-market-cap="selected?.floatMarketCap" :swap-colors="swapColors" inline /></div>
-              <select :value="boardBottom.period" aria-label="下看板 K 线周期" @change="boardPeriod('bottom',($event.target as HTMLSelectElement).value)"><option v-for="[id,label] in periodOptions" :key="id" :value="id" :disabled="!boardPeriodAvailable(boardBottom,id)">{{label}}</option></select>
-            </header>
             <KLineChart
               :bars="boardBottom.bars"
               :period="boardBottom.period"
-              :height="boardChartHeight"
+              fill
               :loading-earlier="boardBottom.loadingEarlier"
               :drawings="drawingsForPeriod(boardBottom.period)"
               :total-market-cap="selected?.totalMarketCap"
               :float-market-cap="selected?.floatMarketCap"
               :future-units="selected?.assetType === 'FUTURE'"
-              hide-quote
               drawings-read-only
               open-on-double-click
               @open-detail="selected && openWorkbench(selected)"
               @hover="boardBottomQuote = $event"
               @request-earlier="loadEarlierBoard(boardBottom)"
-            />
+            ><template #overlay><div class="board-overlay"><strong>{{ selected?.name || "请选择标的" }}</strong><select :value="boardBottom.period" aria-label="下看板 K 线周期" @change="boardPeriod('bottom',($event.target as HTMLSelectElement).value)"><option v-for="[id,label] in periodOptions" :key="id" :value="id" :disabled="!boardPeriodAvailable(boardBottom,id)">{{label}}</option></select></div></template></KLineChart>
           </section>
         </div>
       </div>
@@ -2472,9 +2302,7 @@ onBeforeUnmount(() => {
         @pointerdown="dismissDrawingPopover"
       >
         <header class="workbench-header">
-          <div class="instrument-quote-line">
-            <b>{{ selected?.name }} · {{ selected?.symbol || selected?.instrumentId }}</b>
-          </div>
+          <div class="instrument-quote-line" aria-hidden="true" />
           <div class="workbench-actions">
             <div class="chart-type-picker">
               <button class="icon-button" aria-label="K线类型" :title="chartTypes.find((item)=>item.value===chartType)?.label" @click="chartTypeMenu=!chartTypeMenu"><ChartIcon :name="chartType"/><ChartIcon name="chevron"/></button>
@@ -2730,26 +2558,6 @@ onBeforeUnmount(() => {
             </svg>
           </button>
         </aside>
-        <nav class="period-bar" aria-label="详情 K 线周期">
-          <button
-            v-for="[id, text] in periodOptions"
-            :key="id"
-            type="button"
-            :class="{
-              active: history.period === id,
-              unavailable: !history.availablePeriods.includes(id),
-            }"
-            :disabled="!history.availablePeriods.includes(id)"
-            :title="
-              history.availablePeriods.includes(id)
-                ? `${text} 周期`
-                : '本地暂无该周期数据'
-            "
-            @click="switchPeriod(id)"
-          >
-            {{ text }}
-          </button>
-        </nav>
         <div class="workbench-content">
           <div v-if="replayActive" class="replay-controls" aria-label="K线回放">
             <button aria-label="选择回放起点" title="选择回放起点" :class="{active:replaySelecting}" @click="stopReplay();replaySelecting=true"><ChartIcon name="start"/></button>
@@ -2966,7 +2774,7 @@ onBeforeUnmount(() => {
             @pick-bar="replayCount=$event+1; replaySelecting=false"
             :chart-type="chartType"
             :period="history.period"
-            :height="detailChartHeight"
+            fill
             :indicator-instances="indicatorInstances.filter((item) => item.crossPeriod !== false || item.period === history.period)"
             :volume-profile="activeVolumeProfile"
             :strategy-markers="replayActive ? [] : [...visibleStrategyMarkers, ...signalChartMarkers]"
@@ -2987,7 +2795,7 @@ onBeforeUnmount(() => {
             @update-drawing="updateDrawing"
             @visible-range="onDetailVisibleRange"
             @request-earlier="!replayActive && loadEarlierHistory()"
-          />
+          ><template #overlay><div class="detail-chart-overlay"><b>{{ selected?.name }} · {{ selected?.symbol || selected?.instrumentId }}</b><select :value="history.period" aria-label="详情 K 线周期" @change="switchPeriod(($event.target as HTMLSelectElement).value)"><option v-for="[id,text] in periodOptions" :key="id" :value="id" :disabled="!history.availablePeriods.includes(id)">{{ text }}</option></select></div></template></KLineChart>
           </section>
           <section
             v-if="activeChartStrategy && !replayActive"
@@ -3099,7 +2907,6 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.signal-monitor-actions,.signal-monitor-row{display:flex;align-items:center;gap:14px;margin:10px 0;font-size:12px}.signal-monitor-panel{margin-top:16px;padding-top:10px;border-top:1px solid var(--ml-divider)}.signal-monitor-row button{border:0;background:transparent;color:var(--ml-accent);cursor:pointer}
 .drawing-tool-group,.chart-type-picker{position:relative}
 .drawing-group-menu,.chart-type-menu{position:absolute;left:43px;top:0;min-width:180px;z-index:30;padding:6px;background:var(--ml-surface);box-shadow:0 5px 20px #0003;border:1px solid var(--ml-divider);border-radius:6px}
 .drawing-toolbar .drawing-group-menu button{width:100%;display:flex;gap:12px;padding:8px;white-space:nowrap}
@@ -4061,9 +3868,6 @@ onBeforeUnmount(() => {
 .drawing-popover .popover-drag-handle {
   width: 24px !important;
 }
-.market-section-nav{display:flex;gap:4px;margin:0 0 12px;border-bottom:1px solid var(--ml-divider)}
-.market-section-nav button{border:0;border-bottom:2px solid transparent;background:transparent;color:var(--ml-text-secondary);padding:9px 14px;cursor:pointer}
-.market-section-nav button.active{border-color:var(--ml-accent);color:var(--ml-text-primary);font-weight:700}
 .all-section{margin-top:0}
 .all-toolbar{grid-template-columns:220px minmax(10ch,18ch) auto;align-items:center}
 .all-toolbar :deep(.el-input){width:clamp(10ch,16vw,18ch)}
@@ -4079,7 +3883,6 @@ onBeforeUnmount(() => {
 .board-title{cursor:default;max-width:12ch;overflow:hidden;text-overflow:ellipsis}
 .board-quote-wrap{min-width:0;overflow-x:auto;scrollbar-width:thin}
 .board-quote-wrap :deep(.quote-values){height:24px;font-size:10px}
-.board-quote-wrap :deep(.quote-pair p){line-height:12px}
 .board select{box-sizing:border-box;width:6.8ch;min-width:6.8ch;height:26px;padding:0 1.35em 0 .35em;background:var(--ml-surface);border:1px solid var(--ml-divider);border-radius:4px;color:var(--ml-text-primary);font-size:11px}
 :global(.workbench-overlay){grid-template-columns:minmax(176px,220px) minmax(0,1fr) 48px;grid-template-rows:46px minmax(0,1fr) 36px;overflow:hidden}
 .workbench-header{grid-column:1/-1;grid-template-rows:1fr;padding:0 10px}
@@ -4192,4 +3995,25 @@ onBeforeUnmount(() => {
 :global(.indicator-manager-popper) {
   z-index: 3100 !important;
 }
+
+/* R4 续2：页面尺寸由父视口分配，图表不再依赖硬编码高度减值。 */
+.market-page { width: 100%; height: 100%; min-height: 0; margin: 0; display: flex; flex-direction: column; overflow: hidden; }
+.all-section { flex: 1 1 auto; min-height: 0; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.list-workbench { --market-toolbar-height: 42px; flex: 1 1 auto; height: auto; min-height: 0; border-radius: 0; grid-template-columns: minmax(360px, 1fr) 8px minmax(0, var(--chart-width, 52%)); }
+.instrument-list { display: block; min-height: 0; overflow: auto; background: var(--ml-surface); }
+.all-toolbar { position: sticky; top: 0; z-index: 7; display: grid; grid-template-columns: minmax(9rem, 1fr) clamp(10rem, 18vw, 22rem) clamp(3rem, 4vw, 4.5rem); align-items: center; gap: 4px; min-height: var(--market-toolbar-height); padding: 5px 6px; background: var(--ml-surface); border-bottom: 1px solid var(--ml-divider); }
+.all-toolbar :deep(.el-input) { width: 100%; }.all-toolbar :deep(.el-button) { min-width: 0; padding-inline: 6px; }
+.list-header-row { top: var(--market-toolbar-height); z-index: 6; background: var(--ml-surface-elevated); box-shadow: 0 1px 0 var(--ml-divider); }
+.list-table-header, .list-table-header > .column-header, .column-sort { background: var(--ml-surface-elevated); }
+.list-table-header { gap: 0; }.column-header { margin: 0; border-right: 1px solid var(--ml-divider); }
+.boards { gap: var(--ml-chart-board-gap, 12px); padding: 0; background: var(--ml-background); grid-template-rows: minmax(0, 1fr) minmax(0, 1fr); }
+.board { display: flex; min-height: 0; border: 1px solid var(--ml-divider); background: var(--ml-surface); }
+.board > .kline-chart { flex: 1 1 auto; min-height: 0; }
+.board-overlay, .detail-chart-overlay { display: flex; align-items: center; justify-content: space-between; gap: 5px; min-width: 0; font-size: 11px; color: var(--ml-text-primary); pointer-events: none; }
+.board-overlay strong, .detail-chart-overlay b { overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.board-overlay select, .detail-chart-overlay select { box-sizing: border-box; width: 8.5ch; min-width: 8.5ch; height: 20px; padding: 0; color: var(--ml-text-primary); background: var(--ml-surface); border: 1px solid var(--ml-divider); border-radius: 3px; font-size: 10px; pointer-events: auto; }
+.workbench-content { position: relative; overflow: hidden; }.workbench-chart { height: 100%; min-height: 0; }.workbench-chart > .kline-chart { height: 100%; }
+.workbench-overlay { grid-template-rows: 42px minmax(0, 1fr) !important; }.workbench-header { min-height: 42px; }.instrument-quote-line { display: none !important; }
+.chart-indicator-legend { top: 62px; left: 68px; }.workbench-content .replay-controls { position: absolute; left: 0; right: 0; bottom: 0; z-index: 22; }
+@media (max-width: 980px) { .all-toolbar { grid-template-columns: 1fr 1fr; }.all-toolbar :deep(.el-button) { grid-column: 2; justify-self: end; }.list-workbench { grid-template-columns: minmax(300px, 42%) 8px minmax(0, 1fr); } }
 </style>

@@ -123,6 +123,9 @@
 - SPA 详情路由若只有前端定义，刷新/分享就会返回服务器 404。新增 client route 时同时补服务端 shell 路由和 API 回归。
 - ECharts 事件图元 `target.id` 不是可靠字符串类型；画线命中判定必须先做类型守卫。高频准星只更新最新 bar 对应的状态，不能在每次 pointermove 重建所有 series。
 
+- 让 K 线组件支持 `height: 100%` 时，不能继续用传入的默认像素 height 计算 ECharts grid；必须从 ResizeObserver 实测值刷新布局，否则点击会落到错误 pane。页面级滚动锁也不能替代对 `scrollHeight <= clientHeight` 的真实验证。
+- 右侧工具栏与绝对定位回放控件必须有共同定位容器；否则视觉上位于中间列的控件仍会被最右栏截获事件。
+
 ## 新会话接手顺序
 
 1. 当前开发从根目录最新轮次计划启动；截至 2026-08-27 为 `Plan_R4.md`。同时阅读 ADR、`docs/CONTEXT.md` 和本文件中的相关环境事实。

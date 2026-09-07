@@ -11,6 +11,7 @@ import {
 import type { IndicatorInstance, VolumeProfile } from "../../domain/strategyTypes";
 import { useThemeStore } from "../../stores/theme";
 import { heikinAshi, type ChartType } from "../../domain/chartPresentation";
+import { CHART_LAYOUT, nestedBarGeometry } from "../../domain/chartLayout";
 import { weekdayLabel } from "../../domain/marketList";
 import LaserCanvas from "./LaserCanvas.vue";
 import QuoteValues from "./QuoteValues.vue";
@@ -132,6 +133,7 @@ const props = withDefaults(
   defineProps<{
     bars: KLineBar[];
     height?: number;
+    fill?: boolean;
     indicators?: Record<string, Array<number | null | undefined>>;
     indicatorInstances?: IndicatorInstance[];
     volumeProfile?: VolumeProfile;
@@ -160,6 +162,7 @@ const props = withDefaults(
   {
     bars: () => [],
     height: 460,
+    fill: false,
     indicators: () => ({}),
     indicatorInstances: () => [],
     volumeProfile: undefined,
@@ -197,6 +200,7 @@ const emit = defineEmits<{
 }>();
 const theme = useThemeStore();
 const element = ref<HTMLElement>();
+const layoutHeight = ref(props.height);
 const hoverIndex = ref(-1);
 const range = ref({ start: 0, end: 0 });
 let chart: echarts.ECharts | undefined;
@@ -247,7 +251,7 @@ const candleData = computed(() =>
 );
 const volumeData = computed(() =>
   props.bars.map((bar) => ({
-    value: asNumber(bar.volume) ?? 0,
+    value: asNumber(bar.volume),
     itemStyle: { color: upColor(bar) },
   })),
 );
@@ -264,6 +268,57 @@ const secondaryData = computed(() =>
     itemStyle: { color: upColor(bar), opacity: 0.34 },
   })),
 );
+
+function nestedBarSeries(
+  name: string,
+  data: Array<{ value: number | null; itemStyle: { color: string; opacity?: number } }>,
+  yAxisIndex: number,
+  widthRatio: number,
+  z: number,
+): object {
+  return {
+    name,
+    type: "custom",
+    xAxisIndex: 1,
+    yAxisIndex,
+    coordinateSystem: "cartesian2d",
+    encode: { x: 0, y: 1 },
+    data: data.map((item, index) => [index, item.value, item.itemStyle.color, item.itemStyle.opacity ?? 1]),
+    silent: true,
+    z,
+    emphasis: { disabled: true },
+    renderItem(params: { coordSys?: { x: number; y: number; width: number; height: number } }, api: {
+      value(dimension: number): unknown;
+      coord(value: [number, number]): [number, number];
+      size(value: [number, number]): [number, number];
+    }) {
+      const index = Number(api.value(0));
+      const value = Number(api.value(1));
+      if (!Number.isFinite(index) || !Number.isFinite(value)) return undefined;
+      const center = api.coord([index, 0])[0];
+      const baseline = api.coord([index, 0])[1];
+      const valueY = api.coord([index, value])[1];
+      const width = Math.max(0, api.size([1, 0])[0]);
+      const geometry = nestedBarGeometry(center, width);
+      const selected = widthRatio >= CHART_LAYOUT.secondaryBackRatio ? geometry.back : geometry.front;
+      const shape = {
+        x: selected.x,
+        y: Math.min(baseline, valueY),
+        width: selected.width,
+        height: Math.abs(baseline - valueY),
+      };
+      const clipped = params.coordSys
+        ? echarts.graphic.clipRectByRect(shape, params.coordSys)
+        : shape;
+      if (!clipped) return undefined;
+      return {
+        type: "rect",
+        shape: clipped,
+        style: { fill: String(api.value(2)), opacity: Number(api.value(3)) },
+      };
+    },
+  };
+}
 const majorTicks = computed(() => {
   const indexes = new Set<number>();
   let previous = "";
@@ -1610,15 +1665,15 @@ function chartLayout(): {
   const palette = theme.palette;
   const compact = props.compact;
   const left = compact ? 48 : 66;
-  const right = compact ? 12 : 28;
+  const right = compact ? 42 : 48;
   const top = props.hideQuote ? 16 : displayQuotePanel.value ? (compact ? 54 : 58) : compact ? 26 : 42;
   const bottom = compact ? 20 : 28;
   const paneCount = paneIndicatorInstances.value.length;
   const secondaryCount = paneCount + 1;
-  const gap = compact ? 5 : 8;
+  const gap = compact ? CHART_LAYOUT.paneGap - 6 : CHART_LAYOUT.paneGap;
   const available = Math.max(
     120,
-    props.height - top - bottom - gap * secondaryCount,
+    layoutHeight.value - top - bottom - gap * secondaryCount,
   );
   const priceHeight = paneCount
     ? Math.max(130, Math.floor(available * 0.5))
@@ -1678,8 +1733,7 @@ function chartLayout(): {
     axisTick: { show: false },
     splitLine: { show: true, lineStyle: { color: palette.chartGrid } },
   });
-  const yAxes = [
-    {
+  const priceAxis = {
       scale: true,
       min: priceBounds().min,
       max: priceBounds().max,
@@ -1693,9 +1747,12 @@ function chartLayout(): {
       },
       splitLine: { lineStyle: { color: palette.chartGrid } },
       axisPointer: { show: true },
-    },
+  };
+  const yAxes = [
+    priceAxis,
     {
       ...indicatorAxis(1, palette.chartVolume),
+      min: 0,
       axisLabel: {
         show: true,
         color: palette.chartVolume,
@@ -1707,6 +1764,7 @@ function chartLayout(): {
     },
     {
       ...indicatorAxis(1, palette.chartSecondary),
+      min: 0,
       position: "right",
       axisLabel: {
         show: true,
@@ -1721,18 +1779,24 @@ function chartLayout(): {
     ...paneIndicatorInstances.value.map((_item, index) =>
       indicatorAxis(index + 2),
     ),
+    {
+      ...priceAxis,
+      position: "right",
+      splitLine: { show: false },
+      axisPointer: { show: false },
+    },
   ];
   const titles = [
     {
       text: "成交量",
       left: left + 4,
-      top: Math.max(0, cursor - gap * secondaryCount - secondaryHeight - 13),
+      top: Number((grids[1] as { top: number }).top) - 12,
       textStyle: { color: palette.chartVolume, fontSize: compact ? 8 : 10, fontWeight: 600 },
     },
     {
       text: secondaryMetricLabel.value,
-      right: right + 3,
-      top: Math.max(0, cursor - gap * secondaryCount - secondaryHeight - 13),
+      left: left + 48,
+      top: Number((grids[1] as { top: number }).top) - 12,
       textStyle: { color: palette.chartSecondary, fontSize: compact ? 8 : 10, fontWeight: 600 },
     },
     ...paneIndicatorInstances.value.map((item, index) => ({
@@ -1843,24 +1907,8 @@ function render(): void {
           },
           emphasis: { disabled: true },
         },
-        {
-          name: secondaryMetricLabel.value,
-          type: "bar",
-          xAxisIndex: 1,
-          yAxisIndex: 2,
-          data: secondaryData.value,
-          barGap: "-100%",
-          emphasis: { disabled: true },
-        },
-        {
-          name: "成交量",
-          type: "bar",
-          xAxisIndex: 1,
-          yAxisIndex: 1,
-          data: volumeData.value,
-          barGap: "-100%",
-          emphasis: { disabled: true },
-        },
+        nestedBarSeries(secondaryMetricLabel.value, secondaryData.value, 2, CHART_LAYOUT.secondaryBackRatio, 1),
+        nestedBarSeries("成交量", volumeData.value, 1, CHART_LAYOUT.secondaryFrontRatio, 2),
         ...indicatorSeries(),
       ],
     },
@@ -2510,8 +2558,11 @@ function installHandlers(): void {
   renderer.on("mousewheel", wheelZoom);
 }
 function resize(): void {
+  const measured = Math.max(1, Math.round(element.value?.clientHeight || props.height));
+  const changed = layoutHeight.value !== measured;
+  layoutHeight.value = measured;
   chart?.resize();
-  void nextTick(render);
+  if (changed) void nextTick(render);
 }
 watch(
   () => props.drawingTool,
@@ -2573,6 +2624,13 @@ watch(
   { deep: false },
 );
 watch(
+  () => props.height,
+  (height) => {
+    if (!props.fill) layoutHeight.value = height;
+    void nextTick(render);
+  },
+);
+watch(
   () => [
     props.bars,
     props.indicators,
@@ -2595,6 +2653,7 @@ watch(
 );
 onMounted(() => {
   void nextTick(() => {
+    layoutHeight.value = Math.max(1, Math.round(element.value?.clientHeight || props.height));
     render();
     installHandlers();
     emit("visibleRange", range.value.start, range.value.end);
@@ -2624,18 +2683,21 @@ onBeforeUnmount(() => {
 <template>
   <div
     class="kline-chart chart-box"
-    :class="{ compact, 'drawing-active': drawingTool !== 'cursor', 'cursor-tool': drawingTool === 'cursor' }"
-    :style="{ height: `${height}px` }"
+    :class="{ compact, fill, 'drawing-active': drawingTool !== 'cursor', 'cursor-tool': drawingTool === 'cursor' }"
+    :style="fill ? undefined : { height: `${height}px` }"
   >
     <div v-if="!hideQuote && hoverBar" class="quote-panel">
       <QuoteValues :bar="hoverBar" :latest-bar="bars.at(-1)" :total-market-cap="totalMarketCap" :float-market-cap="floatMarketCap" :swap-colors="swapColors" />
     </div>
+    <div class="chart-overlay-controls"><slot name="overlay" /></div>
     <span v-if="drawingTool === 'long_position' || drawingTool === 'short_position'" class="risk-drawing-hint">{{ riskHint || '请选择开仓参考价，然后选择止损、目标参考价' }}</span>
     <div
       ref="element"
       class="chart-root"
       @dblclick="requestDetail"
       :data-chart-type="chartType"
+      :data-layout-height="layoutHeight"
+      data-price-axis-count="2"
       :data-rectangle-preview="Boolean(rectangleCursor)"
       :data-rectangle-anchor="Boolean(rectangleAnchor)"
       :data-fibonacci-preview="Boolean(fibonacciCursor)"
@@ -2652,16 +2714,6 @@ onBeforeUnmount(() => {
       :data-volume-profile-bucket-count="volumeProfile?.buckets.length || 0"
     />
     <LaserCanvas v-if="drawingTool === 'laser'" />
-    <span
-      v-if="paneIndicatorInstances.length === 0"
-      class="secondary-axis-name secondary-axis-name-left"
-      >成交量</span
-    >
-    <span
-      v-if="paneIndicatorInstances.length === 0"
-      class="secondary-axis-name secondary-axis-name-right"
-      >{{ secondaryMetricLabel }}</span
-    >
     <input
       v-if="textDraft"
       ref="textInput"
@@ -2688,6 +2740,7 @@ onBeforeUnmount(() => {
   min-width: 0;
   user-select: none;
 }
+.kline-chart.fill { height: 100%; }
 .chart-root {
   width: 100%;
   height: 100%;
@@ -2726,111 +2779,23 @@ onBeforeUnmount(() => {
 .quote-panel {
   position: absolute;
   z-index: 2;
-  top: 2px;
+  top: 20px;
   left: 66px;
-  right: 42px;
-  height: 52px;
+  right: 50px;
+  height: 40px;
   pointer-events: none;
   overflow: hidden;
+  container-type: inline-size;
   font-family: "SimHei", "Heiti SC", "Microsoft YaHei", sans-serif;
 }
-.quote-panel time {
-  display: block;
-  height: 16px;
-  color: var(--ml-text-primary);
-  font-size: 11px;
-  font-weight: 900;
-  line-height: 16px;
-  white-space: nowrap;
-}
-.quote-values {
-  display: grid;
-  grid-template-columns: repeat(7, minmax(86px, 1fr));
-  height: 34px;
-}
-.quote-pair {
-  display: grid;
-  grid-template-rows: 1fr 1fr;
-  padding: 0 6px;
-  border-left: 1px solid var(--ml-divider);
-}
-.quote-pair p {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  align-items: center;
-  gap: 7px;
-  margin: 0;
-  min-width: 0;
-}
-.quote-pair span {
-  color: var(--ml-text-secondary);
-  font-size: 11px;
-  white-space: nowrap;
-  font-weight: bold;
-}
-.quote-pair strong {
-  overflow: hidden;
-  color: var(--ml-text-primary);
-  font-size: 13px;
-  font-weight: 900;
-  font-family: "SimHei", "Heiti SC", sans-serif;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+.chart-overlay-controls { position:absolute; z-index:4; top:2px; left:66px; right:50px; min-height:18px; pointer-events:none; }
+.chart-overlay-controls :slotted(*) { pointer-events:auto; }
 .compact .quote-panel {
   left: 48px;
-  right: 14px;
-  height: 50px;
-}
-.compact .quote-panel time {
-  height: 14px;
-  font-size: 9px;
-  line-height: 14px;
-}
-.compact .quote-values {
-  height: 34px;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
-  overflow: hidden;
-}
-.compact .quote-pair {
-  overflow: hidden;
-  padding: 0 2px;
-}
-.compact .quote-pair p {
-  gap: 1px;
-}
-.compact .quote-pair span {
-  font-size: 8px;
-}
-.compact .quote-pair strong {
-  font-size: 9px;
-}
-.secondary-axis-name {
-  position: absolute;
-  z-index: 2;
-  bottom: 2px;
-  color: var(--ml-text-secondary);
-  font:
-    700 10px/1 "Microsoft YaHei UI",
-    "Microsoft YaHei",
-    sans-serif;
-  pointer-events: none;
-}
-.secondary-axis-name-left {
-  left: 66px;
-}
-.secondary-axis-name-right {
   right: 42px;
+  height: 40px;
 }
-.compact .secondary-axis-name {
-  font-size: 8px;
-}
-.compact .secondary-axis-name-left {
-  left: 48px;
-}
-.compact .secondary-axis-name-right {
-  right: 14px;
-}
+.compact .chart-overlay-controls { left:48px; right:42px; }
 .history-loading {
   position: absolute;
   z-index: 5;

@@ -109,18 +109,19 @@ test("indicator library, icon types, direct controls, quotes and replay work tog
   await dialog.getByRole("button", { name: /相对强弱指数 RSI/ }).click();
   const chart = page.locator(".workbench-chart .chart-root");
   await expect(chart).toHaveAttribute("data-indicator-pane-count", "1");
-  const periods = page.getByRole("navigation", { name: "详情 K 线周期" });
-  await periods.getByRole("button", { name: "60分", exact: true }).click();
+  const periods = page.getByRole("combobox", { name: "详情 K 线周期" });
+  await periods.selectOption("1h");
   await expect(chart).toHaveAttribute("data-indicator-count", "1");
-  await periods.getByRole("button", { name: "日线", exact: true }).click();
+  await periods.selectOption("1d");
   await expect(chart).toHaveAttribute("data-indicator-count", "2");
   for (const [label, value] of [["空心K线图", "hollow"], ["平均K线图", "heikin"], ["折线图", "line"], ["面积图", "area"], ["实心K线图", "candles"]]) {
     await overlay.getByRole("button", { name: "K线类型", exact: true }).click();
     await page.getByRole("menuitem", { name: label, exact: true }).click();
     await expect(chart).toHaveAttribute("data-chart-type", value);
   }
-  const periodBox = (await page.getByRole("navigation", { name: "详情 K 线周期" }).boundingBox())!;
-  expect(periodBox.y).toBeGreaterThan(900);
+  const periodBox = (await periods.boundingBox())!;
+  const overlayChartBox = (await chart.boundingBox())!;
+  expect(periodBox.y).toBeLessThan(overlayChartBox.y + 32);
   await overlay.getByRole("button", { name: "回放", exact: true }).click();
   const chartBox=(await chart.boundingBox())!;
   await page.mouse.click(chartBox.x+chartBox.width*.4,chartBox.y+chartBox.height*.3);
@@ -189,14 +190,14 @@ test("market filters use only opening signals and ongoing cycles show later oper
     await route.fulfill({json:{items:scans?[{instrumentId:id,name:'浦发银行',symbol:'600000',direction:'long',openingStrategyId:'entry',openedAt:event.at,latestSignal:event}]:[],events:scans?[event]:[],scanned:1,total:1,nextOffset:null}});
   });
   await page.reload();
-  await page.getByRole("button", { name: "目标行情", exact: true }).click();
+  await page.goto('/market/targets/');
   const filters=page.getByRole('navigation',{name:'目标行情策略筛选'});
   await expect(filters).toContainText('突破开仓');
   await expect(filters).not.toContainText('回调加仓');
   await page.getByRole('button',{name:'检查开仓信号',exact:true}).click();
-  await expect(page.locator('.signal-monitor-panel')).toContainText('浦发银行');
+  await expect(page.locator('.target-results')).toContainText('浦发银行');
   await page.getByRole('button',{name:'更新已开仓监控',exact:true}).click();
-  await expect(page.locator('.signal-monitor-panel')).toContainText('回调加仓');
-  await page.locator('.signal-monitor-row').getByRole('button',{name:'浦发银行',exact:true}).click();
+  await expect(page.locator('.target-monitor-panel')).toContainText('回调加仓');
+  await page.locator('.target-results').getByRole('button',{name:/浦发银行/}).click();
   await expect(page.locator('.workbench-chart .chart-root')).toHaveAttribute('data-strategy-marker-count','1');
 });

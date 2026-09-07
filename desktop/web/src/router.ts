@@ -6,7 +6,9 @@ const F10View = () => import("./views/F10View.vue");
 const FuturesView = () => import("./views/FuturesView.vue");
 const IndustryView = () => import("./views/IndustryView.vue");
 const LogsView = () => import("./views/LogsView.vue");
-const MarketView = () => import("./views/MarketView.vue");
+const AllMarketView = () => import("./views/AllMarketView.vue");
+const TargetMarketView = () => import("./views/TargetMarketView.vue");
+const MarketInstrumentView = () => import("./views/MarketInstrumentView.vue");
 const SettingsView = () => import("./views/SettingsView.vue");
 const StrategyView = () => import("./views/StrategyView.vue");
 const StatsView = () => import("./views/StatsView.vue");
@@ -16,9 +18,9 @@ export default createRouter({
   routes: [
     { path: "/", component: HomeView },
     { path: "/market/", redirect: "/market/all/" },
-    { path: "/market/all/", component: MarketView },
-    { path: "/market/targets/", component: MarketView },
-    { path: "/market/instrument/:instrumentId/", component: MarketView, props: true },
+    { path: "/market/all/", component: AllMarketView },
+    { path: "/market/targets/", component: TargetMarketView },
+    { path: "/market/instrument/:instrumentId/", component: MarketInstrumentView, props: true },
     { path: "/settings/", component: SettingsView },
     { path: "/data/", component: DataView },
     { path: "/data-sources/", component: DataSourcesView },

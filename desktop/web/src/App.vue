@@ -7,7 +7,8 @@ const theme = useThemeStore();
 const route = useRoute();
 
 const client = [
-  ["/market/", "行情"],
+  ["/market/all/", "全部行情"],
+  ["/market/targets/", "目标行情"],
   ["/settings/", "设置"],
   ["/data/", "数据"],
   ["/futures/", "期货数据"],
