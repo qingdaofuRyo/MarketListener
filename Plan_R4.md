@@ -6,11 +6,11 @@
 
 | 唯一任务编号 | 优先级 / 执行对象 | 状态 | 失败次数 | 现状与原因 | 目标 / 影响范围 | 依赖 / 涉及文件 | 方案 / 边界与兼容性 | 验收标准 / 测试结果 / 最终输出 |
 |---|---|---|---|---|---|---|---|---|
-| R4-续3-01 | P1 / 全部行情查询栏 | VERIFYING | 0 | 弹性市场列及重复CSS导致控件宽度不稳定 | 左栏查询尺寸稳定；右图高度不受影响 | T044/T045；MarketView.vue | 16em/clamp变量、不伸缩、不足换行；ResizeObserver同步表头top | 市场切换/搜索前后宽度一致、默认图宽50%、视口边界通过；待发布 |
-| R4-续3-02 | P1 / 列表表头 | VERIFYING | 0 | padding及旧button样式占宽且覆盖颜色 | 黑体、零横向padding、列对齐 | T044；MarketView.vue | 共用列宽grid、文字/箭头独立槽、拖动手柄；删除冲突规则 | 黑体/正文色、零padding、拖拽后三态排序及逐列边界通过；待发布 |
-| R4-续3-03 | P0 / 数值显示 | VERIFYING | 1 | 当日涨幅未统一百分比，颜色分散；lint发现无用旧格式化 | 最新价随当日涨幅、窗口独立着色 | T043/T046；marketQuote.ts、MarketView.vue、QuoteValues.vue | 有限数、百分数两位/+/%；零中性、缺失—；普通列表正文色 | +2/-1/+3/-4独立颜色、最新价跟随、零/缺失及百分比通过；待发布 |
-| R4-续3-04 | P0 / 共享图表 | VERIFYING | 3 | 65px槽过窄、轴标签带星期、双柱；失败检查批次见下 | 104px槽、简洁轴/完整十字、量柱+额或持仓线 | T043/T047；chartLayout.ts、chartTime.ts、chartSubchart.ts、KLineChart.vue、QuoteValues.vue | 7/14列、Overlay实测；能力/真实观测合并、零有效；独立双轴bar/line，缺失断线 | formatter/能力、真实ECharts SSR坐标/resize、固定槽/横滚/离开恢复最新报价通过；待发布 |
-| R4-续3-05 | P0 / 标的详情 | VERIFYING | 1 | 周期select、价格同高、跨周期SVG不一致；lint暴露无用状态 | 底部周期nav、名称下价格、公共图标 | T043/T045/T047；MarketView.vue、ChartIcon.vue、chartIcons.ts、market.ts | 已有10周期、不可用禁用；周期及已确认持仓能力共享store；三处图标同资源 | 底栏/active/取数、左栏两行、图标路径一致、绘图/指标/回放及无document溢出通过；待发布 |
+| R4-续3-01 | P1 / 全部行情查询栏 | DONE | 0 | 弹性市场列及重复CSS导致控件宽度不稳定 | 左栏查询尺寸稳定；右图高度不受影响 | T044/T045；MarketView.vue | 16em/clamp变量、不伸缩、不足换行；ResizeObserver同步表头top | 市场切换/搜索前后宽度一致、默认图宽50%、视口边界通过；已发布 |
+| R4-续3-02 | P1 / 列表表头 | DONE | 0 | padding及旧button样式占宽且覆盖颜色 | 黑体、零横向padding、列对齐 | T044；MarketView.vue | 共用列宽grid、文字/箭头独立槽、拖动手柄；删除冲突规则 | 黑体/正文色、零padding、拖拽后三态排序及逐列边界通过；已发布 |
+| R4-续3-03 | P0 / 数值显示 | DONE | 1 | 当日涨幅未统一百分比，颜色分散；lint发现无用旧格式化 | 最新价随当日涨幅、窗口独立着色 | T043/T046；marketQuote.ts、MarketView.vue、QuoteValues.vue | 有限数、百分数两位/+/%；零中性、缺失—；普通列表正文色 | +2/-1/+3/-4独立颜色、最新价跟随、零/缺失及百分比通过；已发布 |
+| R4-续3-04 | P0 / 共享图表 | DONE | 3 | 65px槽过窄、轴标签带星期、双柱；失败检查批次见下 | 104px槽、简洁轴/完整十字、量柱+额或持仓线 | T043/T047；chartLayout.ts、chartTime.ts、chartSubchart.ts、KLineChart.vue、QuoteValues.vue | 7/14列、Overlay实测；能力/真实观测合并、零有效；独立双轴bar/line，缺失断线 | formatter/能力、真实ECharts SSR坐标/resize、固定槽/横滚/离开恢复最新报价通过；已发布 |
+| R4-续3-05 | P0 / 标的详情 | DONE | 1 | 周期select、价格同高、跨周期SVG不一致；lint暴露无用状态 | 底部周期nav、名称下价格、公共图标 | T043/T045/T047；MarketView.vue、ChartIcon.vue、chartIcons.ts、market.ts | 已有10周期、不可用禁用；周期及已确认持仓能力共享store；三处图标同资源 | 底栏/active/取数、左栏两行、图标路径一致、绘图/指标/回放及无document溢出通过；已发布 |
 
 验收范围：受影响Web ESLint、vue-tsc、Playwright纯逻辑/组件/交互、production build，一次实现后审查。无后端修改则不运行Python；不运行跨端verify、Android或全部历史E2E。发布前扫描精确暂存区及忽略项，正常push，核对远端SHA与工作区。
 
@@ -24,7 +24,7 @@
 - 浏览器验证：1366×768、1920×1080、2560×1440，浅/深主题；document无额外竖向溢出、详情底栏与视口底部对齐。125%/150%使用CSS zoom模拟布局缩放；DPR=2使用独立浏览器上下文核对canvas物理像素，未声称验证操作系统缩放或Ctrl+缩放。已检查忽略目录中的 `test-results/r4-s3-list.png`、`r4-s3-detail.png`。
 - 审查修复：首次访问Number(null)使右图默认25%，改为50%；详情第二行代码/价格/涨幅明确列位置；清除表头旧button颜色覆盖、旧外部报价/board-header/双柱几何及重复图例样式。Overlay和图例一起测量，宽/高/Overlay/DPR未变不重复resize；卸载释放observer/rAF，删除重复inverse/swap watcher及页面无消费者hover状态；离开画布取消悬浮帧并恢复最新报价。
 - 验证边界：UI使用明确fixture，坐标测试消费真实ECharts SSR；未做全市场数据覆盖、长期内存压力或真实浏览器缩放专项。字段仍来自原有真实接口，不补造缺值。
-- `.gitignore`已覆盖node_modules、构建、截图/报告/缓存，本次无新类型需要补规则。发布SHA与远端核验在push后补记。
+- `.gitignore`已覆盖node_modules、构建、截图/报告/缓存，本次无新类型需要补规则。实现提交 `0f490a1effcf7921b04122bbec67e0fe6e1d708a` 已正常推送 `origin/master`，远端SHA与本地一致；22个候选文件通过暂存差异、敏感信息和大文件检查，工作区干净。五项任务按本节验收证据完成；此状态收尾另作文档提交。
 
 最后更新：2026-09-06。本文承接 `Plan_R3.md`，围绕网页端“数据源、数据、国内期货数据、行情、策略”页面及同轮次确认的交互改进滚动收敛第四轮需求；当前已登记国内期货数据页、80 色画线调色板、笔刷画线、品种/席位的市值与持仓四张结构图、中国商品期货多空热度体系、网页端“数据”页面三分区、行情分类治理，以及 Indicator / Strategy Function / Strategy 三层策略系统和标的详情图表交互改版。R1、R2、R3 和 `docs/STATUS.md` 只保留历史事实与未完成项来源，不再新增平行待办。
 
