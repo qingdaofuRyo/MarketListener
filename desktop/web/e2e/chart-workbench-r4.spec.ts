@@ -98,6 +98,8 @@ test("indicator library, icon types, direct controls, quotes and replay work tog
   await dialog.getByRole("button", { name: /移动平均线 Moving Average/ }).click();
   const legend = page.getByLabel("已添加指标");
   await expect(legend).toContainText("移动平均线");
+  const crossPeriodPath = await overlay.locator('.drawing-toolbar button[aria-label="跨周期"] path').getAttribute("d");
+  await expect(legend.getByRole("button", {name:"跨周期移动平均线"}).locator("path")).toHaveAttribute("d", crossPeriodPath!);
   await expect.poll(() => state.requests.length).toBeGreaterThan(0);
   await legend.getByRole("button", { name: "跨周期移动平均线" }).click();
   await expect(legend.getByLabel("颜色移动平均线")).toHaveCount(0);
@@ -109,10 +111,11 @@ test("indicator library, icon types, direct controls, quotes and replay work tog
   await dialog.getByRole("button", { name: /相对强弱指数 RSI/ }).click();
   const chart = page.locator(".workbench-chart .chart-root");
   await expect(chart).toHaveAttribute("data-indicator-pane-count", "1");
-  const periods = page.getByRole("combobox", { name: "详情 K 线周期" });
-  await periods.selectOption("1h");
+  const periods = page.getByRole("navigation", { name: "K线周期" });
+  await expect(page.getByRole("combobox", { name: "详情 K 线周期" })).toHaveCount(0);
+  await periods.getByRole("button", { name: "60分", exact: true }).click();
   await expect(chart).toHaveAttribute("data-indicator-count", "1");
-  await periods.selectOption("1d");
+  await periods.getByRole("button", { name: "日线", exact: true }).click();
   await expect(chart).toHaveAttribute("data-indicator-count", "2");
   for (const [label, value] of [["空心K线图", "hollow"], ["平均K线图", "heikin"], ["折线图", "line"], ["面积图", "area"], ["实心K线图", "candles"]]) {
     await overlay.getByRole("button", { name: "K线类型", exact: true }).click();
@@ -121,7 +124,7 @@ test("indicator library, icon types, direct controls, quotes and replay work tog
   }
   const periodBox = (await periods.boundingBox())!;
   const overlayChartBox = (await chart.boundingBox())!;
-  expect(periodBox.y).toBeLessThan(overlayChartBox.y + 32);
+  expect(periodBox.y).toBeGreaterThanOrEqual(overlayChartBox.y + overlayChartBox.height - 1);
   await overlay.getByRole("button", { name: "回放", exact: true }).click();
   const chartBox=(await chart.boundingBox())!;
   await page.mouse.click(chartBox.x+chartBox.width*.4,chartBox.y+chartBox.height*.3);

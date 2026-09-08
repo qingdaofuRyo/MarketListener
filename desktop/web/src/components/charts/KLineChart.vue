@@ -11,8 +11,9 @@ import {
 import type { IndicatorInstance, VolumeProfile } from "../../domain/strategyTypes";
 import { useThemeStore } from "../../stores/theme";
 import { heikinAshi, type ChartType } from "../../domain/chartPresentation";
-import { CHART_LAYOUT, nestedBarGeometry } from "../../domain/chartLayout";
-import { weekdayLabel } from "../../domain/marketList";
+import { CHART_LAYOUT } from "../../domain/chartLayout";
+import { formatAxisDate, formatCrosshairTime } from "../../domain/chartTime";
+import { resolveSecondaryMetric, subchartSeries, type MeasureEvidence } from "../../domain/chartSubchart";
 import LaserCanvas from "./LaserCanvas.vue";
 import QuoteValues from "./QuoteValues.vue";
 
@@ -132,6 +133,8 @@ interface PointerCaptureTarget extends EventTarget {
 const props = withDefaults(
   defineProps<{
     bars: KLineBar[];
+    instrumentId?: string;
+    measureEvidence?: MeasureEvidence;
     height?: number;
     fill?: boolean;
     indicators?: Record<string, Array<number | null | undefined>>;
@@ -200,6 +203,13 @@ const emit = defineEmits<{
 }>();
 const theme = useThemeStore();
 const element = ref<HTMLElement>();
+const overlayElement = ref<HTMLElement>();
+const quoteElement = ref<HTMLElement>();
+const overlayHeight = ref(60);
+let measuredWidth = 0;
+let measuredDpr = 0;
+let resizeFrame: number | undefined;
+let disposed = false;
 const layoutHeight = ref(props.height);
 const hoverIndex = ref(-1);
 const range = ref({ start: 0, end: 0 });
@@ -249,76 +259,12 @@ const candleData = computed(() =>
     asNumber(bar.high),
   ]),
 );
-const volumeData = computed(() =>
-  props.bars.map((bar) => ({
-    value: asNumber(bar.volume),
-    itemStyle: { color: upColor(bar) },
-  })),
-);
-const secondaryMetric = computed<"openInterest" | "amount">(() =>
-  props.bars.some((bar) => asNumber(bar.openInterest) != null)
-    ? "openInterest"
-    : "amount",
-);
-const secondaryData = computed(() =>
-  props.bars.map((bar) => ({
-    value: asNumber(bar[secondaryMetric.value]),
-    // Both bars retain the candle's up/down semantics.  The secondary measure is
-    // deliberately lighter and is painted first, so volume remains readable.
-    itemStyle: { color: upColor(bar), opacity: 0.34 },
-  })),
-);
-
-function nestedBarSeries(
-  name: string,
-  data: Array<{ value: number | null; itemStyle: { color: string; opacity?: number } }>,
-  yAxisIndex: number,
-  widthRatio: number,
-  z: number,
-): object {
-  return {
-    name,
-    type: "custom",
-    xAxisIndex: 1,
-    yAxisIndex,
-    coordinateSystem: "cartesian2d",
-    encode: { x: 0, y: 1 },
-    data: data.map((item, index) => [index, item.value, item.itemStyle.color, item.itemStyle.opacity ?? 1]),
-    silent: true,
-    z,
-    emphasis: { disabled: true },
-    renderItem(params: { coordSys?: { x: number; y: number; width: number; height: number } }, api: {
-      value(dimension: number): unknown;
-      coord(value: [number, number]): [number, number];
-      size(value: [number, number]): [number, number];
-    }) {
-      const index = Number(api.value(0));
-      const value = Number(api.value(1));
-      if (!Number.isFinite(index) || !Number.isFinite(value)) return undefined;
-      const center = api.coord([index, 0])[0];
-      const baseline = api.coord([index, 0])[1];
-      const valueY = api.coord([index, value])[1];
-      const width = Math.max(0, api.size([1, 0])[0]);
-      const geometry = nestedBarGeometry(center, width);
-      const selected = widthRatio >= CHART_LAYOUT.secondaryBackRatio ? geometry.back : geometry.front;
-      const shape = {
-        x: selected.x,
-        y: Math.min(baseline, valueY),
-        width: selected.width,
-        height: Math.abs(baseline - valueY),
-      };
-      const clipped = params.coordSys
-        ? echarts.graphic.clipRectByRect(shape, params.coordSys)
-        : shape;
-      if (!clipped) return undefined;
-      return {
-        type: "rect",
-        shape: clipped,
-        style: { fill: String(api.value(2)), opacity: Number(api.value(3)) },
-      };
-    },
-  };
-}
+const confirmedInterest = ref(false);
+watch(() => props.instrumentId, () => { confirmedInterest.value = false; }, { flush: "sync" });
+watch(() => [props.bars, props.measureEvidence] as const, () => {
+  if (resolveSecondaryMetric(props.measureEvidence, props.bars) === "openInterest") confirmedInterest.value = true;
+}, { immediate: true });
+const secondaryMetric = computed(() => resolveSecondaryMetric(props.measureEvidence, props.bars, confirmedInterest.value));
 const majorTicks = computed(() => {
   const indexes = new Set<number>();
   let previous = "";
@@ -336,54 +282,6 @@ const majorTicks = computed(() => {
   });
   return indexes;
 });
-const quotePairs = computed(() => {
-  const bar = hoverBar.value;
-  const volumeText = props.futureUnits
-    ? futureUnit(bar?.volume)
-    : stockUnit(bar?.volume);
-  const amountText = props.futureUnits
-    ? futureUnit(bar?.amount)
-    : stockUnit(bar?.amount);
-  const openInterestText = props.futureUnits
-    ? futureUnit(bar?.openInterest)
-    : format(bar?.openInterest, 0);
-  const depositText = props.futureUnits
-    ? futureUnit(bar?.capitalDeposit)
-    : stockUnit(bar?.capitalDeposit);
-  return [
-    [
-      ["开盘价", format(bar?.open)],
-      ["收盘价", format(bar?.close)],
-    ],
-    [
-      ["最高价", format(bar?.high)],
-      ["最低价", format(bar?.low)],
-    ],
-    [
-      ["结算价", format(bar?.settlement)],
-      ["振幅", percent(bar?.amplitude)],
-    ],
-    [
-      ["涨幅", percent(bar?.pctChange)],
-      ["涨跌", format(bar?.change)],
-    ],
-    [
-      ["成交量", volumeText],
-      ["成交额", amountText],
-    ],
-    [
-      ["持仓量", openInterestText],
-      ["沉淀资金", depositText],
-    ],
-    [
-      ["总市值", format(props.totalMarketCap, 2)],
-      ["流通市值", format(props.floatMarketCap, 2)],
-    ],
-  ];
-});
-const displayQuotePanel = computed(
-  () => props.showQuotePanel || !props.compact,
-);
 const secondaryMetricLabel = computed(() =>
   secondaryMetric.value === "openInterest" ? "持仓量" : "成交额",
 );
@@ -403,18 +301,6 @@ function format(value: unknown, digits = 4): string {
     ? "—"
     : item.toLocaleString("zh-CN", { maximumFractionDigits: digits });
 }
-function percent(value: unknown): string {
-  const item = asNumber(value);
-  return item == null ? "—" : `${item.toFixed(2)}%`;
-}
-function stockUnit(value: unknown): string {
-  const item = asNumber(value);
-  return item == null ? "—" : `${(item / 1e8).toFixed(2)}亿`;
-}
-function futureUnit(value: unknown): string {
-  const item = asNumber(value);
-  return item == null ? "—" : `${(item / 1e4).toFixed(2)}万`;
-}
 function compactAxis(value: unknown): string {
   const item = asNumber(value);
   if (item == null) return "—";
@@ -424,19 +310,10 @@ function compactAxis(value: unknown): string {
   return item.toLocaleString("zh-CN", { maximumFractionDigits: 0 });
 }
 function timeLabel(value: string): string {
-  const text = value.replace("T", " ");
-  const day = text.slice(0, 10);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return text.slice(0, 16);
-  const weekday = weekdayLabel(day);
-  return ["5m", "15m", "30m", "1h", "2h"].includes(props.period)
-    ? `${day} ${weekday} ${text.slice(11, 16)}`.trim()
-    : `${day} ${weekday}`;
+  return formatCrosshairTime(value, props.period);
 }
 function axisTimeLabel(value: string): string {
-  const day = value.slice(0, 10);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return timeLabel(value);
-  const weekday = weekdayLabel(day);
-  return ["5m", "15m", "30m", "1h", "2h"].includes(props.period) ? timeLabel(value).slice(5) : `${day.slice(5)} ${weekday}`;
+  return formatAxisDate(value, props.period);
 }
 function isMajorTick(index: number): boolean {
   return majorTicks.value.has(index);
@@ -866,9 +743,6 @@ function volumeProfileGraphics(): object[] {
   }
   return graphics;
 }
-function rectangleMetrics(item: ChartDrawing): string {
-  return rectangleMetricsForPoints(item.points);
-}
 function rectangleMetricsForPoints(points: ChartDrawingPoint[]): string {
   const indexes = points
     .map((point) => nearestCategoryIndex(point.time))
@@ -907,11 +781,6 @@ function rectangleMetricsForPoints(points: ChartDrawingPoint[]): string {
     `${bars.length}根K线  ${upCount}根上涨  ${downCount}根下跌  涨幅:${pctChange == null ? "—" : `${pctChange.toFixed(2)}%`}  振幅:${amplitude == null ? "—" : `${amplitude.toFixed(2)}%`}`,
     `开盘:${two(openPrice)}  收盘:${two(closePrice)}  最高:${two(high)}  最低:${two(low)}`,
   ].join("\n");
-}
-function rectangleBounds(
-  item: ChartDrawing,
-): { high: number; low: number } | null {
-  return rectangleBoundsForPoints(item.points);
 }
 function rectangleBoundsForPoints(
   points: ChartDrawingPoint[],
@@ -1666,7 +1535,7 @@ function chartLayout(): {
   const compact = props.compact;
   const left = compact ? 48 : 66;
   const right = compact ? 42 : 48;
-  const top = props.hideQuote ? 16 : displayQuotePanel.value ? (compact ? 54 : 58) : compact ? 26 : 42;
+  const top = Math.max(props.hideQuote ? 16 : 42, overlayHeight.value + CHART_LAYOUT.overlayGap);
   const bottom = compact ? 20 : 28;
   const paneCount = paneIndicatorInstances.value.length;
   const secondaryCount = paneCount + 1;
@@ -1814,8 +1683,11 @@ function chartLayout(): {
 }
 
 function render(): void {
-  if (!element.value) return;
-  chart ??= echarts.init(element.value);
+  if (disposed || !element.value) return;
+  if (!chart) {
+    measuredDpr = window.devicePixelRatio;
+    chart = echarts.init(element.value);
+  }
   if (!props.bars.length) {
     chart.clear();
     return;
@@ -1907,8 +1779,7 @@ function render(): void {
           },
           emphasis: { disabled: true },
         },
-        nestedBarSeries(secondaryMetricLabel.value, secondaryData.value, 2, CHART_LAYOUT.secondaryBackRatio, 1),
-        nestedBarSeries("成交量", volumeData.value, 1, CHART_LAYOUT.secondaryFrontRatio, 2),
+        ...subchartSeries(props.bars, secondaryMetric.value, props.bars.map(upColor), theme.palette.chartSecondary),
         ...indicatorSeries(),
       ],
     },
@@ -2421,6 +2292,11 @@ function pointerUp(): void {
   requestedEarlierInGesture = false;
 }
 function pointerOut(): void {
+  if (hoverFrame != null) cancelAnimationFrame(hoverFrame);
+  hoverFrame = undefined;
+  pendingHoverIndex = -1;
+  hoverIndex.value = -1;
+  emit("hover", null);
   if (rectangleCursor.value) {
     rectangleCursor.value = undefined;
     scheduleGraphicsRender();
@@ -2558,11 +2434,23 @@ function installHandlers(): void {
   renderer.on("mousewheel", wheelZoom);
 }
 function resize(): void {
-  const measured = Math.max(1, Math.round(element.value?.clientHeight || props.height));
-  const changed = layoutHeight.value !== measured;
-  layoutHeight.value = measured;
-  chart?.resize();
-  if (changed) void nextTick(render);
+  if (disposed || resizeFrame != null) return;
+  resizeFrame = requestAnimationFrame(() => {
+    resizeFrame = undefined;
+    if (disposed || !element.value) return;
+    const height = Math.max(1, element.value.clientHeight);
+    const width = element.value.clientWidth;
+    const overlay = Math.ceil(overlayElement.value?.getBoundingClientRect().height || 0);
+    const dprChanged = measuredDpr !== window.devicePixelRatio;
+    if (height === layoutHeight.value && width === measuredWidth && overlay === overlayHeight.value && !dprChanged) return;
+    layoutHeight.value = height;
+    measuredWidth = width;
+    overlayHeight.value = overlay;
+    if (dprChanged) { chart?.dispose(); chart = undefined; }
+    chart?.resize();
+    render();
+    if (dprChanged) installHandlers();
+  });
 }
 watch(
   () => props.drawingTool,
@@ -2578,22 +2466,6 @@ watch(
     releaseBrushPointer();
     textDraft.value = undefined;
   },
-);
-watch(
-  () => props.inverse,
-  () =>
-    void nextTick(() => {
-      render();
-      installHandlers();
-    }),
-);
-watch(
-  () => props.swapColors,
-  () =>
-    void nextTick(() => {
-      render();
-      installHandlers();
-    }),
 );
 watch(
   () => props.bars,
@@ -2640,6 +2512,8 @@ watch(
     props.inverse,
     props.swapColors,
     props.chartType,
+    props.measureEvidence,
+    secondaryMetric.value,
     props.drawings,
     props.selectedDrawingId,
     theme.palette,
@@ -2664,9 +2538,11 @@ onMounted(() => {
   if (element.value && typeof ResizeObserver !== "undefined") {
     resizeObserver = new ResizeObserver(resize);
     resizeObserver.observe(element.value);
+    if (overlayElement.value) resizeObserver.observe(overlayElement.value);
   }
 });
 onBeforeUnmount(() => {
+  disposed = true;
   window.removeEventListener("resize", resize);
   window.removeEventListener("keydown", cancelBrushOnEscape);
   element.value?.removeEventListener("pointercancel", pointerCancel);
@@ -2675,21 +2551,37 @@ onBeforeUnmount(() => {
   if (rangeRenderTimer) clearTimeout(rangeRenderTimer);
   if (rectangleRenderFrame != null) cancelAnimationFrame(rectangleRenderFrame);
   if (hoverFrame != null) cancelAnimationFrame(hoverFrame);
+  if (resizeFrame != null) cancelAnimationFrame(resizeFrame);
   chart?.dispose();
   chart = undefined;
 });
+
+function scrollQuotes(event: WheelEvent): void {
+  const quote = quoteElement.value;
+  if (!event.shiftKey || !quote || quote.scrollWidth <= quote.clientWidth) return;
+  const rect = quote.getBoundingClientRect();
+  if (event.clientY < rect.top || event.clientY > rect.bottom) return;
+  event.preventDefault();
+  event.stopPropagation();
+  quote.scrollLeft += event.deltaY || event.deltaX;
+}
 </script>
 
 <template>
   <div
     class="kline-chart chart-box"
+    @wheel.capture="scrollQuotes"
     :class="{ compact, fill, 'drawing-active': drawingTool !== 'cursor', 'cursor-tool': drawingTool === 'cursor' }"
     :style="fill ? undefined : { height: `${height}px` }"
   >
-    <div v-if="!hideQuote && hoverBar" class="quote-panel">
-      <QuoteValues :bar="hoverBar" :latest-bar="bars.at(-1)" :total-market-cap="totalMarketCap" :float-market-cap="floatMarketCap" :swap-colors="swapColors" />
+    <div ref="overlayElement" class="chart-overlay">
+      <div class="chart-overlay-controls"><slot name="overlay" /></div>
+      <div v-if="!hideQuote && hoverBar" ref="quoteElement" class="quote-panel" role="region" aria-label="行情字段（Shift加滚轮横向浏览）" tabindex="0"
+        @keydown.left.prevent="quoteElement && (quoteElement.scrollLeft -= 104)" @keydown.right.prevent="quoteElement && (quoteElement.scrollLeft += 104)">
+        <QuoteValues :bar="hoverBar" :latest-bar="bars.at(-1)" :total-market-cap="totalMarketCap" :float-market-cap="floatMarketCap" :swap-colors="swapColors" />
+      </div>
+      <slot name="legend" />
     </div>
-    <div class="chart-overlay-controls"><slot name="overlay" /></div>
     <span v-if="drawingTool === 'long_position' || drawingTool === 'short_position'" class="risk-drawing-hint">{{ riskHint || '请选择开仓参考价，然后选择止损、目标参考价' }}</span>
     <div
       ref="element"
@@ -2746,56 +2638,27 @@ onBeforeUnmount(() => {
   height: 100%;
 }
 .risk-drawing-hint { position: absolute; top: 6px; left: 75px; z-index: 18; background: var(--ml-surface); color: var(--ml-text-secondary); padding: 6px; }
-.quote-strip {
+.chart-overlay {
   position: absolute;
-  z-index: 2;
-  top: 4px;
-  left: 72px;
-  right: 42px;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 3px 10px;
-  max-height: 34px;
-  overflow: hidden;
-  color: var(--ml-text-secondary);
-  font:
-    11px/1.4 ui-monospace,
-    Consolas,
-    monospace;
+  z-index: 4;
+  top: 2px;
+  left: 66px;
+  right: 48px;
   pointer-events: none;
-}
-.quote-strip span:nth-child(5) {
-  color: var(--ml-text-primary);
-  font-weight: 700;
-}
-.compact .quote-strip {
-  left: 50px;
-  right: 14px;
-  gap: 2px 6px;
-  max-height: 18px;
-  font-size: 9px;
-  white-space: nowrap;
 }
 .quote-panel {
-  position: absolute;
-  z-index: 2;
-  top: 20px;
-  left: 66px;
-  right: 50px;
-  height: 40px;
-  pointer-events: none;
-  overflow: hidden;
+  position: relative;
+  max-width: 100%;
+  overflow-x: auto;
+  scrollbar-width: thin;
   container-type: inline-size;
   font-family: "SimHei", "Heiti SC", "Microsoft YaHei", sans-serif;
 }
-.chart-overlay-controls { position:absolute; z-index:4; top:2px; left:66px; right:50px; min-height:18px; pointer-events:none; }
-.chart-overlay-controls :slotted(*) { pointer-events:auto; }
-.compact .quote-panel {
+.chart-overlay-controls { min-height:18px; pointer-events:none; }
+.compact .chart-overlay {
   left: 48px;
   right: 42px;
-  height: 40px;
 }
-.compact .chart-overlay-controls { left:48px; right:42px; }
 .history-loading {
   position: absolute;
   z-index: 5;

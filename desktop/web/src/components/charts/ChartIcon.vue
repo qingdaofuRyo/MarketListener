@@ -1,6 +1,8 @@
 <script setup lang="ts">
+import { CROSS_PERIOD_ICON } from "../../domain/chartIcons";
 defineProps<{ name: string }>();
 const paths: Record<string, string> = {
+  crossPeriod: CROSS_PERIOD_ICON,
   candles: 'M6 2v4m0 10v6M3 6h6v10H3zM17 2v8m0 8v4M14 10h6v8h-6z',
   hollow: 'M6 2v4m0 10v6M3 6h6v10H3zM17 2v8m0 8v4M14 10h6v8h-6z',
   heikin: 'M5 2v20M2 6h6v8H2zM16 2v20M13 9h6v8h-6zM1 20L22 3',

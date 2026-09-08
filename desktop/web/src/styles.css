@@ -3,6 +3,10 @@
  * 保持旧类名兼容：.atlas-frame / .industry-page / .panel / .page-title 等。 */
 
 :root {
+  --ml-quote-field-width: 104px;
+  --ml-quote-label-width: 3.2em;
+  --ml-quote-grid-gap: 2px 0;
+  --ml-chart-board-gap: 12px;
   color: #e8edf5;
   background: #0b0e14;
   font-family: Inter, "Microsoft YaHei", system-ui, sans-serif;

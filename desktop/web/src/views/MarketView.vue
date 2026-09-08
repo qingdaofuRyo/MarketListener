@@ -42,6 +42,7 @@ import type {
   VolumeProfile,
 } from "../domain/strategyTypes";
 import { useMarketStore } from "../stores/market";
+import { formatMarketField, marketFieldTone } from "../domain/marketQuote";
 
 interface Instrument extends SortableMarketInstrument {
   instrumentId: string;
@@ -327,7 +328,7 @@ const flagChoices: FlagChoice[] = [
   { color: "#a855f7", label: "紫色" },
 ];
 
-function baseDrawingStyle(type: DrawingKind): ChartDrawingStyle {
+function baseDrawingStyle(): ChartDrawingStyle {
   return {
     color: "#2196f3",
     width: 1.5,
@@ -372,27 +373,27 @@ function storedDrawingPreferences(): DrawingPreferences {
 }
 const storedDrawingOptions = storedDrawingPreferences();
 const drawingStyleDefaults = ref<Record<DrawingKind, ChartDrawingStyle>>({
-  long_position: baseDrawingStyle("long_position"),
-  short_position: baseDrawingStyle("short_position"),
-  trend: { ...baseDrawingStyle("trend"), ...storedDrawingOptions.styles.trend },
+  long_position: baseDrawingStyle(),
+  short_position: baseDrawingStyle(),
+  trend: { ...baseDrawingStyle(), ...storedDrawingOptions.styles.trend },
   horizontal: {
-    ...baseDrawingStyle("horizontal"),
+    ...baseDrawingStyle(),
     ...storedDrawingOptions.styles.horizontal,
   },
   vertical: {
-    ...baseDrawingStyle("vertical"),
+    ...baseDrawingStyle(),
     ...storedDrawingOptions.styles.vertical,
   },
   rectangle: {
-    ...baseDrawingStyle("rectangle"),
+    ...baseDrawingStyle(),
     ...storedDrawingOptions.styles.rectangle,
   },
   fibonacci_retracement: {
-    ...baseDrawingStyle("fibonacci_retracement"),
+    ...baseDrawingStyle(),
     ...storedDrawingOptions.styles.fibonacci_retracement,
   },
-  brush: { ...baseDrawingStyle("brush"), ...storedDrawingOptions.styles.brush },
-  text: { ...baseDrawingStyle("text"), ...storedDrawingOptions.styles.text },
+  brush: { ...baseDrawingStyle(), ...storedDrawingOptions.styles.brush },
+  text: { ...baseDrawingStyle(), ...storedDrawingOptions.styles.text },
 });
 
 const categories = ref<MarketCategory[]>(fallbackCategories);
@@ -403,6 +404,9 @@ const { category, query, sort: listSort } = storeToRefs(marketStore);
 const allItems = ref<Instrument[]>(marketStore.items as Instrument[]);
 const allTotal = ref(0);
 const listElement = ref<HTMLElement>();
+const toolbarElement = ref<HTMLElement>();
+const toolbarHeight = ref(42);
+let toolbarObserver: ResizeObserver | undefined;
 const page = ref(1);
 const loading = ref(false);
 const error = ref("");
@@ -415,6 +419,11 @@ async function loadMonitor() { try { monitorEvents.value = (await apiGet<Monitor
 const selected = ref<Instrument | undefined>(
   marketStore.items.find((item) => item.instrumentId === marketStore.selectedId) as Instrument | undefined,
 );
+const measureEvidence = computed(() => ({
+  openInterest: selected.value?.openInterest,
+  fieldCapabilities: { ...selected.value?.fieldCapabilities,
+    openInterest: selected.value?.fieldCapabilities?.openInterest === true || marketStore.interestInstruments.includes(selected.value?.instrumentId || "") },
+}));
 const fullscreen = ref(false);
 const indicatorDialogOpen = ref(false);
 const indicatorSearch = ref("");
@@ -422,7 +431,6 @@ const indicatorCategory = ref("all");
 const indicatorFavorites = ref<string[]>(readLocal("marketlistener.strategyFavorites", []));
 const indicatorSettingsId = ref("");
 const chartType = ref<ChartType>((chartTypes.find((item) => item.value === localStorage.getItem("market-chart-type"))?.value) || "candles");
-const quoteBar = ref<KLineBar | null>(null);
 const replayActive = ref(false);
 const replayCount = ref(1);
 const replayPlaying = ref(false);
@@ -446,7 +454,6 @@ function readLocal<T>(key: string, fallback: T): T {
   catch { return fallback; }
 }
 const displayedBars = computed(() => replayActive.value && !replaySelecting.value ? history.value.bars.slice(0, replayCount.value) : history.value.bars);
-const displayedQuote = computed(() => quoteBar.value || displayedBars.value.at(-1));
 const filteredIndicatorCatalog = computed(() => selectableIndicatorCatalog.value.filter((item) =>
   (indicatorCategory.value === "all" || (indicatorCategory.value === "favorites" ? isIndicatorFavorite(item) : item.placement === indicatorCategory.value)) &&
   `${item.name} ${item.englishName || ""} ${item.categoryLabel || ""}`.toLowerCase().includes(indicatorSearch.value.toLowerCase().trim()),
@@ -485,14 +492,12 @@ function toggleReplay(): void {
   replayActive.value = !replayActive.value;
   replaySelecting.value = replayActive.value;
   replayCount.value = Math.min(30, history.value.bars.length);
-  quoteBar.value = null;
 }
 watch([replayPlaying, replaySpeed], () => {
   if (replayTimer) clearInterval(replayTimer);
   if (replayPlaying.value) replayTimer = setInterval(stepReplay, 1000 / replaySpeed.value);
 });
 watch([replayCount, replayActive, replaySelecting], () => {
-  quoteBar.value = null;
   indicatorInstances.value = indicatorInstances.value.map((item) => ({ ...item, status: "pending", series: {}, profile: undefined }));
   detailVisibleRange.value = { start: 0, end: displayedBars.value.length - 1 };
   void loadIndicatorSeries();
@@ -521,7 +526,7 @@ const selectedDrawingId = ref("");
 const marketVersion = ref("");
 const history = ref<History>({
   total: 0,
-  period: "1d",
+  period: marketStore.detailPeriod,
   availablePeriods: [],
   start: 0,
   size: 0,
@@ -529,7 +534,6 @@ const history = ref<History>({
   hasMore: false,
 });
 const indicatorCatalog = ref<IndicatorCatalogItem[]>([]);
-const indicatorSelection = ref("");
 const indicatorInstances = ref<IndicatorInstance[]>(storedIndicatorInstances());
 const detailVisibleRange = ref({ start: 0, end: -1 });
 const activeChartStrategy = ref<ActiveChartStrategy | null>(null);
@@ -562,8 +566,6 @@ const boardTop = ref<Board>(emptyBoard(storedPeriod("market-board-top", "1d")));
 const boardBottom = ref<Board>(
   emptyBoard(storedPeriod("market-board-bottom", "1h")),
 );
-const boardTopQuote = ref<KLineBar | null>(null);
-const boardBottomQuote = ref<KLineBar | null>(null);
 const listColumns = ref<ListColumn[]>(storedListColumns());
 const draggingColumn = ref<ListColumnKey>();
 const columnWidths = ref<Record<ListColumnKey, number>>(storedColumnWidths());
@@ -643,11 +645,6 @@ const drawingPopoverStyle = computed(() =>
       }
     : undefined,
 );
-function noData(value: unknown, digits = 2): string {
-  return typeof value === "number" && Number.isFinite(value)
-    ? formatNumber(value, digits)
-    : "—";
-}
 function storedIndicatorInstances(): IndicatorInstance[] {
   try {
     const value = JSON.parse(
@@ -813,15 +810,6 @@ function addIndicatorInstance(
   ];
   persistIndicatorInstances();
   return true;
-}
-function addSelectedIndicator(): void {
-  if (!indicatorSelection.value) return;
-  if (
-    addIndicatorInstance(indicatorSelection.value) &&
-    history.value.bars.length
-  )
-    void loadIndicatorSeries();
-  indicatorSelection.value = "";
 }
 function removeIndicator(instanceId: string): void {
   indicatorInstances.value = indicatorInstances.value.filter(
@@ -1103,26 +1091,12 @@ function storedRowFlags(): Record<string, string> {
   }
 }
 function storedChartWidth(): number {
-  const width = Number(localStorage.getItem("market-list-chart-width-vw"));
+  const stored = localStorage.getItem("market-list-chart-width-vw");
+  const width = stored == null ? 50 : Number(stored);
   return Number.isFinite(width) ? Math.max(25, Math.min(75, width)) : 50;
 }
 function quoteValue(item: Instrument, field: ListColumnKey): string {
-  if (field === "symbol") return item.symbol || item.instrumentId;
-  if (field === "name") return item.name || "—";
-  if (field.startsWith("return")) {
-    const value = item.dailyReturns?.[field.slice(6)];
-    return typeof value === "number" ? `${noData(value)}%` : "—";
-  }
-  const value = item[field as keyof Instrument];
-  const digits = field === "latestPrice" ? 4 : 2;
-  const unit = ["totalMarketCap", "floatMarketCap", "capitalDeposit", "volume", "amount"].includes(field);
-  return typeof value === "number" ? (unit ? compactNumber(value) : noData(value, digits)) : "—";
-}
-function compactNumber(value: number): string {
-  const absolute = Math.abs(value);
-  if (absolute >= 1e8) return `${noData(value / 1e8)}亿`;
-  if (absolute >= 1e4) return `${noData(value / 1e4)}万`;
-  return noData(value);
+  return formatMarketField(item, field);
 }
 function toggleListSort(field: ListColumnKey): void {
   listSort.value = nextSortState(listSort.value, field);
@@ -1522,15 +1496,9 @@ function rowFlagStyle(item: Instrument): Record<string, string> {
   const color = rowFlags.value[item.instrumentId];
   return color ? { "--row-flag-color": color } : {};
 }
-function quoteTone(item: Instrument): "up" | "down" | "flat" {
-  if (typeof item.pctChange !== "number") return "flat";
-  return item.pctChange > 0 ? "up" : item.pctChange < 0 ? "down" : "flat";
-}
 
 async function loadBoard(instrumentId: string, board: Board): Promise<void> {
   board.abort?.abort();
-  if (board === boardTop.value) boardTopQuote.value = null;
-  if (board === boardBottom.value) boardBottomQuote.value = null;
   const controller = new AbortController();
   board.abort = controller;
   const requestId = ++board.requestId;
@@ -1565,6 +1533,7 @@ async function loadBoard(instrumentId: string, board: Board): Promise<void> {
     if (requestId !== board.requestId || board.instrumentId !== instrumentId)
       return;
     board.bars = data.bars;
+    marketStore.observeMeasures(instrumentId, selected.value, data.bars);
     board.start =
       data.start ??
       Math.max(0, (data.historyTotal ?? data.total) - data.bars.length);
@@ -1700,7 +1669,7 @@ function persistDrawingPreferences(): void {
 }
 function defaultDrawingStyle(type: DrawingKind): ChartDrawingStyle {
   return {
-    ...baseDrawingStyle(type),
+    ...baseDrawingStyle(),
     ...drawingStyleDefaults.value[type],
     locked: false,
   };
@@ -1914,6 +1883,7 @@ async function loadHistory(): Promise<void> {
       { ttlMs: 5 * 60_000, persist: true, signal: controller.signal },
     );
     if (request !== serial) return;
+    marketStore.observeMeasures(selected.value.instrumentId, selected.value, data.bars);
     history.value = {
       ...data,
       before:
@@ -2019,7 +1989,7 @@ async function openWorkbench(item: Instrument, updateRoute = true): Promise<void
   if (activeChartStrategy.value) await runActiveStrategyBacktest();
 }
 function switchPeriod(period: string): void {
-  if (!history.value.availablePeriods.includes(period)) return;
+  if (!marketStore.selectDetailPeriod(period, history.value.availablePeriods)) return;
   history.value.period = period;
   void loadHistory();
 }
@@ -2060,9 +2030,14 @@ watch(selected, () => {
   if (selected.value) void loadDrawings(selected.value.instrumentId);
 });
 watch(() => [selected.value?.instrumentId, history.value.period], () => {
-  stopReplay(); replayActive.value = false; quoteBar.value = null;
+  stopReplay(); replayActive.value = false;
 });
 onMounted(async () => {
+  toolbarObserver = new ResizeObserver(() => {
+    const height = Math.ceil(toolbarElement.value?.getBoundingClientRect().height || 42);
+    if (height !== toolbarHeight.value) toolbarHeight.value = height;
+  });
+  if (toolbarElement.value) toolbarObserver.observe(toolbarElement.value);
   window.addEventListener("keydown", onWorkbenchEscape);
   window.addEventListener("keydown", selectRelativeInstrument);
   window.addEventListener("pointermove", resizePointer);
@@ -2085,6 +2060,7 @@ onMounted(async () => {
   if (pendingDrawingTool) selectDrawingTool(pendingDrawingTool);
 });
 onBeforeUnmount(() => {
+  toolbarObserver?.disconnect();
   stopReplay();
   window.removeEventListener("keydown", onWorkbenchEscape);
   window.removeEventListener("keydown", selectRelativeInstrument);
@@ -2114,7 +2090,7 @@ onBeforeUnmount(() => {
       <div
         class="list-workbench"
         v-loading="loading"
-        :style="{ gridTemplateColumns: workbenchGridTemplate }"
+        :style="{ gridTemplateColumns: workbenchGridTemplate, '--market-toolbar-height': `${toolbarHeight}px` }"
       >
         <div
           ref="listElement"
@@ -2122,7 +2098,7 @@ onBeforeUnmount(() => {
           @scroll.passive="listScroll"
           @wheel.prevent="listWheel"
         >
-          <div class="all-toolbar" aria-label="全部行情查询工具">
+          <div ref="toolbarElement" class="all-toolbar" aria-label="全部行情查询工具">
             <el-select :model-value="category" placeholder="市场类型" @change="chooseCategory(String($event))"
               ><el-option v-for="item in categories" :key="item.id" :label="item.label" :value="item.id" /></el-select>
             <el-input v-model="query" aria-label="搜索全部行情" clearable placeholder="查询代码或名称" @input="search" @keyup.enter="searchNow" @clear="resetAll" />
@@ -2147,7 +2123,7 @@ onBeforeUnmount(() => {
                 @drop.prevent="reorderColumn(column.id)"
                 @dragend="draggingColumn = undefined"
               >
-                <button type="button" class="column-sort" :aria-label="`按${column.label}排序`" @click.stop="toggleListSort(column.id)">{{ column.label }} <b>{{ sortMark(column.id) }}</b></button>
+                <button type="button" class="column-sort" :aria-label="`按${column.label}排序`" @click.stop="toggleListSort(column.id)"><span>{{ column.label }}</span> <b>{{ sortMark(column.id) }}</b></button>
                 <button
                   type="button"
                   class="column-resizer"
@@ -2232,7 +2208,7 @@ onBeforeUnmount(() => {
               <span
                 v-for="column in listColumns"
                 :key="column.id"
-                :class="`column-${column.id}`"
+                :class="[`column-${column.id}`, `quote-tone-${marketFieldTone(item, column.id)}`]"
                 >{{ quoteValue(item, column.id) }}</span
               ></button
             >
@@ -2260,6 +2236,9 @@ onBeforeUnmount(() => {
           <section v-loading="boardTop.loading" class="board">
             <KLineChart
               :bars="boardTop.bars"
+              :key="boardTop.instrumentId"
+              :instrument-id="boardTop.instrumentId"
+              :measure-evidence="measureEvidence"
               :period="boardTop.period"
               fill
               :loading-earlier="boardTop.loadingEarlier"
@@ -2270,13 +2249,15 @@ onBeforeUnmount(() => {
               drawings-read-only
               open-on-double-click
               @open-detail="selected && openWorkbench(selected)"
-              @hover="boardTopQuote = $event"
               @request-earlier="loadEarlierBoard(boardTop)"
             ><template #overlay><div class="board-overlay"><strong>{{ selected?.name || "请选择标的" }}</strong><select :value="boardTop.period" aria-label="上看板 K 线周期" @change="boardPeriod('top',($event.target as HTMLSelectElement).value)"><option v-for="[id,label] in periodOptions" :key="id" :value="id" :disabled="!boardPeriodAvailable(boardTop,id)">{{label}}</option></select></div></template></KLineChart>
           </section>
           <section v-loading="boardBottom.loading" class="board">
             <KLineChart
               :bars="boardBottom.bars"
+              :key="boardBottom.instrumentId"
+              :instrument-id="boardBottom.instrumentId"
+              :measure-evidence="measureEvidence"
               :period="boardBottom.period"
               fill
               :loading-earlier="boardBottom.loadingEarlier"
@@ -2287,7 +2268,6 @@ onBeforeUnmount(() => {
               drawings-read-only
               open-on-double-click
               @open-detail="selected && openWorkbench(selected)"
-              @hover="boardBottomQuote = $event"
               @request-earlier="loadEarlierBoard(boardBottom)"
             ><template #overlay><div class="board-overlay"><strong>{{ selected?.name || "请选择标的" }}</strong><select :value="boardBottom.period" aria-label="下看板 K 线周期" @change="boardPeriod('bottom',($event.target as HTMLSelectElement).value)"><option v-for="[id,label] in periodOptions" :key="id" :value="id" :disabled="!boardPeriodAvailable(boardBottom,id)">{{label}}</option></select></div></template></KLineChart>
           </section>
@@ -2464,19 +2444,26 @@ onBeforeUnmount(() => {
             </button>
           </div>
         </header>
+        <nav class="period-bar" aria-label="K线周期">
+          <button v-for="[id, label] in periodOptions" :key="id" type="button"
+            :class="{active: history.period === id, unavailable: !history.availablePeriods.includes(id)}"
+            :disabled="!history.availablePeriods.includes(id)" :aria-pressed="history.period === id"
+            :title="history.availablePeriods.includes(id) ? label : `${label}：当前标的暂无该周期数据`"
+            @click="switchPeriod(id)">{{ label }}</button>
+        </nav>
         <aside class="detail-instrument-list" aria-label="当前市场标的">
           <button
             v-for="item in sortedItems"
             :key="item.instrumentId"
             type="button"
             class="detail-instrument-row"
-            :class="{active: item.instrumentId === selected?.instrumentId, [quoteTone(item)]: true}"
+            :class="{active: item.instrumentId === selected?.instrumentId}"
             @click="openWorkbench(item)"
           >
             <b>{{ item.name || item.symbol || item.instrumentId }}</b>
             <small>{{ item.symbol || item.instrumentId }}</small>
-            <strong>{{ quoteValue(item, 'latestPrice') }}</strong>
-            <em>{{ typeof item.pctChange === 'number' ? `${noData(item.pctChange)}%` : '—' }}</em>
+            <strong :class="`quote-tone-${marketFieldTone(item, 'latestPrice')}`">{{ quoteValue(item, 'latestPrice') }}</strong>
+            <em :class="`quote-tone-${marketFieldTone(item, 'pctChange')}`">{{ quoteValue(item, 'pctChange') }}</em>
           </button>
         </aside>
         <aside class="drawing-toolbar">
@@ -2515,11 +2502,7 @@ onBeforeUnmount(() => {
             title="跨周期"
             @click="toggleDrawingPreference('crossPeriod')"
           >
-            <svg viewBox="0 0 24 24">
-              <path
-                d="M4 20v-4h3v4M9 20v-7h3v7M14 20v-10h3v10M19 20V7h2v13M3 12c4-1 7-4 10-4s5-3 8-5"
-              />
-            </svg>
+            <ChartIcon name="crossPeriod" />
           </button>
           <button
             type="button"
@@ -2575,16 +2558,6 @@ onBeforeUnmount(() => {
             v-loading="detailLoading"
             class="workbench-chart"
           >
-          <div class="chart-indicator-legend" aria-label="已添加指标">
-            <div v-for="instance in indicatorInstances" :key="instance.instanceId" class="chart-indicator-legend-row" :class="{dimmed: !instance.visible || (instance.crossPeriod === false && instance.period !== history.period)}">
-              <span>{{ indicatorName(instance) }}</span><small>{{ instance.placement === 'overlay' ? '主图' : '副图' }}</small>
-              <button :aria-label="'跨周期'+indicatorName(instance)" title="跨周期显示" :aria-pressed="instance.crossPeriod !== false" :class="{active:instance.crossPeriod!==false}" @click="setIndicatorCrossPeriod(instance,instance.crossPeriod===false)"><ChartIcon name="periods"/></button>
-              <button :aria-label="(instance.visible?'隐藏':'显示')+indicatorName(instance)" :title="instance.visible?'隐藏指标':'显示指标'" @click="toggleIndicatorVisibility(instance.instanceId)"><ChartIcon :name="instance.visible?'visible':'hidden'"/></button>
-              <button :aria-label="'设置'+indicatorName(instance)" title="参数设置" @click="indicatorSettingsId=instance.instanceId;indicatorDialogOpen=true"><ChartIcon name="settings"/></button>
-              <button class="indicator-delete" :aria-label="'删除'+indicatorName(instance)" title="删除指标" @click="removeIndicator(instance.instanceId)">×</button>
-              <span v-if="instance.status==='unavailable'" :title="instance.unavailableReason">⚠</span>
-            </div>
-          </div>
           <div
             v-if="selectedDrawing"
             ref="drawingPopoverElement"
@@ -2752,7 +2725,7 @@ onBeforeUnmount(() => {
                 patchSelected('crossPeriod', !selectedDrawing.crossPeriod)
               "
           >
-            <ChartIcon name="periods" />
+            <ChartIcon name="crossPeriod" />
           </button>
             <button
               type="button"
@@ -2770,6 +2743,9 @@ onBeforeUnmount(() => {
           </div>
           <KLineChart
             :bars="displayedBars"
+            :key="selected?.instrumentId"
+            :instrument-id="selected?.instrumentId"
+            :measure-evidence="measureEvidence"
             :replay-pick="replayActive && replaySelecting"
             @pick-bar="replayCount=$event+1; replaySelecting=false"
             :chart-type="chartType"
@@ -2789,13 +2765,26 @@ onBeforeUnmount(() => {
             :float-market-cap="selected?.floatMarketCap"
             :future-units="selected?.assetType === 'FUTURE'"
             :loading-earlier="detailEarlierLoading"
-            @hover="quoteBar = $event"
             @draw="createDrawing"
             @select-drawing="onSelectDrawing"
             @update-drawing="updateDrawing"
             @visible-range="onDetailVisibleRange"
             @request-earlier="!replayActive && loadEarlierHistory()"
-          ><template #overlay><div class="detail-chart-overlay"><b>{{ selected?.name }} · {{ selected?.symbol || selected?.instrumentId }}</b><select :value="history.period" aria-label="详情 K 线周期" @change="switchPeriod(($event.target as HTMLSelectElement).value)"><option v-for="[id,text] in periodOptions" :key="id" :value="id" :disabled="!history.availablePeriods.includes(id)">{{ text }}</option></select></div></template></KLineChart>
+          >
+            <template #overlay><div class="detail-chart-overlay"><b>{{ selected?.name }} · {{ selected?.symbol || selected?.instrumentId }}</b></div></template>
+            <template #legend>
+              <div class="chart-indicator-legend" aria-label="已添加指标">
+                <div v-for="instance in indicatorInstances" :key="instance.instanceId" class="chart-indicator-legend-row" :class="{dimmed: !instance.visible || (instance.crossPeriod === false && instance.period !== history.period)}">
+                  <span>{{ indicatorName(instance) }}</span><small>{{ instance.placement === 'overlay' ? '主图' : '副图' }}</small>
+                  <button :aria-label="'跨周期'+indicatorName(instance)" title="跨周期显示" :aria-pressed="instance.crossPeriod !== false" :class="{active:instance.crossPeriod!==false}" @click="setIndicatorCrossPeriod(instance,instance.crossPeriod===false)"><ChartIcon name="crossPeriod"/></button>
+                  <button :aria-label="(instance.visible?'隐藏':'显示')+indicatorName(instance)" :title="instance.visible?'隐藏指标':'显示指标'" @click="toggleIndicatorVisibility(instance.instanceId)"><ChartIcon :name="instance.visible?'visible':'hidden'"/></button>
+                  <button :aria-label="'设置'+indicatorName(instance)" title="参数设置" @click="indicatorSettingsId=instance.instanceId;indicatorDialogOpen=true"><ChartIcon name="settings"/></button>
+                  <button class="indicator-delete" :aria-label="'删除'+indicatorName(instance)" title="删除指标" @click="removeIndicator(instance.instanceId)">×</button>
+                  <span v-if="instance.status==='unavailable'" :title="instance.unavailableReason">⚠</span>
+                </div>
+              </div>
+            </template>
+          </KLineChart>
           </section>
           <section
             v-if="activeChartStrategy && !replayActive"
@@ -2939,12 +2928,11 @@ onBeforeUnmount(() => {
 .indicator-catalog-name small, .indicator-catalog-name span { color: var(--ml-text-secondary); }
 .favorite-star { font-size: 24px; border: 0; background: transparent; color: var(--ml-text-secondary); cursor: pointer; padding: 8px 14px; }
 .favorite-star.active { color: #eab308; }
-.chart-indicator-legend { position: absolute; z-index: 11; left: 72px; top: 20px; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; max-height: 38%; overflow: auto; pointer-events: none; }
-.chart-indicator-legend-row { display: flex; align-items: center; gap: 7px; background: var(--ml-surface); border-radius: 3px; padding: 1px 5px; font-size: 11px; pointer-events: auto; }
+.chart-indicator-legend { position: static; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; max-height: 78px; overflow: auto; pointer-events: none; }
+.chart-indicator-legend-row { display: flex; align-items: center; gap: 7px; background: transparent; padding: 1px 2px; text-shadow:0 1px var(--ml-background); font-size: 11px; pointer-events: none; }
 .chart-indicator-legend-row small { color: var(--ml-text-secondary); }
 .chart-indicator-legend-row.dimmed { opacity: .5; }
-.chart-indicator-legend-row button { border: 0; color: var(--ml-text-primary); background: transparent; cursor: pointer; }
-.chart-indicator-legend-row .indicator-color-toggle { width: 11px; height: 11px; padding: 0; border-radius: 3px; }
+.chart-indicator-legend-row button { border: 0; color: var(--ml-text-primary); background: transparent; cursor: pointer; pointer-events:auto; }
 .replay-controls { height: 40px; display: flex; align-items: center; gap: 12px; padding: 0 16px; border-bottom: 1px solid var(--ml-divider); }
 .replay-controls label { display: flex; align-items: center; gap: 8px; flex: 1; }
 .replay-controls input { flex: 1; }
@@ -3044,16 +3032,6 @@ onBeforeUnmount(() => {
   white-space: nowrap;
   color: var(--ml-text-secondary);
 }
-.all-toolbar {
-  position: sticky;
-  top: 52px;
-  z-index: 30;
-  display: grid;
-  grid-template-columns: 240px minmax(180px, 1fr) auto auto;
-  gap: 10px;
-  padding: 12px 0;
-  background: var(--ml-background);
-}
 .list-workbench {
   display: grid;
   grid-template-columns: minmax(560px, 50%) 1fr;
@@ -3089,26 +3067,6 @@ onBeforeUnmount(() => {
   align-items: center;
   min-width: 0;
 }
-.list-table-header button {
-  height: 28px;
-  overflow: hidden;
-  border: 0;
-  border-right: 1px solid var(--ml-divider);
-  background: transparent;
-  color: var(--ml-text-secondary);
-  cursor: grab;
-  font-size: 11px;
-  text-align: left;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.list-table-header button.dragging {
-  opacity: 0.45;
-}
-.list-table-header button span {
-  float: right;
-  color: var(--ml-text-disabled);
-}
 .instrument-row.active {
   background: var(--ml-surface-selected);
 }
@@ -3124,7 +3082,7 @@ onBeforeUnmount(() => {
   overflow: hidden;
   padding: 5px 6px;
   border-right: 1px solid color-mix(in srgb, var(--ml-divider) 60%, transparent);
-  color: var(--ml-text-secondary);
+  color: var(--ml-text-primary);
   font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -3165,32 +3123,6 @@ onBeforeUnmount(() => {
 .board:last-child {
   border-bottom: 0;
 }
-.board header {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  align-items: center;
-  gap: 6px;
-  min-height: 30px;
-  padding: 0 4px;
-}
-.board-title {
-  border: 0;
-  background: transparent;
-  color: var(--ml-text-primary);
-  font-weight: 650;
-  cursor: pointer;
-  white-space: nowrap;
-}
-.board-title span {
-  color: var(--ml-accent);
-}
-.board nav {
-  display: flex;
-  justify-content: flex-end;
-  gap: 1px;
-  overflow-x: auto;
-}
-.board nav button,
 .period-bar button {
   flex: 0 0 auto;
   border: 0;
@@ -3201,14 +3133,9 @@ onBeforeUnmount(() => {
   cursor: pointer;
   font-size: 11px;
 }
-.board nav button.active,
 .period-bar button.active {
   background: var(--ml-surface-selected);
   color: var(--ml-text-primary);
-}
-.board nav button.unavailable {
-  opacity: 0.32;
-  cursor: not-allowed;
 }
 :global(.workbench-overlay) {
   position: fixed;
@@ -3489,16 +3416,14 @@ onBeforeUnmount(() => {
 .instrument-row {
   min-width: 0;
 }
-.list-table-header > button {
-  display: none;
-}
 .column-header {
   position: relative;
   height: 28px;
   overflow: hidden;
-  padding: 0 12px 0 6px;
+  padding: 0;
   border-right: 1px solid var(--ml-divider);
-  color: var(--ml-text-secondary);
+  color: var(--ml-text-primary);
+  font-family: SimHei, "黑体", "Microsoft YaHei", "PingFang SC", sans-serif;
   cursor: grab;
   font-size: 11px;
   line-height: 28px;
@@ -3826,10 +3751,6 @@ onBeforeUnmount(() => {
     width: calc(100vw - 24px);
     margin: 0 12px;
   }
-  .all-toolbar {
-    grid-template-columns: 1fr;
-    position: static;
-  }
   .list-workbench {
     grid-template-columns: 1fr !important;
     grid-template-rows: 240px 1fr;
@@ -3869,34 +3790,28 @@ onBeforeUnmount(() => {
   width: 24px !important;
 }
 .all-section{margin-top:0}
-.all-toolbar{grid-template-columns:220px minmax(10ch,18ch) auto;align-items:center}
-.all-toolbar :deep(.el-input){width:clamp(10ch,16vw,18ch)}
 .list-workbench{height:calc(100vh - 154px);min-height:520px}
 .instrument-list{overflow:auto}
 .list-header-row,.instrument-row{grid-template-columns:34px 42px minmax(max-content,1fr)}
 .list-table-header,.row-main{min-width:max-content}
 .instrument-row{height:33px;box-sizing:border-box}
 .list-virtual-spacer{min-width:max-content;pointer-events:none}
-.column-sort{width:100%;height:28px;padding:0;border:0;background:transparent;color:inherit;cursor:pointer;text-align:left;white-space:nowrap}
-.column-sort b{float:right;color:var(--ml-accent)}
-.board header{grid-template-columns:auto minmax(0,1fr) 6.8ch;gap:8px}
-.board-title{cursor:default;max-width:12ch;overflow:hidden;text-overflow:ellipsis}
-.board-quote-wrap{min-width:0;overflow-x:auto;scrollbar-width:thin}
-.board-quote-wrap :deep(.quote-values){height:24px;font-size:10px}
-.board select{box-sizing:border-box;width:6.8ch;min-width:6.8ch;height:26px;padding:0 1.35em 0 .35em;background:var(--ml-surface);border:1px solid var(--ml-divider);border-radius:4px;color:var(--ml-text-primary);font-size:11px}
+.column-sort{display:grid;grid-template-columns:minmax(0,1fr) 1.2em;align-items:center;width:100%;height:28px;padding:0;border:0;background:transparent;color:inherit;font:inherit;cursor:pointer;text-align:left;white-space:nowrap;overflow:hidden}
+.column-sort b{color:var(--ml-accent);text-align:center}
+.column-sort span{overflow:hidden;text-overflow:ellipsis}
 :global(.workbench-overlay){grid-template-columns:minmax(176px,220px) minmax(0,1fr) 48px;grid-template-rows:46px minmax(0,1fr) 36px;overflow:hidden}
 .workbench-header{grid-column:1/-1;grid-template-rows:1fr;padding:0 10px}
 .instrument-quote-line{grid-row:1;min-width:0}
 .detail-instrument-list{grid-column:1;grid-row:2/4;min-height:0;overflow:auto;border-right:1px solid var(--ml-divider);background:var(--ml-surface)}
-.detail-instrument-row{display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-rows:1fr 1fr;gap:1px 8px;width:100%;padding:7px 9px;border:0;border-bottom:1px solid var(--ml-divider);background:transparent;color:var(--ml-text-primary);cursor:pointer;text-align:left;font-variant-numeric:tabular-nums}
+.detail-instrument-row{display:grid;grid-template-columns:minmax(0,1fr) auto auto;grid-template-rows:auto auto;gap:3px 6px;width:100%;padding:7px 9px;border:0;border-bottom:1px solid var(--ml-divider);background:transparent;color:var(--ml-text-primary);cursor:pointer;text-align:left;font-variant-numeric:tabular-nums}
 .detail-instrument-row:hover,.detail-instrument-row.active{background:var(--ml-surface-selected)}
-.detail-instrument-row b,.detail-instrument-row small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.detail-instrument-row b{font-size:12px}.detail-instrument-row small{color:var(--ml-text-secondary);font-size:10px}.detail-instrument-row strong,.detail-instrument-row em{text-align:right;font-style:normal}.detail-instrument-row strong{font-size:12px}.detail-instrument-row em{font-size:10px}.detail-instrument-row.up strong,.detail-instrument-row.up em{color:var(--ml-price-up)}.detail-instrument-row.down strong,.detail-instrument-row.down em{color:var(--ml-price-down)}.detail-instrument-row.flat strong,.detail-instrument-row.flat em{color:var(--ml-text-secondary)}
+.detail-instrument-row b,.detail-instrument-row small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.detail-instrument-row b{grid-column:1/-1;font-size:12px}.detail-instrument-row small{grid-column:1;grid-row:2;color:var(--ml-text-secondary);font-size:10px}.detail-instrument-row strong,.detail-instrument-row em{grid-row:2;text-align:right;font-style:normal;white-space:nowrap}.detail-instrument-row strong{grid-column:2;font-size:12px}.detail-instrument-row em{grid-column:3;font-size:10px}
 .drawing-toolbar{grid-column:3;grid-row:2/4;position:relative;z-index:40;border-right:0;border-left:1px solid var(--ml-divider);overflow:visible}
 .drawing-group-menu{left:auto;right:43px;z-index:80}
 .period-bar{grid-column:2;grid-row:3}.workbench-content{grid-column:2;grid-row:2;overflow:auto}.workbench-chart{min-height:0}
 .workbench-content .replay-controls{position:sticky;bottom:0;left:auto;right:auto}
 .chart-type-menu{display:grid;gap:2px;min-width:145px}.chart-type-menu button{justify-content:flex-start;padding:0 7px}
-.chart-indicator-legend{left:10px;top:62px}.chart-indicator-legend-row{background:transparent;border-radius:0;padding:1px 2px;text-shadow:0 1px var(--ml-background)}.indicator-delete{font-size:18px;line-height:1}
+.indicator-delete{font-size:18px;line-height:1}
 .indicator-manager {
   display: grid;
   gap: 9px;
@@ -4001,8 +3916,17 @@ onBeforeUnmount(() => {
 .all-section { flex: 1 1 auto; min-height: 0; margin: 0; padding: 0; display: flex; flex-direction: column; }
 .list-workbench { --market-toolbar-height: 42px; flex: 1 1 auto; height: auto; min-height: 0; border-radius: 0; grid-template-columns: minmax(360px, 1fr) 8px minmax(0, var(--chart-width, 52%)); }
 .instrument-list { display: block; min-height: 0; overflow: auto; background: var(--ml-surface); }
-.all-toolbar { position: sticky; top: 0; z-index: 7; display: grid; grid-template-columns: minmax(9rem, 1fr) clamp(10rem, 18vw, 22rem) clamp(3rem, 4vw, 4.5rem); align-items: center; gap: 4px; min-height: var(--market-toolbar-height); padding: 5px 6px; background: var(--ml-surface); border-bottom: 1px solid var(--ml-divider); }
-.all-toolbar :deep(.el-input) { width: 100%; }.all-toolbar :deep(.el-button) { min-width: 0; padding-inline: 6px; }
+.all-toolbar {
+  --toolbar-select-width: 16em;
+  --toolbar-input-width: clamp(10rem, 18vw, 22rem);
+  --toolbar-button-width: clamp(3rem, 4vw, 4.5rem);
+  position: sticky; top: 0; left: 0; z-index: 7; display: flex; flex-wrap: wrap;
+  align-items: center; gap: 4px; padding: 5px 6px; box-sizing: border-box; font-size: 12px;
+  background: var(--ml-surface); border-bottom: 1px solid var(--ml-divider);
+}
+.all-toolbar :deep(.el-select) { flex: 0 0 var(--toolbar-select-width); width: var(--toolbar-select-width); }
+.all-toolbar :deep(.el-input) { flex: 0 0 var(--toolbar-input-width); width: var(--toolbar-input-width); }
+.all-toolbar :deep(.el-button) { flex: 0 0 var(--toolbar-button-width); width: var(--toolbar-button-width); min-width: 0; margin: 0; padding-inline: 0; }
 .list-header-row { top: var(--market-toolbar-height); z-index: 6; background: var(--ml-surface-elevated); box-shadow: 0 1px 0 var(--ml-divider); }
 .list-table-header, .list-table-header > .column-header, .column-sort { background: var(--ml-surface-elevated); }
 .list-table-header { gap: 0; }.column-header { margin: 0; border-right: 1px solid var(--ml-divider); }
@@ -4011,9 +3935,12 @@ onBeforeUnmount(() => {
 .board > .kline-chart { flex: 1 1 auto; min-height: 0; }
 .board-overlay, .detail-chart-overlay { display: flex; align-items: center; justify-content: space-between; gap: 5px; min-width: 0; font-size: 11px; color: var(--ml-text-primary); pointer-events: none; }
 .board-overlay strong, .detail-chart-overlay b { overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-.board-overlay select, .detail-chart-overlay select { box-sizing: border-box; width: 8.5ch; min-width: 8.5ch; height: 20px; padding: 0; color: var(--ml-text-primary); background: var(--ml-surface); border: 1px solid var(--ml-divider); border-radius: 3px; font-size: 10px; pointer-events: auto; }
+.board-overlay select { box-sizing: border-box; width: 8.5ch; min-width: 8.5ch; height: 20px; padding: 0; color: var(--ml-text-primary); background: var(--ml-surface); border: 1px solid var(--ml-divider); border-radius: 3px; font-size: 10px; pointer-events: auto; }
 .workbench-content { position: relative; overflow: hidden; }.workbench-chart { height: 100%; min-height: 0; }.workbench-chart > .kline-chart { height: 100%; }
-.workbench-overlay { grid-template-rows: 42px minmax(0, 1fr) !important; }.workbench-header { min-height: 42px; }.instrument-quote-line { display: none !important; }
-.chart-indicator-legend { top: 62px; left: 68px; }.workbench-content .replay-controls { position: absolute; left: 0; right: 0; bottom: 0; z-index: 22; }
-@media (max-width: 980px) { .all-toolbar { grid-template-columns: 1fr 1fr; }.all-toolbar :deep(.el-button) { grid-column: 2; justify-self: end; }.list-workbench { grid-template-columns: minmax(300px, 42%) 8px minmax(0, 1fr); } }
+.workbench-overlay { grid-template-rows: 42px minmax(0, 1fr) 36px; }.workbench-header { min-height: 42px; }.instrument-quote-line { display: none !important; }
+.workbench-content .replay-controls { position: absolute; left: 0; right: 0; bottom: 0; z-index: 22; }
+.row-main .quote-tone-up,.detail-instrument-row .quote-tone-up { color:var(--ml-price-up); }
+.row-main .quote-tone-down,.detail-instrument-row .quote-tone-down { color:var(--ml-price-down); }
+.row-main .quote-tone-flat,.detail-instrument-row .quote-tone-flat { color:var(--ml-text-primary); }
+.row-main .quote-tone-missing,.detail-instrument-row .quote-tone-missing { color:var(--ml-text-disabled); }
 </style>
