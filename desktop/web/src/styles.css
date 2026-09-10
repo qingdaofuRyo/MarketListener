@@ -3,7 +3,8 @@
  * 保持旧类名兼容：.atlas-frame / .industry-page / .panel / .page-title 等。 */
 
 :root {
-  --ml-quote-field-width: 104px;
+  --ml-quote-field-width: 132px;
+  --ml-quote-wide-field-width: 158px;
   --ml-quote-label-width: 3.2em;
   --ml-quote-grid-gap: 2px 0;
   --ml-chart-board-gap: 12px;

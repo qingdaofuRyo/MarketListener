@@ -1707,8 +1707,11 @@ function createDrawing(
   drawings.value = [...drawings.value, drawing];
   markDrawingsChanged();
   onSelectDrawing(drawing.id, anchor);
-  if (!keepDrawing.value) tool.value = "cursor";
+  finishDrawing();
   void saveDrawings();
+}
+function finishDrawing(): void {
+  if (!keepDrawing.value) tool.value = 'cursor';
 }
 function updateDrawing(item: ChartDrawing): void {
   drawings.value = drawings.value.map((drawing) =>
@@ -2250,7 +2253,7 @@ onBeforeUnmount(() => {
               open-on-double-click
               @open-detail="selected && openWorkbench(selected)"
               @request-earlier="loadEarlierBoard(boardTop)"
-            ><template #overlay><div class="board-overlay"><strong>{{ selected?.name || "请选择标的" }}</strong><select :value="boardTop.period" aria-label="上看板 K 线周期" @change="boardPeriod('top',($event.target as HTMLSelectElement).value)"><option v-for="[id,label] in periodOptions" :key="id" :value="id" :disabled="!boardPeriodAvailable(boardTop,id)">{{label}}</option></select></div></template></KLineChart>
+            ><template #overlay><div class="instrument-info"><strong>{{ selected?.name || "请选择标的" }}</strong><small>{{ selected?.symbol }}</small></div></template><template #actions><div class="board-overlay"><select :value="boardTop.period" aria-label="上看板 K 线周期" @change="boardPeriod('top',($event.target as HTMLSelectElement).value)"><option v-for="[id,label] in periodOptions" :key="id" :value="id" :disabled="!boardPeriodAvailable(boardTop,id)">{{label}}</option></select></div></template></KLineChart>
           </section>
           <section v-loading="boardBottom.loading" class="board">
             <KLineChart
@@ -2269,7 +2272,7 @@ onBeforeUnmount(() => {
               open-on-double-click
               @open-detail="selected && openWorkbench(selected)"
               @request-earlier="loadEarlierBoard(boardBottom)"
-            ><template #overlay><div class="board-overlay"><strong>{{ selected?.name || "请选择标的" }}</strong><select :value="boardBottom.period" aria-label="下看板 K 线周期" @change="boardPeriod('bottom',($event.target as HTMLSelectElement).value)"><option v-for="[id,label] in periodOptions" :key="id" :value="id" :disabled="!boardPeriodAvailable(boardBottom,id)">{{label}}</option></select></div></template></KLineChart>
+            ><template #overlay><div class="instrument-info"><strong>{{ selected?.name || "请选择标的" }}</strong><small>{{ selected?.symbol }}</small></div></template><template #actions><div class="board-overlay"><select :value="boardBottom.period" aria-label="下看板 K 线周期" @change="boardPeriod('bottom',($event.target as HTMLSelectElement).value)"><option v-for="[id,label] in periodOptions" :key="id" :value="id" :disabled="!boardPeriodAvailable(boardBottom,id)">{{label}}</option></select></div></template></KLineChart>
           </section>
         </div>
       </div>
@@ -2478,7 +2481,7 @@ onBeforeUnmount(() => {
               </button>
             </div>
           </div>
-          <button aria-label="文本框" title="文本框" :disabled="replayActive" @click="selectDrawingTool('text')"><svg viewBox="0 0 24 24"><path d="M5 5h14M12 5v14M8 19h8"/></svg></button>
+          <button aria-label="文本框" title="文本框" :class="{active:tool==='text'}" :aria-pressed="tool==='text'" :disabled="replayActive" @click="selectDrawingTool('text')"><svg viewBox="0 0 24 24"><path d="M5 5h14M12 5v14M8 19h8"/></svg></button>
           <hr />
           <button
             type="button"
@@ -2766,12 +2769,14 @@ onBeforeUnmount(() => {
             :future-units="selected?.assetType === 'FUTURE'"
             :loading-earlier="detailEarlierLoading"
             @draw="createDrawing"
+            detail-layout
+            @drawing-finished="finishDrawing"
             @select-drawing="onSelectDrawing"
             @update-drawing="updateDrawing"
             @visible-range="onDetailVisibleRange"
             @request-earlier="!replayActive && loadEarlierHistory()"
           >
-            <template #overlay><div class="detail-chart-overlay"><b>{{ selected?.name }} · {{ selected?.symbol || selected?.instrumentId }}</b></div></template>
+            <template #overlay><div class="instrument-info"><strong>{{ selected?.name }}</strong><small>{{ selected?.symbol || selected?.instrumentId }}</small></div></template>
             <template #legend>
               <div class="chart-indicator-legend" aria-label="已添加指标">
                 <div v-for="instance in indicatorInstances" :key="instance.instanceId" class="chart-indicator-legend-row" :class="{dimmed: !instance.visible || (instance.crossPeriod === false && instance.period !== history.period)}">
@@ -2901,7 +2906,9 @@ onBeforeUnmount(() => {
 .drawing-toolbar .drawing-group-menu button{width:100%;display:flex;gap:12px;padding:8px;white-space:nowrap}
 .group-arrow{position:absolute;right:1px;bottom:1px;font-size:10px}
 .chart-type-menu{left:0;top:35px;min-width:170px;display:flex;gap:5px}
-.icon-button,.chart-type-menu button{display:flex;align-items:center;gap:3px;height:32px;background:transparent;color:var(--ml-text-primary);border:1px solid var(--ml-divider);border-radius:4px;cursor:pointer}
+.icon-button,.chart-type-menu button{display:flex;align-items:center;gap:3px;height:32px;background:transparent;color:var(--ml-text-primary);border:0;border-radius:4px;cursor:pointer}
+.icon-button{border:1px solid var(--ml-divider)}
+.chart-type-menu button:hover,.chart-type-menu button.active{background:var(--ml-surface-selected)}
 .chart-type-menu button.active,.chart-indicator-legend-row button.active{color:var(--ml-accent)}
 .indicator-direct-color{width:20px;height:20px;padding:0;border:0;background:transparent;cursor:pointer}
 .chart-indicator-legend-row :deep(.chart-icon){width:14px;height:14px}
@@ -3235,12 +3242,19 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 3px;
-  overflow: auto;
-  padding: 5px 12px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  box-sizing: border-box;
+  height: 36px;
+  min-height: 0;
+  padding: 0 12px;
   border-bottom: 1px solid var(--ml-divider);
 }
 .period-bar button {
-  padding: 5px 9px;
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  line-height: 18px;
+  padding: 3px 9px;
 }
 .period-bar button.unavailable {
   opacity: 0.32;
@@ -3803,9 +3817,9 @@ onBeforeUnmount(() => {
 .workbench-header{grid-column:1/-1;grid-template-rows:1fr;padding:0 10px}
 .instrument-quote-line{grid-row:1;min-width:0}
 .detail-instrument-list{grid-column:1;grid-row:2/4;min-height:0;overflow:auto;border-right:1px solid var(--ml-divider);background:var(--ml-surface)}
-.detail-instrument-row{display:grid;grid-template-columns:minmax(0,1fr) auto auto;grid-template-rows:auto auto;gap:3px 6px;width:100%;padding:7px 9px;border:0;border-bottom:1px solid var(--ml-divider);background:transparent;color:var(--ml-text-primary);cursor:pointer;text-align:left;font-variant-numeric:tabular-nums}
+.detail-instrument-row{display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-rows:auto auto;gap:3px 6px;width:100%;padding:7px 9px;border:0;border-bottom:1px solid var(--ml-divider);background:transparent;color:var(--ml-text-primary);cursor:pointer;text-align:left;font-variant-numeric:tabular-nums}
 .detail-instrument-row:hover,.detail-instrument-row.active{background:var(--ml-surface-selected)}
-.detail-instrument-row b,.detail-instrument-row small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.detail-instrument-row b{grid-column:1/-1;font-size:12px}.detail-instrument-row small{grid-column:1;grid-row:2;color:var(--ml-text-secondary);font-size:10px}.detail-instrument-row strong,.detail-instrument-row em{grid-row:2;text-align:right;font-style:normal;white-space:nowrap}.detail-instrument-row strong{grid-column:2;font-size:12px}.detail-instrument-row em{grid-column:3;font-size:10px}
+.detail-instrument-row b,.detail-instrument-row small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.detail-instrument-row b{grid-column:1;grid-row:1;font-size:12px}.detail-instrument-row small{grid-column:1;grid-row:2;color:var(--ml-text-secondary);font-size:10px}.detail-instrument-row strong,.detail-instrument-row em{grid-column:2;text-align:right;font-style:normal;white-space:nowrap}.detail-instrument-row strong{grid-row:1;font-size:12px}.detail-instrument-row em{grid-row:2;font-size:10px}
 .drawing-toolbar{grid-column:3;grid-row:2/4;position:relative;z-index:40;border-right:0;border-left:1px solid var(--ml-divider);overflow:visible}
 .drawing-group-menu{left:auto;right:43px;z-index:80}
 .period-bar{grid-column:2;grid-row:3}.workbench-content{grid-column:2;grid-row:2;overflow:auto}.workbench-chart{min-height:0}
@@ -3934,7 +3948,8 @@ onBeforeUnmount(() => {
 .board { display: flex; min-height: 0; border: 1px solid var(--ml-divider); background: var(--ml-surface); }
 .board > .kline-chart { flex: 1 1 auto; min-height: 0; }
 .board-overlay, .detail-chart-overlay { display: flex; align-items: center; justify-content: space-between; gap: 5px; min-width: 0; font-size: 11px; color: var(--ml-text-primary); pointer-events: none; }
-.board-overlay strong, .detail-chart-overlay b { overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.instrument-info{display:grid;grid-template-rows:repeat(2,18px);align-items:center;font-size:11px;white-space:nowrap;color:var(--ml-text-primary)}
+.instrument-info small{font-size:10px;color:var(--ml-text-secondary)}
 .board-overlay select { box-sizing: border-box; width: 8.5ch; min-width: 8.5ch; height: 20px; padding: 0; color: var(--ml-text-primary); background: var(--ml-surface); border: 1px solid var(--ml-divider); border-radius: 3px; font-size: 10px; pointer-events: auto; }
 .workbench-content { position: relative; overflow: hidden; }.workbench-chart { height: 100%; min-height: 0; }.workbench-chart > .kline-chart { height: 100%; }
 .workbench-overlay { grid-template-rows: 42px minmax(0, 1fr) 36px; }.workbench-header { min-height: 42px; }.instrument-quote-line { display: none !important; }

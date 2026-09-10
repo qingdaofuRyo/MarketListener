@@ -11,7 +11,7 @@ import {
 import type { IndicatorInstance, VolumeProfile } from "../../domain/strategyTypes";
 import { useThemeStore } from "../../stores/theme";
 import { heikinAshi, type ChartType } from "../../domain/chartPresentation";
-import { CHART_LAYOUT } from "../../domain/chartLayout";
+import { CHART_LAYOUT, chartAxisGutter } from "../../domain/chartLayout";
 import { formatAxisDate, formatCrosshairTime } from "../../domain/chartTime";
 import { resolveSecondaryMetric, subchartSeries, type MeasureEvidence } from "../../domain/chartSubchart";
 import LaserCanvas from "./LaserCanvas.vue";
@@ -137,6 +137,7 @@ const props = withDefaults(
     measureEvidence?: MeasureEvidence;
     height?: number;
     fill?: boolean;
+    detailLayout?: boolean;
     indicators?: Record<string, Array<number | null | undefined>>;
     indicatorInstances?: IndicatorInstance[];
     volumeProfile?: VolumeProfile;
@@ -200,12 +201,17 @@ const emit = defineEmits<{
   updateDrawing: [drawing: ChartDrawing];
   requestEarlier: [];
   openDetail: [];
+  drawingFinished: [];
 }>();
 const theme = useThemeStore();
 const element = ref<HTMLElement>();
 const overlayElement = ref<HTMLElement>();
 const quoteElement = ref<HTMLElement>();
 const overlayHeight = ref(60);
+const priceTop = computed(() => Math.max(props.hideQuote ? 16 : 42, overlayHeight.value + CHART_LAYOUT.overlayGap));
+const axisGutter = ref(48);
+const laserUsed = ref(false);
+watch(() => props.drawingTool, tool => { if (tool === 'laser') laserUsed.value = true; }, {immediate:true});
 let measuredWidth = 0;
 let measuredDpr = 0;
 let resizeFrame: number | undefined;
@@ -1533,13 +1539,27 @@ function chartLayout(): {
 } {
   const palette = theme.palette;
   const compact = props.compact;
-  const left = compact ? 48 : 66;
-  const right = compact ? 42 : 48;
-  const top = Math.max(props.hideQuote ? 16 : 42, overlayHeight.value + CHART_LAYOUT.overlayGap);
+  const bounds = priceBounds();
+  textMeasureCanvas ??= document.createElement('canvas');
+  const measure = textMeasureCanvas.getContext('2d');
+  if (measure) measure.font = `${compact ? 8 : 10}px sans-serif`;
+  const labels = Array.from({length:6}, (_, i) => format(bounds.min + (bounds.max-bounds.min)*i/5));
+  for (const bar of props.bars) {
+    labels.push(compactAxis(bar.volume), secondaryAxis(bar[secondaryMetric.value]));
+  }
+  for (const instance of paneIndicatorInstances.value) {
+    for (const values of Object.values(instance.series || {})) {
+      for (const value of values) labels.push(format(value));
+    }
+  }
+  const left = chartAxisGutter(labels, text => measure?.measureText(text).width ?? text.length*6);
+  const right = left;
+  axisGutter.value = left;
+  const top = priceTop.value;
   const bottom = compact ? 20 : 28;
   const paneCount = paneIndicatorInstances.value.length;
   const secondaryCount = paneCount + 1;
-  const gap = compact ? CHART_LAYOUT.paneGap - 6 : CHART_LAYOUT.paneGap;
+  const gap = props.detailLayout ? 0 : compact ? CHART_LAYOUT.paneGap - 6 : CHART_LAYOUT.paneGap;
   const available = Math.max(
     120,
     layoutHeight.value - top - bottom - gap * secondaryCount,
@@ -1579,6 +1599,7 @@ function chartLayout(): {
   const xAxes = grids.map((_grid, index) => ({
     ...axisBase,
     gridIndex: index,
+    axisPointer: { ...axisBase.axisPointer, label: { ...axisBase.axisPointer.label, show: index === grids.length - 1 } },
     axisLabel: {
       show: index === grids.length - 1,
       interval: (tick: number) => isMajorTick(tick),
@@ -1596,6 +1617,9 @@ function chartLayout(): {
       show: true,
       color,
       fontSize: compact ? 8 : 10,
+      fontFamily: 'sans-serif',
+      margin: CHART_LAYOUT.axisLabelMargin,
+      formatter: (value: number) => format(value),
       showMinLabel: false,
       showMaxLabel: false,
     },
@@ -1611,6 +1635,9 @@ function chartLayout(): {
         show: true,
         color: palette.chartAxis,
         fontSize: compact ? 8 : 10,
+        margin: CHART_LAYOUT.axisLabelMargin,
+        fontFamily: 'sans-serif',
+        formatter: (value: number) => format(value),
         showMinLabel: false,
         showMaxLabel: false,
       },
@@ -1625,6 +1652,8 @@ function chartLayout(): {
       axisLabel: {
         show: true,
         color: palette.chartVolume,
+        fontFamily: 'sans-serif',
+        margin: CHART_LAYOUT.axisLabelMargin,
         fontSize: compact ? 8 : 10,
         showMinLabel: false,
         showMaxLabel: false,
@@ -1638,6 +1667,8 @@ function chartLayout(): {
       axisLabel: {
         show: true,
         color: palette.chartSecondary,
+        fontFamily: 'sans-serif',
+        margin: CHART_LAYOUT.axisLabelMargin,
         fontSize: compact ? 8 : 10,
         showMinLabel: false,
         showMaxLabel: false,
@@ -1659,13 +1690,13 @@ function chartLayout(): {
     {
       text: "成交量",
       left: left + 4,
-      top: Number((grids[1] as { top: number }).top) - 12,
+      top: Number((grids[1] as { top: number }).top) + (props.detailLayout ? 2 : -12),
       textStyle: { color: palette.chartVolume, fontSize: compact ? 8 : 10, fontWeight: 600 },
     },
     {
       text: secondaryMetricLabel.value,
       left: left + 48,
-      top: Number((grids[1] as { top: number }).top) - 12,
+      top: Number((grids[1] as { top: number }).top) + (props.detailLayout ? 2 : -12),
       textStyle: { color: palette.chartSecondary, fontSize: compact ? 8 : 10, fontWeight: 600 },
     },
     ...paneIndicatorInstances.value.map((item, index) => ({
@@ -2574,14 +2605,15 @@ function scrollQuotes(event: WheelEvent): void {
     :class="{ compact, fill, 'drawing-active': drawingTool !== 'cursor', 'cursor-tool': drawingTool === 'cursor' }"
     :style="fill ? undefined : { height: `${height}px` }"
   >
-    <div ref="overlayElement" class="chart-overlay">
+    <div ref="overlayElement" class="chart-overlay" :style="{left:`${axisGutter}px`,right:`${axisGutter}px`}">
       <div class="chart-overlay-controls"><slot name="overlay" /></div>
       <div v-if="!hideQuote && hoverBar" ref="quoteElement" class="quote-panel" role="region" aria-label="行情字段（Shift加滚轮横向浏览）" tabindex="0"
         @keydown.left.prevent="quoteElement && (quoteElement.scrollLeft -= 104)" @keydown.right.prevent="quoteElement && (quoteElement.scrollLeft += 104)">
         <QuoteValues :bar="hoverBar" :latest-bar="bars.at(-1)" :total-market-cap="totalMarketCap" :float-market-cap="floatMarketCap" :swap-colors="swapColors" />
       </div>
-      <slot name="legend" />
+      <div class="chart-overlay-actions"><slot name="actions" /></div>
     </div>
+    <div class="chart-legend-overlay" :style="{top:`${priceTop}px`,left:`${axisGutter}px`,right:`${axisGutter}px`}"><slot name="legend" /></div>
     <span v-if="drawingTool === 'long_position' || drawingTool === 'short_position'" class="risk-drawing-hint">{{ riskHint || '请选择开仓参考价，然后选择止损、目标参考价' }}</span>
     <div
       ref="element"
@@ -2605,7 +2637,7 @@ function scrollQuotes(event: WheelEvent): void {
       :data-strategy-marker-count="strategyMarkers.length"
       :data-volume-profile-bucket-count="volumeProfile?.buckets.length || 0"
     />
-    <LaserCanvas v-if="drawingTool === 'laser'" />
+    <LaserCanvas v-if="laserUsed" :active="drawingTool === 'laser'" @finished="emit('drawingFinished')" />
     <input
       v-if="textDraft"
       ref="textInput"
@@ -2642,23 +2674,23 @@ function scrollQuotes(event: WheelEvent): void {
   position: absolute;
   z-index: 4;
   top: 2px;
-  left: 66px;
-  right: 48px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
   pointer-events: none;
 }
 .quote-panel {
   position: relative;
   max-width: 100%;
+  min-width: 0;
+  flex: 1 1 auto;
   overflow-x: auto;
   scrollbar-width: thin;
   container-type: inline-size;
   font-family: "SimHei", "Heiti SC", "Microsoft YaHei", sans-serif;
 }
-.chart-overlay-controls { min-height:18px; pointer-events:none; }
-.compact .chart-overlay {
-  left: 48px;
-  right: 42px;
-}
+.chart-overlay-controls,.chart-overlay-actions { flex:0 0 auto; pointer-events:none; }
+.chart-legend-overlay { position:absolute; z-index:5; pointer-events:none; }
 .history-loading {
   position: absolute;
   z-index: 5;

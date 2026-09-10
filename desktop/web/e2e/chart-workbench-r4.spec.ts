@@ -12,7 +12,7 @@ const catalog = [
   { id: "indicator.rsi", name: "相对强弱指数", englishName: "RSI", placement: "pane" },
 ].map((item) => ({ ...item, resourceKind: "indicator", version: 1, status: "active", categoryLabel: "趋势", supportedAssetTypes: ["STOCK"], parameters: [{ name: "lookback", default: 14, type: "integer", minimum: 2, maximum: 500 }] }));
 
-export async function setup(page: Page) {
+export async function setup(page: Page, testBars = bars) {
   page.on("pageerror", (error) => { throw error; });
   await page.setViewportSize({ width: 1440, height: 960 });
   const instrument = { instrumentId: id, symbol: "600000", name: "浦发银行", assetType: "STOCK", market: "CN", latestPrice: 12 };
@@ -29,15 +29,15 @@ export async function setup(page: Page) {
     else if (path.endsWith("categories")) result = { items: [{ id: "cn-future-main", label: "国内期货主连合约" }, { id: "cn-future-weighted", label: "国内期货加权合约" }] };
     else if (path.endsWith("/instruments")) result = { items: [instrument], total: 1 };
     else if (path.endsWith("drawings/batch")) result = { items: { [id]: drawings } };
-    else if (path.endsWith("bars/batch")) result = { items: { [id]: bars } };
+    else if (path.endsWith("bars/batch")) result = { items: { [id]: testBars } };
     else if (path.endsWith("/drawings")) {
       if (route.request().method() === "PUT") { drawings = route.request().postDataJSON().items; saves++; }
       result = { items: drawings };
     } else if (path.endsWith("indicator-series")) {
       const body = route.request().postDataJSON(); requests.push(body);
       result = { instances: body.instances.map((item: { definitionId: string }) => ({ ...item, status: "ready", plots: [{ id: "value", type: "line" }], series: { value: bars.slice(0, body.size).map((bar) => bar.close) } })) };
-    } else if (path.endsWith("/bars")) result = { bars: url.searchParams.get("limit") === "1" ? [bars.at(-1)] : bars, availablePeriods: ["1d", "1h"], start: 0, size: bars.length, total: bars.length, hasMore: false };
-    else result = { bars, drawings, series: {}, total: bars.length, start: 0, size: bars.length, period: url.searchParams.get("period") || "1d", availablePeriods: ["1d", "1h"], hasMore: false };
+    } else if (path.endsWith("/bars")) result = { bars: url.searchParams.get("limit") === "1" ? [testBars.at(-1)] : testBars, availablePeriods: ["1d", "1h"], start: 0, size: testBars.length, total: testBars.length, hasMore: false };
+    else result = { bars:testBars, drawings, series: {}, total: testBars.length, start: 0, size: testBars.length, period: url.searchParams.get("period") || "1d", availablePeriods: ["1d", "1h"], hasMore: false };
     await route.fulfill({ json: result });
   });
   await page.goto("/market/");

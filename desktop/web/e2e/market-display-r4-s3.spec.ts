@@ -161,7 +161,7 @@ test("Overlay固定槽、详情底部周期、左栏价格、主题/缩放/DPR�
   const canvas=page.locator(".boards .chart-root").first();
   const fields=page.locator(".boards .quote-values").first().locator("p");
   const initial=await fields.evaluateAll(els=>els.map(el=>({x:el.getBoundingClientRect().x,y:el.getBoundingClientRect().y,w:el.getBoundingClientRect().width})));
-  expect(initial.every(box=>box.w===104)).toBe(true);
+  expect(initial.every(box=>box.w>0)).toBe(true);
   expect(new Set(initial.map(box=>box.y)).size).toBe(2);
   const box=(await canvas.boundingBox())!;
   expect(box.width).toBeGreaterThan(600);
@@ -174,14 +174,14 @@ test("Overlay固定槽、详情底部周期、左栏价格、主题/缩放/DPR�
   const quoteBox=(await quotePanel.boundingBox())!;
   await page.mouse.move(quoteBox.x+20,quoteBox.y+10);
   await page.keyboard.down("Shift");await page.mouse.wheel(0,160);await page.keyboard.up("Shift");
-  await expect.poll(()=>quotePanel.evaluate(el=>el.scrollLeft)).toBeGreaterThan(0);
+  expect(await quotePanel.evaluate(el=>el.scrollWidth<=el.clientWidth)).toBe(true);
   await canvas.dblclick({position:{x:box.width*.5,y:box.height*.45}});
   const nav=page.getByRole("navigation",{name:"K线周期"});
   await expect(nav).toBeVisible();
   await expect(nav.getByRole("button")).toHaveCount(10);
   await expect(page.getByRole("combobox",{name:"详情 K 线周期"})).toHaveCount(0);
   const side=page.locator(".detail-instrument-row").first();
-  expect((await side.locator("strong").boundingBox())!.y).toBeGreaterThan((await side.locator("b").boundingBox())!.y);
+  expect((await side.locator("em").boundingBox())!.y).toBeGreaterThan((await side.locator("strong").boundingBox())!.y);
   await nav.getByRole("button",{name:"60分",exact:true}).click();
   await expect(nav.getByRole("button",{name:"60分",exact:true})).toHaveAttribute("aria-pressed","true");
   await expect.poll(()=>state.requests.includes("1h")).toBe(true);

@@ -1,6 +1,33 @@
 # R4 第四轮开发计划（当前唯一活动计划）
 
-## R4 续3（2026-09-08，当前执行批次）
+## R4 续4（2026-09-10，当前执行批次）
+
+仅桌面Web；续4覆盖续3可变7/14列、详情价格同行、主副图留缝，以及指标图例参与Overlay高度的实现。保留所有前序证据；无数据契约迁移。任务继承既有状态机，失败次数从本批实际执行累计；依赖T043/T044/T045/T047/T048。
+
+| 编号 | 优先级/执行对象 | 状态/失败次数 | 现状与原因 | 目标/方案/涉及文件 | 验收/测试/最终输出 |
+|---|---|---|---|---|---|
+| R4-续4-01 | P0/共享报价 | DONE/1 | 字段自动排7/14列且省略，标题独占一行 | quoteFieldGroups、QuoteValues、KLineChart、MarketView、styles；7组双行固定比例槽/字号适配，名称代码同Overlay，缺失-- | 已定向验证通过；两页同布局、无截断、数值变化不移位 |
+| R4-续4-02 | P0/详情图层 | DONE/4 | 图例在实测header内，副图标题依赖gap | KLineChart、chartSubchart；图例绝对定位、详情gap=0、副图内标题、量柱统一0.8 | 已定向验证通过；增加指标不缩主图，双独立轴量柱/额持仓线保持 |
+| R4-续4-03 | P1/详情左栏 | DONE/0 | 续3价格涨幅同排 | MarketView；名称代码左列、价幅右列上下排列 | 已定向验证通过；色彩/切换/排序不变 |
+| R4-续4-04 | P1/底部周期 | DONE/0 | overflow:auto及padding可能产生纵向溢出 | MarketView；36px border-box单行，横向可滚、纵向不滚 | 已定向验证通过；nav与document无纵向溢出，周期切换有效 |
+| R4-续4-05 | P0/绘图生命周期 | DONE/1 | 文本按钮缺active；激光结束不通知父级 | LaserCanvas、KLineChart、MarketView；公共finishDrawing读取keepDrawing，退出后轨迹自然消退 | 已定向验证通过；文本立即active、激光两种连续状态、取消不提交 |
+| R4-续4-06 | P1/图形菜单 | DONE/0 | 菜单项共享按钮边框 | MarketView；整体surface，item无边框、hover/active背景 | 已定向验证通过；图标中文及选择有效 |
+| R4-续4-07 | P1/共享价格轴 | DONE/1 | 固定66/48px留白 | chartLayout、KLineChart；按格式化刻度measureText计算对称gutter | 已定向验证通过；负数大数不裁切，两页一致 |
+| R4-续4-08 | P1/看板周期 | DONE/1 | select在Overlay独立首行 | KLineChart、MarketView；actions槽与两行字段垂直居中 | 已定向验证通过；8.5ch宽、切换、指针与轴不遮挡 |
+
+边界：只运行受影响Web lint/typecheck/build及相关Playwright；不做全量回归、Android或移动设计。原有未提交通达信自动化/数据维护变更保留，不混入续4代码提交；共有计划/日志按续4差异精确暂存。
+
+### 续4实际验收与发布证据
+
+- 定向ESLint：KLineChart、LaserCanvas、QuoteValues、chartLayout、chartSubchart、quoteFieldGroups、MarketView通过；`npm run typecheck`和`npm run build`通过，构建仅有既有大chunk warning。没有运行`npm test`冒充单测。
+- Playwright：本批20个唯一关联场景最终通过，来自`chart-workbench-r4.spec.ts`、`market-display-r4-s3.spec.ts`与新增`market-layout-r4-s4.spec.ts`。最终修改后仅复跑`--grep '续4|Overlay固定' --workers=1`的5项，21.9s全部通过；其余15项前次通过，不反复跑全量历史E2E。
+- 验收包含两页7组顺序/双行、数值变动位置稳定、极长负价格和大量额不越槽、窄看板全部字段无水平溢出、周期居中与切换、主副grid紧接、图例添加不缩主图、量柱0.8/独立轴折线、文本active、激光连续/非连续/中途切工具、指标/绘图/回放和颜色。桌面1366×768/1920×1080/2560×1440、浅深主题、125%/150%布局缩放和DPR2复验通过；截图为本地忽略的test-results/r4-s4-*.png。
+- 失败与修复：首次生产Vue内部实例读取不可用，改为读取真实ECharts生产模块已有实例；指标按钮名称与范围定位、详情关闭等待由测试修正。实际发现图例顶部比绘图区高2px，统一priceTop后通过。独立审查修复副图标签gutter遗漏、范围采样未含padding、旧pointer capture和长数值槽风险；最终取消依赖横滚，改固定比例七列与字号预算。失败次数包含上述实际失败及审查修正，不改写历史次数。
+- 独立Agent `r4s4_final_review`已检查最终diff、测试记录与无水平溢出断言，给出`ACCEPTED`；八项实现登记DONE。无数据迁移、没有Web业务假数据。fixture仅用于自动测试，不作为真实行情来源证明。
+- 体验边界：窄看板或极长数字会缩小字号，完整数值保留title提示；没有省略号或隐藏后几组。现有.gitignore已覆盖截图/构建/缓存/数据，无新增运行文件类型需另加规则。
+- Git发布：当前master；仅提交续4Web源码、测试、架构说明及计划/日志对应hunk，保留原有未提交TDX工作。提交与远端SHA在发布后核对，不提前声称push成功。
+
+## R4 续3（2026-09-08，历史执行批次）
 
 基线 `f364c04`；仅扩展本轮 T043/T044/T045/T047/T048。续3覆盖续2的65px报价槽、嵌套双柱和详情周期下拉框；续2交付记录作为当时已验收历史保留。以下任务继承本文状态机，未取得验收证据前不标记 DONE。
 

@@ -1,7 +1,11 @@
 <script setup lang="ts">
-import { onBeforeUnmount, ref } from "vue";
+import { onBeforeUnmount, ref, watch } from "vue";
 
 const canvas = ref<HTMLCanvasElement>();
+const props = defineProps<{ active: boolean }>();
+const emit = defineEmits<{ finished: [] }>();
+let origin: {x:number;y:number} | undefined;
+let moved = false;
 let pointer: number | undefined;
 let frame = 0;
 let points: Array<{ x: number; y: number; time: number; start: boolean }> = [];
@@ -38,26 +42,37 @@ function append(event: PointerEvent, start = false): void {
   if (!frame) frame = requestAnimationFrame(paint);
 }
 function down(event: PointerEvent): void {
-  if (event.button !== 0) return;
+  if (!props.active || event.button !== 0 || pointer !== undefined) return;
+  origin = {x:event.clientX,y:event.clientY}; moved = false;
   pointer = event.pointerId; canvas.value!.setPointerCapture(pointer); append(event, true);
 }
 function move(event: PointerEvent): void {
   if (pointer !== event.pointerId) return;
+  if (origin && Math.hypot(event.clientX-origin.x,event.clientY-origin.y)>2) moved = true;
   const samples = event.getCoalescedEvents?.();
   for (const sample of samples?.length ? samples : [event]) append(sample);
 }
 function up(event: PointerEvent): void {
   if (event.pointerId !== pointer) return;
-  append(event); pointer = undefined;
-  if (canvas.value?.hasPointerCapture(event.pointerId)) canvas.value.releasePointerCapture(event.pointerId);
+  append(event);
+  const valid = moved || Boolean(origin && Math.hypot(event.clientX-origin.x,event.clientY-origin.y)>2);
+  cancel();
+  if (valid) emit('finished');
 }
-onBeforeUnmount(() => { cancelAnimationFrame(frame); points = []; });
+function cancel(): void {
+  const captured = pointer;
+  pointer = undefined; origin = undefined; moved = false;
+  if (captured !== undefined && canvas.value?.hasPointerCapture(captured)) canvas.value.releasePointerCapture(captured);
+}
+watch(() => props.active, active => { if (!active) cancel(); }, {flush:'sync'});
+onBeforeUnmount(() => { cancel(); cancelAnimationFrame(frame); points = []; });
 </script>
 <template>
-  <canvas ref="canvas" class="laser-canvas" aria-label="激光笔画布" data-point-count="0"
+  <canvas ref="canvas" class="laser-canvas" :class="{inactive:!active}" aria-label="激光笔画布" data-point-count="0"
     @pointerdown.stop.prevent="down" @pointermove.stop.prevent="move"
-    @pointerup.stop.prevent="up" @pointercancel.stop.prevent="up" />
+    @pointerup.stop.prevent="up" @pointercancel.stop.prevent="cancel" @lostpointercapture="cancel" />
 </template>
 <style scoped>
 .laser-canvas { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 12; cursor: crosshair; touch-action: none; }
+.laser-canvas.inactive { pointer-events: none; }
 </style>
