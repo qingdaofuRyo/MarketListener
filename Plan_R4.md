@@ -92,6 +92,7 @@
 - 独立`r4_tv_review`指出并复核上述窗口/生命周期/后端边界修复，最终静态结论“通过，无新增阻断问题”。极端接近JS溢出量级的轴值不在实际金融量级验收范围；已有两位报价精度/窄字段可读性候选不在本批实施。
 - 无数据库/标准键/时间语义迁移；额外轴空槽只有空字符串类别，不产生行情或预测交易日。现有.gitignore覆盖构建、截图、报告和缓存，无新增运行类型需修改。既有TDX代码/文档及16项候选计划不混入本批提交。
 - 最终复跑 `npx playwright test e2e/market-tv-r4.spec.ts e2e/market-layout-r4-s4.spec.ts --workers=1`：14项全部通过，43.3秒；趋势线保存/刷新本轮通过，未删除旧断言。独立审查角色 `r4_tv_review` 根据最终源码与上述证据给出R4-TV-01～06 `ACCEPTED`，六项标记DONE；审查者未重复运行测试。发布结果以本节后续回执和Git记录为准。
+- 发布回执：实现提交 `bd0a76e25114f87aaecd5bf28c75757aebfd55fa` 在master正常推送至 `https://github.com/qingdaofuRyo/MarketListener.git`，`git ls-remote origin refs/heads/master`已核对同SHA。13个精确候选文件通过暂存差异检查、密钥模式/大文件/运行产物检查；本批源码与测试无遗漏，原有TDX工作和16项候选仍未提交，整体工作区不声称干净。本回执以独立文档提交保存。
 
 ## R4 续4（2026-09-10，当前执行批次）
 
