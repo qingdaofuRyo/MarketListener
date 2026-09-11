@@ -11,7 +11,8 @@ import {
 import type { IndicatorInstance, VolumeProfile } from "../../domain/strategyTypes";
 import { useThemeStore } from "../../stores/theme";
 import { heikinAshi, type ChartType } from "../../domain/chartPresentation";
-import { CHART_LAYOUT, chartAxisGutter } from "../../domain/chartLayout";
+import { CHART_LAYOUT, CHART_BARS, chartAxisGutter, chartAxisScale } from "../../domain/chartLayout";
+import { REPLAY_EMPTY_SLOTS, type ChartRange } from "../../domain/chartReplay";
 import { formatAxisDate, formatCrosshairTime } from "../../domain/chartTime";
 import { resolveSecondaryMetric, subchartSeries, type MeasureEvidence } from "../../domain/chartSubchart";
 import LaserCanvas from "./LaserCanvas.vue";
@@ -161,6 +162,9 @@ const props = withDefaults(
     chartType?: ChartType;
     hideQuote?: boolean;
     replayPick?: boolean;
+    replayMode?: boolean;
+    replayVisible?: number;
+    viewRequest?: ChartRange;
     openOnDoubleClick?: boolean;
   }>(),
   {
@@ -202,6 +206,7 @@ const emit = defineEmits<{
   requestEarlier: [];
   openDetail: [];
   drawingFinished: [];
+  browse: [];
 }>();
 const theme = useThemeStore();
 const element = ref<HTMLElement>();
@@ -210,6 +215,8 @@ const quoteElement = ref<HTMLElement>();
 const overlayHeight = ref(60);
 const priceTop = computed(() => Math.max(props.hideQuote ? 16 : 42, overlayHeight.value + CHART_LAYOUT.overlayGap));
 const axisGutter = ref(48);
+const rightAxisGutter = ref(48);
+const replayPreview = ref<{ x: number; label: string }>();
 const laserUsed = ref(false);
 watch(() => props.drawingTool, tool => { if (tool === 'laser') laserUsed.value = true; }, {immediate:true});
 let measuredWidth = 0;
@@ -251,9 +258,11 @@ let resizeObserver: ResizeObserver | undefined;
 let hoverFrame: number | undefined;
 let pendingHoverIndex = -1;
 
-const categories = computed(() =>
-  props.bars.map((bar) => String(bar.barOpenTime || bar.tradingDate || "")),
-);
+const categories = computed(() => {
+  const values = props.bars.map((bar) => String(bar.barOpenTime || bar.tradingDate || ""));
+  if (props.replayMode) values.push(...Array(Math.max(REPLAY_EMPTY_SLOTS, (props.replayVisible || 0) - values.length)).fill(""));
+  return values;
+});
 const hoverBar = computed(
   () => props.bars[hoverIndex.value] ?? props.bars.at(-1) ?? null,
 );
@@ -319,7 +328,7 @@ function timeLabel(value: string): string {
   return formatCrosshairTime(value, props.period);
 }
 function axisTimeLabel(value: string): string {
-  return formatAxisDate(value, props.period);
+  return value ? formatAxisDate(value, props.period) : "";
 }
 function isMajorTick(index: number): boolean {
   return majorTicks.value.has(index);
@@ -449,7 +458,8 @@ function plotRect(): {
   bottom: number;
 } | null {
   if (!chart || !props.bars.length) return null;
-  const bounds = priceBounds();
+  const rawBounds = priceBounds();
+  const bounds = chartAxisScale(rawBounds.min, rawBounds.max);
   const start = clamp(range.value.start, 0, props.bars.length - 1);
   const end = clamp(range.value.end, start, props.bars.length - 1);
   const topLeft = chart.convertToPixel({ xAxisIndex: 0, yAxisIndex: 0 }, [
@@ -1543,18 +1553,22 @@ function chartLayout(): {
   textMeasureCanvas ??= document.createElement('canvas');
   const measure = textMeasureCanvas.getContext('2d');
   if (measure) measure.font = `${compact ? 8 : 10}px sans-serif`;
-  const labels = Array.from({length:6}, (_, i) => format(bounds.min + (bounds.max-bounds.min)*i/5));
-  for (const bar of props.bars) {
-    labels.push(compactAxis(bar.volume), secondaryAxis(bar[secondaryMetric.value]));
-  }
-  for (const instance of paneIndicatorInstances.value) {
-    for (const values of Object.values(instance.series || {})) {
-      for (const value of values) labels.push(format(value));
-    }
-  }
+  const priceScale = chartAxisScale(bounds.min, bounds.max);
+  const visibleBars = props.bars.slice(range.value.start, range.value.end + 1);
+  const volumeScale = chartAxisScale(0, Math.max(0, ...visibleBars.map(bar=>asNumber(bar.volume) ?? 0)), 3);
+  const secondaryScale = chartAxisScale(0, Math.max(0, ...visibleBars.map(bar=>asNumber(bar[secondaryMetric.value]) ?? 0)), 3);
+  const paneScales = paneIndicatorInstances.value.map(instance => {
+    const values = Object.values(instance.series || {}).flatMap(series=>series.slice(range.value.start,range.value.end+1)).filter((value): value is number=>typeof value==='number' && Number.isFinite(value));
+    return chartAxisScale(values.length ? Math.min(...values) : 0, values.length ? Math.max(...values) : 1, 3);
+  });
+  const labels = priceScale.ticks.map(value => format(value));
+  const rightLabels = [...labels];
+  labels.push(...volumeScale.ticks.map(compactAxis), ...paneScales.flatMap(scale=>scale.ticks.map(value => format(value))));
+  rightLabels.push(...secondaryScale.ticks.map(secondaryAxis));
   const left = chartAxisGutter(labels, text => measure?.measureText(text).width ?? text.length*6);
-  const right = left;
+  const right = chartAxisGutter(rightLabels, text => measure?.measureText(text).width ?? text.length*6);
   axisGutter.value = left;
+  rightAxisGutter.value = right;
   const top = priceTop.value;
   const bottom = compact ? 20 : 28;
   const paneCount = paneIndicatorInstances.value.length;
@@ -1592,7 +1606,7 @@ function chartLayout(): {
       show: true,
       label: {
         formatter: (params: { value: unknown }) =>
-          timeLabel(String(params.value ?? "")),
+          params.value ? timeLabel(String(params.value)) : "",
       },
     },
   };
@@ -1628,8 +1642,9 @@ function chartLayout(): {
   });
   const priceAxis = {
       scale: true,
-      min: priceBounds().min,
-      max: priceBounds().max,
+      min: priceScale.min,
+      max: priceScale.max,
+      interval: priceScale.interval,
       inverse: props.inverse,
       axisLabel: {
         show: true,
@@ -1648,7 +1663,7 @@ function chartLayout(): {
     priceAxis,
     {
       ...indicatorAxis(1, palette.chartVolume),
-      min: 0,
+      min: volumeScale.min, max: volumeScale.max, interval: volumeScale.interval,
       axisLabel: {
         show: true,
         color: palette.chartVolume,
@@ -1662,7 +1677,7 @@ function chartLayout(): {
     },
     {
       ...indicatorAxis(1, palette.chartSecondary),
-      min: 0,
+      min: secondaryScale.min, max: secondaryScale.max, interval: secondaryScale.interval,
       position: "right",
       axisLabel: {
         show: true,
@@ -1677,7 +1692,7 @@ function chartLayout(): {
       splitLine: { show: false },
     },
     ...paneIndicatorInstances.value.map((_item, index) =>
-      indicatorAxis(index + 2),
+      ({...indicatorAxis(index + 2), min:paneScales[index].min,max:paneScales[index].max,interval:paneScales[index].interval}),
     ),
     {
       ...priceAxis,
@@ -1725,7 +1740,7 @@ function render(): void {
   }
   const palette = theme.palette;
   const defaultRange = initialRange();
-  if (range.value.end >= props.bars.length || range.value.end === 0)
+  if (range.value.end >= categories.value.length || range.value.end === 0)
     range.value = defaultRange;
   const up = props.swapColors ? palette.priceDown : palette.priceUp;
   const down = props.swapColors ? palette.priceUp : palette.priceDown;
@@ -1768,6 +1783,7 @@ function render(): void {
       series: [
         {
           name: "K线",
+          ...CHART_BARS.candle,
           type: props.chartType === "line" || props.chartType === "area" ? "line" : "candlestick",
           data: props.chartType === "line" || props.chartType === "area"
             ? props.bars.map((bar) => asNumber(bar.close))
@@ -1837,7 +1853,7 @@ function updateRange(event: unknown): void {
       start?: number;
       end?: number;
     });
-  const last = Math.max(0, props.bars.length - 1);
+  const last = Math.max(0, categories.value.length - 1);
   const start =
     typeof batch.startValue === "number"
       ? batch.startValue
@@ -1851,6 +1867,7 @@ function updateRange(event: unknown): void {
         ? Math.round((batch.end / 100) * last)
         : range.value.end;
   range.value = { start, end };
+  emit("browse");
   emit("visibleRange", start, end);
   if (
     start <= 15 &&
@@ -1863,8 +1880,7 @@ function updateRange(event: unknown): void {
   if (rangeRenderTimer) clearTimeout(rangeRenderTimer);
   rangeRenderTimer = setTimeout(() => {
     rangeRenderTimer = undefined;
-    const bounds = priceBounds();
-    chart?.setOption({ yAxis: [{ min: bounds.min, max: bounds.max }] });
+    render();
     renderGraphics();
   }, 80);
 }
@@ -2151,6 +2167,13 @@ function pointerMove(event: unknown): void {
     event?: { preventDefault?: () => void };
   };
   const x = payload.offsetX;
+  if (props.replayPick && chart && typeof x === "number" && typeof payload.offsetY === "number") {
+    const point = coordinateFromEvent({ event: payload });
+    const index = point ? nearestCategoryIndex(point.time) : -1;
+    const center = index >= 0 ? chart.convertToPixel({ xAxisIndex: 0 }, index) : undefined;
+    replayPreview.value = typeof center === "number" ? { x: center, label: formatCrosshairTime(categories.value[index], props.period) } : undefined;
+    return;
+  }
   if (
     brushDraft &&
     props.drawingTool === "brush" &&
@@ -2277,9 +2300,9 @@ function pointerMove(event: unknown): void {
     pendingEarlierShift = Math.max(0, shift - panOrigin.start);
     emit("requestEarlier");
   }
-  const maxStart = Math.max(0, props.bars.length - visible);
+  const maxStart = Math.max(0, categories.value.length - visible);
   const start = Math.max(0, Math.min(maxStart, panOrigin.start - shift));
-  const end = Math.min(props.bars.length - 1, start + visible - 1);
+  const end = Math.min(categories.value.length - 1, start + visible - 1);
   if (start !== range.value.start || end !== range.value.end) {
     range.value = { start, end };
     chart.dispatchAction({
@@ -2323,6 +2346,7 @@ function pointerUp(): void {
   requestedEarlierInGesture = false;
 }
 function pointerOut(): void {
+  replayPreview.value = undefined;
   if (hoverFrame != null) cancelAnimationFrame(hoverFrame);
   hoverFrame = undefined;
   pendingHoverIndex = -1;
@@ -2414,7 +2438,7 @@ function wheelZoom(event: unknown): void {
   const targetVisible = clamp(
     Math.round(currentVisible * (wheelDelta > 0 ? 0.82 : 1.22)),
     8,
-    props.bars.length,
+    categories.value.length,
   );
   const converted = chart.convertFromPixel({ xAxisIndex: 0 }, cursor);
   const anchor = Array.isArray(converted)
@@ -2425,8 +2449,8 @@ function wheelZoom(event: unknown): void {
       ? 0.5
       : clamp((anchor - range.value.start) / (currentVisible - 1), 0, 1);
   let start = Math.round(anchor - ratio * (targetVisible - 1));
-  start = clamp(start, 0, Math.max(0, props.bars.length - targetVisible));
-  const end = Math.min(props.bars.length - 1, start + targetVisible - 1);
+  start = clamp(start, 0, Math.max(0, categories.value.length - targetVisible));
+  const end = Math.min(categories.value.length - 1, start + targetVisible - 1);
   chart.dispatchAction({ type: "dataZoom", startValue: start, endValue: end });
   payload.event?.preventDefault?.();
   payload.event?.stopPropagation?.();
@@ -2519,13 +2543,19 @@ watch(
         end: Math.max(0, range.value.end + prepended - reveal),
       };
       pendingEarlierShift = 0;
-    } else range.value = initialRange();
+    } else if (!props.replayMode) range.value = props.viewRequest ? { ...props.viewRequest } : initialRange();
     void nextTick(() =>
       emit("visibleRange", range.value.start, range.value.end),
     );
   },
   { deep: false },
 );
+watch(() => props.viewRequest, value => {
+  if (value) range.value = { ...value };
+  void nextTick(render);
+});
+watch(() => props.replayPick, () => { replayPreview.value = undefined; });
+defineExpose({ getRange: () => ({ ...range.value }) });
 watch(
   () => props.height,
   (height) => {
@@ -2543,6 +2573,7 @@ watch(
     props.inverse,
     props.swapColors,
     props.chartType,
+    props.replayMode,
     props.measureEvidence,
     secondaryMetric.value,
     props.drawings,
@@ -2605,7 +2636,7 @@ function scrollQuotes(event: WheelEvent): void {
     :class="{ compact, fill, 'drawing-active': drawingTool !== 'cursor', 'cursor-tool': drawingTool === 'cursor' }"
     :style="fill ? undefined : { height: `${height}px` }"
   >
-    <div ref="overlayElement" class="chart-overlay" :style="{left:`${axisGutter}px`,right:`${axisGutter}px`}">
+    <div ref="overlayElement" class="chart-overlay" :style="{left:`${axisGutter}px`,right:`${rightAxisGutter}px`}">
       <div class="chart-overlay-controls"><slot name="overlay" /></div>
       <div v-if="!hideQuote && hoverBar" ref="quoteElement" class="quote-panel" role="region" aria-label="行情字段（Shift加滚轮横向浏览）" tabindex="0"
         @keydown.left.prevent="quoteElement && (quoteElement.scrollLeft -= 104)" @keydown.right.prevent="quoteElement && (quoteElement.scrollLeft += 104)">
@@ -2613,7 +2644,8 @@ function scrollQuotes(event: WheelEvent): void {
       </div>
       <div class="chart-overlay-actions"><slot name="actions" /></div>
     </div>
-    <div class="chart-legend-overlay" :style="{top:`${priceTop}px`,left:`${axisGutter}px`,right:`${axisGutter}px`}"><slot name="legend" /></div>
+    <div class="chart-legend-overlay" :style="{top:`${priceTop}px`,left:`${axisGutter}px`,right:`${rightAxisGutter}px`}"><slot name="legend" /></div>
+    <div v-if="replayPick && replayPreview" class="replay-preview" :style="{left:`${replayPreview.x}px`,right:`${rightAxisGutter}px`,top:`${priceTop}px`}"><span>{{ replayPreview.label }}</span></div>
     <span v-if="drawingTool === 'long_position' || drawingTool === 'short_position'" class="risk-drawing-hint">{{ riskHint || '请选择开仓参考价，然后选择止损、目标参考价' }}</span>
     <div
       ref="element"
@@ -2665,6 +2697,8 @@ function scrollQuotes(event: WheelEvent): void {
   user-select: none;
 }
 .kline-chart.fill { height: 100%; }
+.replay-preview{position:absolute;bottom:28px;z-index:16;border-left:1px solid var(--ml-accent);background:color-mix(in srgb,var(--ml-background) 65%,transparent);pointer-events:none}
+.replay-preview span{position:absolute;bottom:0;left:0;transform:translateX(-50%);background:var(--ml-accent);color:var(--ml-surface);white-space:nowrap;padding:3px 6px;font-size:11px}
 .chart-root {
   width: 100%;
   height: 100%;

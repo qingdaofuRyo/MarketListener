@@ -1,5 +1,6 @@
 import type { BarSeriesOption, LineSeriesOption } from "echarts";
 import { isFiniteQuote } from "./marketQuote";
+import { CHART_BARS } from "./chartLayout";
 
 export interface MeasureBar { volume?: number | null; amount?: number | null; openInterest?: number | null }
 export interface MeasureEvidence { fieldCapabilities?: Record<string, boolean>; openInterest?: number | null }
@@ -16,7 +17,7 @@ export function subchartSeries(bars: readonly MeasureBar[], metric: SecondaryMet
   return [
     {
       id: "market-volume", name: "成交量", type: "bar", xAxisIndex: 1, yAxisIndex: 1,
-      barWidth: "57%", z: 2, animation: false, emphasis: { disabled: true },
+      ...CHART_BARS.volume, z: 2, animation: false, emphasis: { disabled: true },
       itemStyle: { opacity: VOLUME_OPACITY },
       data: bars.map((bar, index) => ({ value: isFiniteQuote(bar.volume) ? bar.volume : null, itemStyle: { color: volumeColors[index] } })),
     },

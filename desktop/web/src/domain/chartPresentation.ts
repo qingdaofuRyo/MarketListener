@@ -9,6 +9,12 @@ export const chartTypes: Array<{ value: ChartType; label: string }> = [
   { value: "area", label: "面积图" },
 ];
 
+export const chartTypeGroups = [
+  { label: "K线", values: ["candles", "hollow"] },
+  { label: "线与面积", values: ["line", "area"] },
+  { label: "派生显示", values: ["heikin"] },
+].map(group => ({ label: group.label, items: group.values.map(value => chartTypes.find(item => item.value === value)!) }));
+
 /** Heikin Ashi is a presentation transform; missing bars reset the seed. */
 export function heikinAshi(bars: KLineBar[]): KLineBar[] {
   let previous: { open: number; close: number } | undefined;

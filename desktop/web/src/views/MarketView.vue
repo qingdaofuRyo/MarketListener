@@ -5,6 +5,7 @@ import {
   onBeforeUnmount,
   onMounted,
   ref,
+  shallowRef,
   watch,
 } from "vue";
 import { storeToRefs } from "pinia";
@@ -21,7 +22,10 @@ import KLineChart, {
 import DrawingColorPicker from "../components/charts/DrawingColorPicker.vue";
 import { DRAWING_COLOR_PRESETS } from "../components/charts/drawingPalette";
 import ChartIcon from "../components/charts/ChartIcon.vue";
-import { chartTypes, type ChartType } from "../domain/chartPresentation";
+import ChartMenu from "../components/charts/ChartMenu.vue";
+import { chartTypes, chartTypeGroups, type ChartType } from "../domain/chartPresentation";
+import { useChartReplay } from "../composables/useChartReplay";
+import { replayRange, REPLAY_SPEEDS, type ChartRange } from "../domain/chartReplay";
 import {
   DEFAULT_MARKET_CATEGORY,
   editableTarget,
@@ -307,7 +311,8 @@ const drawingGroups = [
 const drawingGroupOpen = ref("");
 const groupSelection = ref<Record<string,string>>({lines:'trend', shapes:'rectangle', pens:'brush'});
 const chartTypeMenu = ref(false);
-const replaySelecting = ref(false);
+const chartMenuAnchor = shallowRef<HTMLElement>();
+const drawingMenuAnchor = shallowRef<HTMLElement>();
 function groupedTool(id: string) { return drawingTools.find((item) => item.id === groupSelection.value[id])!; }
 function chooseGroupedTool(group: string, id: DrawingTool) { groupSelection.value[group] = id; drawingGroupOpen.value = ""; selectDrawingTool(id); }
 const drawingColorPresets = DRAWING_COLOR_PRESETS;
@@ -431,11 +436,12 @@ const indicatorCategory = ref("all");
 const indicatorFavorites = ref<string[]>(readLocal("marketlistener.strategyFavorites", []));
 const indicatorSettingsId = ref("");
 const chartType = ref<ChartType>((chartTypes.find((item) => item.value === localStorage.getItem("market-chart-type"))?.value) || "candles");
-const replayActive = ref(false);
-const replayCount = ref(1);
-const replayPlaying = ref(false);
-const replaySpeed = ref(1);
-let replayTimer: ReturnType<typeof setInterval> | undefined;
+const replay = useChartReplay(computed(() => history.value.bars.length));
+const { active: replayActive, count: replayCount, playing: replayPlaying, speed: replaySpeed, selecting: replaySelecting, following: replayFollowing } = replay;
+const detailChart = ref<InstanceType<typeof KLineChart>>();
+const replayViewRequest = ref<ChartRange>();
+const replayVisible = ref(80);
+let beforeReplayRange: ChartRange | undefined;
 let previousBodyOverflow = "";
 let previousRootOverflow = "";
 function setDetailScrollLock(locked: boolean): void {
@@ -479,23 +485,29 @@ function setIndicatorCrossPeriod(instance: IndicatorInstance, value: boolean): v
   instance.crossPeriod = value; instance.period = history.value.period; persistIndicatorInstances();
 }
 function stopReplay(): void {
-  replayPlaying.value = false;
-  if (replayTimer) clearInterval(replayTimer);
-  replayTimer = undefined;
+  replay.pause();
 }
-function stepReplay(): void {
-  if (replayCount.value < history.value.bars.length) replayCount.value++;
-  else stopReplay();
+function closeReplay(): void {
+  if (!replayActive.value) return;
+  replay.close();
+  replayViewRequest.value = beforeReplayRange ? { ...beforeReplayRange } : undefined;
+}
+function resetReplay(): void {
+  replay.close(); beforeReplayRange = undefined; replayViewRequest.value = undefined;
 }
 function toggleReplay(): void {
-  stopReplay();
-  replayActive.value = !replayActive.value;
-  replaySelecting.value = replayActive.value;
-  replayCount.value = Math.min(30, history.value.bars.length);
+  if (replayActive.value) { closeReplay(); return; }
+  beforeReplayRange = detailChart.value?.getRange();
+  replayVisible.value = beforeReplayRange ? beforeReplayRange.end - beforeReplayRange.start + 1 : 80;
+  replay.select();
 }
-watch([replayPlaying, replaySpeed], () => {
-  if (replayTimer) clearInterval(replayTimer);
-  if (replayPlaying.value) replayTimer = setInterval(stepReplay, 1000 / replaySpeed.value);
+function reselectReplay(): void {
+  replay.select();
+  replayViewRequest.value = beforeReplayRange ? { ...beforeReplayRange } : undefined;
+}
+watch([replayCount, replayFollowing, replaySelecting], () => {
+  if (replayActive.value && !replaySelecting.value && replayFollowing.value)
+    replayViewRequest.value = replayRange(replayCount.value, replayVisible.value);
 });
 watch([replayCount, replayActive, replaySelecting], () => {
   indicatorInstances.value = indicatorInstances.value.map((item) => ({ ...item, status: "pending", series: {}, profile: undefined }));
@@ -505,7 +517,7 @@ watch([replayCount, replayActive, replaySelecting], () => {
 watch(chartType, (value) => localStorage.setItem("market-chart-type", value));
 watch(fullscreen, (value) => {
   setDetailScrollLock(value);
-  if (!value) { stopReplay(); replayActive.value = false; }
+  if (!value) closeReplay();
 });
 function closeWorkbench(): void {
   indicatorDialogOpen.value = false; fullscreen.value = false; tool.value = "cursor";
@@ -1976,6 +1988,7 @@ async function loadEarlierHistory(): Promise<void> {
   }
 }
 async function openWorkbench(item: Instrument, updateRoute = true): Promise<void> {
+  resetReplay();
   const changedInstrument = drawingsInstrumentId.value !== item.instrumentId;
   selected.value = item;
   fullscreen.value = true;
@@ -1993,6 +2006,7 @@ async function openWorkbench(item: Instrument, updateRoute = true): Promise<void
 }
 function switchPeriod(period: string): void {
   if (!marketStore.selectDetailPeriod(period, history.value.availablePeriods)) return;
+  resetReplay();
   history.value.period = period;
   void loadHistory();
 }
@@ -2033,7 +2047,7 @@ watch(selected, () => {
   if (selected.value) void loadDrawings(selected.value.instrumentId);
 });
 watch(() => [selected.value?.instrumentId, history.value.period], () => {
-  stopReplay(); replayActive.value = false;
+  resetReplay();
 });
 onMounted(async () => {
   toolbarObserver = new ResizeObserver(() => {
@@ -2063,6 +2077,7 @@ onMounted(async () => {
   if (pendingDrawingTool) selectDrawingTool(pendingDrawingTool);
 });
 onBeforeUnmount(() => {
+  indicatorSerial++;
   toolbarObserver?.disconnect();
   stopReplay();
   window.removeEventListener("keydown", onWorkbenchEscape);
@@ -2288,10 +2303,8 @@ onBeforeUnmount(() => {
           <div class="instrument-quote-line" aria-hidden="true" />
           <div class="workbench-actions">
             <div class="chart-type-picker">
-              <button class="icon-button" aria-label="K线类型" :title="chartTypes.find((item)=>item.value===chartType)?.label" @click="chartTypeMenu=!chartTypeMenu"><ChartIcon :name="chartType"/><ChartIcon name="chevron"/></button>
-              <div v-if="chartTypeMenu" role="menu" aria-label="K线类型" class="chart-type-menu">
-                <button v-for="item in chartTypes" :key="item.value" role="menuitem" :aria-label="item.label" :title="item.label" :class="{active:chartType===item.value}" @click="chartType=item.value;chartTypeMenu=false"><ChartIcon :name="item.value"/><span>{{ item.label }}</span></button>
-              </div>
+              <button class="icon-button" aria-label="K线类型" :aria-expanded="chartTypeMenu" :title="chartTypes.find((item)=>item.value===chartType)?.label" @click="chartMenuAnchor=$event.currentTarget as HTMLElement;chartTypeMenu=!chartTypeMenu"><ChartIcon :name="chartType"/><ChartIcon name="chevron"/></button>
+              <ChartMenu v-if="chartTypeMenu && chartMenuAnchor" :anchor="chartMenuAnchor" label="K线类型" :selected="chartType" :groups="chartTypeGroups.map(group=>({label:group.label,items:group.items.map(item=>({id:item.value,label:item.label}))}))" @select="chartType=$event as ChartType;chartTypeMenu=false" @close="chartTypeMenu=false" />
             </div>
             <el-button @click="openIndicatorLibrary"><ChartIcon name="indicator"/>指标</el-button>
             <el-button :type="swapColors ? 'primary' : 'default'" @click="toggleColors"><ChartIcon name="colors"/>涨跌换色</el-button>
@@ -2472,14 +2485,10 @@ onBeforeUnmount(() => {
         <aside class="drawing-toolbar">
           <button aria-label="光标" title="光标" :class="{active:tool==='cursor'}" @click="selectDrawingTool('cursor'); drawingGroupOpen=''"><svg viewBox="0 0 24 24"><path :d="drawingTools[0].path"/></svg></button>
           <div v-for="group in drawingGroups" :key="group.id" class="drawing-tool-group">
-            <button :aria-label="group.label" :title="group.label" :aria-expanded="drawingGroupOpen === group.id" :class="{active:group.ids.includes(tool)}" @click="drawingGroupOpen = drawingGroupOpen === group.id ? '' : group.id">
+            <button :aria-label="group.label" :title="group.label" :aria-expanded="drawingGroupOpen === group.id" :class="{active:group.ids.includes(tool)}" @click="drawingMenuAnchor=$event.currentTarget as HTMLElement;drawingGroupOpen = drawingGroupOpen === group.id ? '' : group.id">
               <svg viewBox="0 0 24 24"><path :d="groupedTool(group.id).path"/></svg><span class="group-arrow">›</span>
             </button>
-            <div v-if="drawingGroupOpen === group.id" class="drawing-group-menu" role="menu" :aria-label="group.label">
-              <button v-for="item in drawingTools.filter((item) => group.ids.includes(item.id))" :key="item.id" role="menuitem" :aria-label="item.label" :disabled="replayActive && item.id !== 'laser'" @click="chooseGroupedTool(group.id,item.id)">
-                <svg viewBox="0 0 24 24"><path :d="item.path"/></svg><span>{{item.label}}</span>
-              </button>
-            </div>
+            <ChartMenu v-if="drawingGroupOpen === group.id && drawingMenuAnchor" :anchor="drawingMenuAnchor" :label="group.label" :selected="tool" side="left" :groups="[{label:group.label,items:drawingTools.filter(item=>group.ids.includes(item.id)).map(item=>({...item,disabled:replayActive && item.id!=='laser'}))}]" @select="chooseGroupedTool(group.id,$event as DrawingTool)" @close="drawingGroupOpen=''" />
           </div>
           <button aria-label="文本框" title="文本框" :class="{active:tool==='text'}" :aria-pressed="tool==='text'" :disabled="replayActive" @click="selectDrawingTool('text')"><svg viewBox="0 0 24 24"><path d="M5 5h14M12 5v14M8 19h8"/></svg></button>
           <hr />
@@ -2544,17 +2553,18 @@ onBeforeUnmount(() => {
             </svg>
           </button>
         </aside>
-        <div class="workbench-content">
+        <div class="workbench-content" :class="{'replay-open':replayActive}">
           <div v-if="replayActive" class="replay-controls" aria-label="K线回放">
-            <button aria-label="选择回放起点" title="选择回放起点" :class="{active:replaySelecting}" @click="stopReplay();replaySelecting=true"><ChartIcon name="start"/></button>
+            <button aria-label="选择回放起点" title="选择回放起点" :class="{active:replaySelecting}" @click="reselectReplay"><ChartIcon name="start"/><span>选择K线</span></button>
             <span v-if="replaySelecting">点击图中一根 K 线开始</span>
-            <button :aria-label="replayPlaying ? '暂停' : '播放'" :title="replayPlaying ? '暂停' : '播放'" :disabled="replaySelecting" @click="replayPlaying = !replayPlaying"><ChartIcon :name="replayPlaying ? 'pause' : 'play'"/></button>
-            <button aria-label="下一根" title="下一根" :disabled="replaySelecting || replayCount >= history.bars.length" @click="stopReplay(); stepReplay()"><ChartIcon name="step"/></button>
-            <button aria-label="快进10根" title="快进10根" :disabled="replaySelecting" @click="stopReplay();replayCount=Math.min(history.bars.length,replayCount+10)"><ChartIcon name="forward"/></button>
-            <input type="range" aria-label="回放进度" min="1" :max="history.bars.length" v-model.number="replayCount" @input="stopReplay();replaySelecting=false"/>
-            <select v-model.number="replaySpeed" aria-label="回放速度"><option v-for="speed in [0.5,1,2,4,8]" :key="speed" :value="speed">{{speed}}×</option></select>
+            <button :aria-label="replayPlaying ? '暂停' : '播放'" :title="replayPlaying ? '暂停' : '播放'" :disabled="replaySelecting || replay.state.value==='ended'" @click="replay.togglePlaying"><ChartIcon :name="replayPlaying ? 'pause' : 'play'"/></button>
+            <button aria-label="下一根" title="下一根" :disabled="replaySelecting || replayCount >= history.bars.length" @click="stopReplay(); replay.step()"><ChartIcon name="step"/></button>
+            <button aria-label="快进10根" title="快进10根" :disabled="replaySelecting || replayCount >= history.bars.length" @click="stopReplay();replay.step(10)"><ChartIcon name="forward"/></button>
+            <select v-model.number="replaySpeed" aria-label="回放速度"><option v-for="speed in REPLAY_SPEEDS" :key="speed" :value="speed">{{speed}}×</option></select>
+            <span aria-label="回放周期">{{periodOptions.find(([id])=>id===history.period)?.[1]}}</span>
+            <button aria-label="恢复跟随" title="恢复跟随" :aria-pressed="replayFollowing" :disabled="replaySelecting" @click="replayFollowing=true"><ChartIcon name="start"/></button>
             <span>{{ replaySelecting ? '—' : replayCount }} / {{ history.bars.length }}</span>
-            <button aria-label="退出回放" title="退出回放" @click="toggleReplay"><ChartIcon name="close"/></button>
+            <button aria-label="退出回放" title="退出回放" @click="closeReplay"><ChartIcon name="close"/></button>
           </div>
           <section
             ref="workbenchChart"
@@ -2746,11 +2756,16 @@ onBeforeUnmount(() => {
           </div>
           <KLineChart
             :bars="displayedBars"
+            ref="detailChart"
+            :replay-mode="replayActive && !replaySelecting"
+            :replay-visible="replayVisible"
+            :view-request="replayViewRequest"
+            @browse="replayActive && (replayFollowing=false)"
             :key="selected?.instrumentId"
             :instrument-id="selected?.instrumentId"
             :measure-evidence="measureEvidence"
             :replay-pick="replayActive && replaySelecting"
-            @pick-bar="replayCount=$event+1; replaySelecting=false"
+            @pick-bar="replay.pick"
             :chart-type="chartType"
             :period="history.period"
             fill
@@ -2902,14 +2917,10 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .drawing-tool-group,.chart-type-picker{position:relative}
-.drawing-group-menu,.chart-type-menu{position:absolute;left:43px;top:0;min-width:180px;z-index:30;padding:6px;background:var(--ml-surface);box-shadow:0 5px 20px #0003;border:1px solid var(--ml-divider);border-radius:6px}
-.drawing-toolbar .drawing-group-menu button{width:100%;display:flex;gap:12px;padding:8px;white-space:nowrap}
 .group-arrow{position:absolute;right:1px;bottom:1px;font-size:10px}
-.chart-type-menu{left:0;top:35px;min-width:170px;display:flex;gap:5px}
-.icon-button,.chart-type-menu button{display:flex;align-items:center;gap:3px;height:32px;background:transparent;color:var(--ml-text-primary);border:0;border-radius:4px;cursor:pointer}
+.icon-button{display:flex;align-items:center;gap:3px;height:32px;background:transparent;color:var(--ml-text-primary);border:0;border-radius:4px;cursor:pointer}
 .icon-button{border:1px solid var(--ml-divider)}
-.chart-type-menu button:hover,.chart-type-menu button.active{background:var(--ml-surface-selected)}
-.chart-type-menu button.active,.chart-indicator-legend-row button.active{color:var(--ml-accent)}
+.chart-indicator-legend-row button.active{color:var(--ml-accent)}
 .indicator-direct-color{width:20px;height:20px;padding:0;border:0;background:transparent;cursor:pointer}
 .chart-indicator-legend-row :deep(.chart-icon){width:14px;height:14px}
 .workbench-actions :deep(.chart-icon){margin-right:5px}
@@ -3813,18 +3824,16 @@ onBeforeUnmount(() => {
 .column-sort{display:grid;grid-template-columns:minmax(0,1fr) 1.2em;align-items:center;width:100%;height:28px;padding:0;border:0;background:transparent;color:inherit;font:inherit;cursor:pointer;text-align:left;white-space:nowrap;overflow:hidden}
 .column-sort b{color:var(--ml-accent);text-align:center}
 .column-sort span{overflow:hidden;text-overflow:ellipsis}
-:global(.workbench-overlay){grid-template-columns:minmax(176px,220px) minmax(0,1fr) 48px;grid-template-rows:46px minmax(0,1fr) 36px;overflow:hidden}
+:global(.workbench-overlay){--detail-list-width:clamp(10rem,11vw,12rem);grid-template-columns:var(--detail-list-width) minmax(0,1fr) 48px;grid-template-rows:46px minmax(0,1fr) 36px;overflow:hidden}
 .workbench-header{grid-column:1/-1;grid-template-rows:1fr;padding:0 10px}
 .instrument-quote-line{grid-row:1;min-width:0}
 .detail-instrument-list{grid-column:1;grid-row:2/4;min-height:0;overflow:auto;border-right:1px solid var(--ml-divider);background:var(--ml-surface)}
-.detail-instrument-row{display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-rows:auto auto;gap:3px 6px;width:100%;padding:7px 9px;border:0;border-bottom:1px solid var(--ml-divider);background:transparent;color:var(--ml-text-primary);cursor:pointer;text-align:left;font-variant-numeric:tabular-nums}
+.detail-instrument-row{display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-rows:auto auto;gap:3px 4px;width:100%;padding:7px 7px;border:0;border-bottom:1px solid var(--ml-divider);background:transparent;color:var(--ml-text-primary);cursor:pointer;text-align:left;font-variant-numeric:tabular-nums}
 .detail-instrument-row:hover,.detail-instrument-row.active{background:var(--ml-surface-selected)}
 .detail-instrument-row b,.detail-instrument-row small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.detail-instrument-row b{grid-column:1;grid-row:1;font-size:12px}.detail-instrument-row small{grid-column:1;grid-row:2;color:var(--ml-text-secondary);font-size:10px}.detail-instrument-row strong,.detail-instrument-row em{grid-column:2;text-align:right;font-style:normal;white-space:nowrap}.detail-instrument-row strong{grid-row:1;font-size:12px}.detail-instrument-row em{grid-row:2;font-size:10px}
 .drawing-toolbar{grid-column:3;grid-row:2/4;position:relative;z-index:40;border-right:0;border-left:1px solid var(--ml-divider);overflow:visible}
-.drawing-group-menu{left:auto;right:43px;z-index:80}
 .period-bar{grid-column:2;grid-row:3}.workbench-content{grid-column:2;grid-row:2;overflow:auto}.workbench-chart{min-height:0}
 .workbench-content .replay-controls{position:sticky;bottom:0;left:auto;right:auto}
-.chart-type-menu{display:grid;gap:2px;min-width:145px}.chart-type-menu button{justify-content:flex-start;padding:0 7px}
 .indicator-delete{font-size:18px;line-height:1}
 .indicator-manager {
   display: grid;
@@ -3953,7 +3962,11 @@ onBeforeUnmount(() => {
 .board-overlay select { box-sizing: border-box; width: 8.5ch; min-width: 8.5ch; height: 20px; padding: 0; color: var(--ml-text-primary); background: var(--ml-surface); border: 1px solid var(--ml-divider); border-radius: 3px; font-size: 10px; pointer-events: auto; }
 .workbench-content { position: relative; overflow: hidden; }.workbench-chart { height: 100%; min-height: 0; }.workbench-chart > .kline-chart { height: 100%; }
 .workbench-overlay { grid-template-rows: 42px minmax(0, 1fr) 36px; }.workbench-header { min-height: 42px; }.instrument-quote-line { display: none !important; }
-.workbench-content .replay-controls { position: absolute; left: 0; right: 0; bottom: 0; z-index: 22; }
+.workbench-content{--replay-toolbar-height:44px}
+.workbench-content.replay-open .workbench-chart{height:calc(100% - var(--replay-toolbar-height))}
+.workbench-content .replay-controls { position: absolute; left: 0; right: 0; bottom: 0; z-index: 22; height:var(--replay-toolbar-height);box-sizing:border-box;justify-content:center;gap:6px;white-space:nowrap;overflow-x:auto;padding:0 6px }
+.replay-controls button{flex:none;padding:5px 7px;background:transparent}.replay-controls button.active,.replay-controls button[aria-pressed=true]{background:var(--ml-surface-selected)}
+.replay-controls select{color:var(--ml-text-primary);background:var(--ml-surface);border:0;padding:3px;font:inherit}
 .row-main .quote-tone-up,.detail-instrument-row .quote-tone-up { color:var(--ml-price-up); }
 .row-main .quote-tone-down,.detail-instrument-row .quote-tone-down { color:var(--ml-price-down); }
 .row-main .quote-tone-flat,.detail-instrument-row .quote-tone-flat { color:var(--ml-text-primary); }

@@ -18,6 +18,33 @@ from market_monitor.web_api.market import _normalize_future_name, _normalize_tdx
 from web_fixtures import silver_row, write_silver
 
 
+@pytest.mark.parametrize("start,size", [(0, 1), (1, 1), (0, 2)])
+def test_indicator_replay_warmup_never_reads_past_requested_end(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, start: int, size: int,
+) -> None:
+    from market_monitor.web_api import market
+
+    _application, client = _app(tmp_path)
+    original = market.calculate_indicator_instance
+    observed: list[int] = []
+
+    def capture(registry, bars, payload, **kwargs):
+        observed.append(len(bars))
+        return original(registry, bars, payload, **kwargs)
+
+    monkeypatch.setattr(market, "calculate_indicator_instance", capture)
+    response = client.post(
+        "/api/market/instruments/CN.SSE.STOCK.600519/indicator-series",
+        json={"period": "1d", "start": start, "size": size, "instances": [{
+            "instanceId": "replay-ma", "definitionId": "indicator.ma", "version": 1,
+            "parameters": {"lookback": 2}, "placement": "overlay", "visible": True,
+        }]},
+    )
+    assert response.status_code == 200, response.text
+    assert observed == [start + size]
+    assert len(response.json()["instances"][0]["series"]["ma"]) == size
+
+
 def _data_root(tmp_path: Path) -> Path:
     data_root = tmp_path / "data"
     write_silver(

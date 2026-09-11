@@ -1164,8 +1164,10 @@ def market_indicator_series(instrument_id: str, request: Request, body: Indicato
             warmups.append(2)
     warmup = max(warmups or [1])
     fetch_start = max(0, body.start - warmup)
-    bars, _total, _earliest, _latest = _history_window(data_root, instrument, selected_period, fetch_start, body.size + warmup)
-    camel_bars = [{_camel_key(key): value for key, value in bar.items()} for bar in bars]
+    # Warmup is strictly before the requested window, never after its replay end.
+    fetch_size = body.size + body.start - fetch_start
+    bars, _total, _earliest, _latest = _history_window(data_root, instrument, selected_period, fetch_start, fetch_size)
+    camel_bars = [{_camel_key(key): value for key, value in bar.items()} for bar in bars[:fetch_size]]
     trim = body.start - fetch_start
     series = _indicator_series(camel_bars, body.indicators)
     calculated: list[dict[str, Any]] = []
