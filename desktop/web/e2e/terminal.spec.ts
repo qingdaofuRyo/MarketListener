@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 const ROUTES = [
-  ["/", "首页"],
+  ["/", "仪表盘"],
   ["/market/", "行情"],
   ["/data/", "数据"],
   ["/futures/", "国内期货数据"],
@@ -1332,29 +1332,10 @@ test("data source page reports local categories and provider configuration", asy
     }),
   );
   await page.goto("/data-sources/");
-  await expect(
-    page.locator('[data-test="local-database-tables"] .el-table__row').first(),
-  ).toBeVisible({ timeout: 15_000 });
-  await expect(
-    page.locator('[data-test="registered-datasets"] .el-table__row').first(),
-  ).toBeVisible();
-  await expect(
-    page.locator('[data-test="data-source-inventory"] .el-table__row').first(),
-  ).toBeVisible({ timeout: 15_000 });
-  await expect(
-    page.locator('[data-test="provider-registry"] .el-table__row').first(),
-  ).toBeVisible();
-  await expect(page.locator('[data-test="kline-field-legend"]')).toContainText(
-    "持仓量",
-  );
-  await expect(
-    page.locator('[data-test="minute-kline-field-rules"]'),
-  ).toContainText("沉淀资金");
-  await expect(
-    page.locator('[data-test="data-source-inventory"]'),
-  ).toContainText("结算价 100%");
-  await expect(
-    page.locator('[data-test="data-source-inventory"]'),
-  ).toContainText("成交额：样本无值");
+  await expect(page.getByText("通达信期货通本地缓存")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "数据覆盖与更新" })).toBeVisible();
+  await expect(page.locator(".el-table__row").first()).toContainText("期货");
+  await expect(page.locator('[data-test="provider-registry"]')).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "保存主备配置" })).toHaveCount(0);
   await expectCleanTerminal(page);
 });

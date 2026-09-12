@@ -1,15 +1,14 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
-import { apiGet, apiPost, formatOperation, formatStatus, formatTime, invalidateQuery } from "../domain/api";
+import { onBeforeUnmount, onMounted, ref } from "vue";
+import { apiGet, apiPost, invalidateQuery } from "../domain/api";
+import { formatBytes } from "../domain/sourceDashboard";
 
-type OperationStatus = "QUEUED" | "RUNNING" | "PASS" | "PARTIAL_FAILURE" | "FAILED" | "CANCELLED";
-interface Operation { operation_id: string; kind: string; status: OperationStatus; created_at: string; detail?: string }
 interface Health { stats?: { run_count?: number; partition_count?: number; quarantine_count?: number; storage_bytes?: number } }
 
-const operations = ref<Operation[]>([]);
 const health = ref<Health>({});
 const busy = ref<string | null>(null);
 const error = ref("");
+let disposed = false;
 const operationButtons = [
   ["MARKET_UPDATE", "更新行情"], ["F10_UPDATE_CN", "更新 A 股 F10"], ["F10_UPDATE_HK", "更新港股 F10"],
   ["REVENUE_UPDATE", "更新收入构成"], ["REPORT_PROCESS", "处理研报"], ["REPORT_VERIFY", "校验研报"],
@@ -19,12 +18,9 @@ const operationButtons = [
 
 async function refresh() {
   try {
-    const [healthResponse, operationResponse] = await Promise.all([
-      apiGet<Health>("/api/health", undefined, { ttlMs: 30_000, persist: true }),
-      apiGet<{ items: Operation[] }>("/api/operations", undefined, { ttlMs: 10_000, persist: true }),
-    ]);
-    health.value = healthResponse; operations.value = operationResponse.items;
-  } catch { error.value = "首页状态加载失败"; }
+    const result = await apiGet<Health>("/api/health", undefined, { force: true });
+    if (!disposed) health.value = result;
+  } catch { if (!disposed) error.value = "仪表盘状态加载失败"; }
 }
 
 async function submit(kind: string) {
@@ -33,7 +29,7 @@ async function submit(kind: string) {
   try {
     await apiPost("/api/operations", { kind });
     invalidateQuery("/api/operations"); invalidateQuery("/api/health");
-    await refresh();
+    if (!disposed) await refresh();
   } catch (reason) {
     error.value = reason instanceof Error ? reason.message : "操作创建失败";
   } finally {
@@ -41,27 +37,22 @@ async function submit(kind: string) {
   }
 }
 
-async function cancel(operation: Operation) {
-  await fetch(`/api/operations/${encodeURIComponent(operation.operation_id)}/cancel`, { method: "POST" });
-  invalidateQuery("/api/operations");
-  await refresh();
-}
-
 onMounted(() => { void refresh(); });
+onBeforeUnmount(() => { disposed = true; });
 </script>
 
 <template>
   <section>
-    <h1 class="page-title">首页</h1>
-    <p class="page-note">所有写入操作都由本机受控 OperationManager 串行执行；不接受任意命令、Python 或 SQL。</p>
+    <h1 class="page-title">仪表盘</h1>
+    <p class="page-note">查看本地运行状态并提交数据处理任务；任务由系统依次执行，进度请到日志页查看。</p>
     <el-alert v-if="error" type="error" :title="error" :closable="false" class="page-alert" />
     <section class="home-stats">
       <div class="metric"><span>运行记录</span><strong>{{ health.stats?.run_count ?? "—" }}</strong></div>
       <div class="metric"><span>数据分区</span><strong>{{ health.stats?.partition_count ?? "—" }}</strong></div>
       <div class="metric"><span>隔离问题</span><strong>{{ health.stats?.quarantine_count ?? "—" }}</strong></div>
-      <div class="metric"><span>存储字节</span><strong>{{ health.stats?.storage_bytes?.toLocaleString() ?? "—" }}</strong></div>
+      <div class="metric"><span>本地存储容量</span><strong>{{ formatBytes(health.stats?.storage_bytes) }}</strong></div>
     </section>
     <section class="panel"><h2>受控操作</h2><div class="operation-buttons"><el-button v-for="[kind,label] in operationButtons" :key="kind" :loading="busy === kind" @click="submit(kind)">{{ label }}</el-button></div></section>
-    <section class="panel"><div class="panel-title"><h2>任务队列</h2><el-button text @click="refresh">刷新</el-button></div><el-table :data="operations" empty-text="暂无操作记录"><el-table-column label="操作" min-width="170"><template #default="scope">{{ formatOperation(scope.row.kind) }}</template></el-table-column><el-table-column label="状态" width="150"><template #default="scope"><el-tag :type="scope.row.status === 'FAILED' ? 'danger' : scope.row.status === 'PASS' ? 'success' : 'warning'">{{ formatStatus(scope.row.status) }}</el-tag></template></el-table-column><el-table-column label="创建时间" min-width="180"><template #default="scope">{{ formatTime(scope.row.created_at) }}</template></el-table-column><el-table-column prop="detail" label="结果" min-width="240" /><el-table-column label="" width="80"><template #default="scope"><el-button v-if="scope.row.status === 'QUEUED'" text type="danger" @click="cancel(scope.row)">取消</el-button></template></el-table-column></el-table></section>
+    <section class="panel"><h2>运行与数据</h2><p>任务提交后，请前往 <router-link to="/logs/">日志与任务队列</router-link> 查看进度。</p><router-link to="/data-sources/">查看本地数据容量、来源与更新时间</router-link></section>
   </section>
 </template>

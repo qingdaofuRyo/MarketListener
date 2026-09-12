@@ -18,7 +18,7 @@ const client = [
 ] as const;
 
 const backend = [
-  ["/", "首页"],
+  ["/", "仪表盘"],
   ["/data-sources/", "数据源"],
   ["/f10/", "F10"],
   ["/logs/", "日志"],

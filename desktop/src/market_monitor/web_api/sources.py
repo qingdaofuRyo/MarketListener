@@ -583,6 +583,53 @@ def local_inventory(data_root: Path) -> list[dict[str, Any]]:
     return inventory
 
 
+def _storage_inventory(data_root: Path) -> dict[str, Any]:
+    """Stat unique manifest files; never scan market rows or count caches as data."""
+    connection = _manifest_connection(data_root)
+    if connection is None:
+        return {"available": False, "bytes": None, "files": 0, "missingFiles": 0, "groups": []}
+    try:
+        files = connection.execute(
+            "SELECT DISTINCT file_path, market, asset_type, period FROM instrument_file ORDER BY file_path"
+        ).fetchall()
+    finally:
+        connection.close()
+    root = (data_root / "silver").resolve()
+    unique: dict[Path, set[tuple[str, str, str]]] = {}
+    missing = 0
+    for name, market, asset_type, period in files:
+        path = Path(str(name)).resolve()
+        unique.setdefault(path, set()).add((str(market), str(asset_type), str(period)))
+    groups: dict[tuple[str, str, str], dict[str, Any]] = {}
+    total = 0
+    present = 0
+    for path, categories in unique.items():
+        if not path.is_relative_to(root):
+            missing += 1
+            continue
+        try:
+            info = path.stat()
+            if not path.is_file():
+                raise OSError("Not a regular market file")
+        except OSError:
+            missing += 1
+            continue
+        # A physical file shared by categories must not be attributed twice.
+        key = next(iter(categories)) if len(categories) == 1 else ("SHARED", "SHARED", "")
+        group = groups.setdefault(key, {
+            "market": key[0], "assetType": key[1], "period": key[2],
+            "bytes": 0, "files": 0, "updatedAt": None,
+        })
+        group["bytes"] += info.st_size
+        group["files"] += 1
+        updated = datetime.fromtimestamp(info.st_mtime, tz=timezone.utc).isoformat(timespec="seconds")
+        group["updatedAt"] = max(group["updatedAt"] or "", updated)
+        total += info.st_size
+        present += 1
+    return {"available": True, "bytes": total, "files": present, "missingFiles": missing,
+            "groups": list(groups.values()), "scope": "MANIFEST_SILVER_FILES", "generatedAt": now_iso()}
+
+
 def _inventory_payload(request: Request) -> dict[str, Any]:
     root = _data_root(request)
     preferences = load_json(_preference_path(root), {"preferences": {}})
@@ -596,6 +643,7 @@ def _inventory_payload(request: Request) -> dict[str, Any]:
             "inventory": inventory,
             "tables": tables,
             "datasets": datasets,
+            "storage": _storage_inventory(root),
             "preferences": stored,
             "metadata": {
                 "mode": "LIGHTWEIGHT_MANIFEST",
