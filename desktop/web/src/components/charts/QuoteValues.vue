@@ -44,18 +44,22 @@ function color(name: string): string {
   return name === '振幅' ? 'var(--ml-highlight)' : 'var(--ml-info)';
 }
 function numericSize(name: string, group: number): string {
-  const width = (groupWidths.value[group] || 132) * (group >= 5 ? 0.58 : 0.7) - 2;
+  const width = (groupWidths.value[group] || 132) - labelWidth(group) - 2;
   return `${Math.min(11, width / Math.max(1, fields.value[name].length) / 0.68)}px`;
 }
 function labelSize(name: string, group: number): string {
-  return `${Math.min(11, (groupWidths.value[group] || 132) * (group >= 5 ? 0.42 : 0.3) / name.length / 1.05)}px`;
+  return `${Math.min(11, labelWidth(group) / name.length / 1.05)}px`;
+}
+function labelWidth(group: number): number {
+  return Math.min(group >= 5 ? 46 : group === 2 || group === 3 ? 24 : 13, (groupWidths.value[group] || 132) * (group >= 5 ? 0.42 : 0.3));
 }
 </script>
 <template><div ref="root" class="quote-values" :class="{inline}"><div v-for="(group,index) in quoteFieldGroups" :key="group[0]" class="quote-field-group"><p v-for="name in group" :key="name" :data-field="name" :title="`${name} ${fields[name]}`"><span :style="{fontSize:labelSize(name,index)}">{{ name }}</span><strong :style="{color:color(name),fontSize:numericSize(name,index)}">{{ fields[name] }}</strong></p></div></div></template>
 <style scoped>
 .quote-values{display:grid;grid-template-columns:repeat(5,minmax(0,1fr)) repeat(2,minmax(0,1.4fr));gap:var(--ml-quote-grid-gap);width:100%;font-size:clamp(7px,1.65cqw,11px);font-variant-numeric:tabular-nums}
 .quote-field-group{display:grid;grid-template-rows:repeat(2,18px)}
-.quote-values p{display:grid;grid-template-columns:30% minmax(0,1fr);align-items:center;gap:2px;margin:0;white-space:nowrap}
-.quote-field-group:nth-last-child(-n+2) p{grid-template-columns:42% minmax(0,1fr)}
+.quote-values p{display:grid;grid-template-columns:min(13px,30%) minmax(0,1fr);align-items:center;gap:var(--ml-quote-label-gap,2px);margin:0;white-space:nowrap}
+.quote-field-group:nth-child(3) p,.quote-field-group:nth-child(4) p{grid-template-columns:min(24px,30%) minmax(0,1fr)}
+.quote-field-group:nth-last-child(-n+2) p{grid-template-columns:min(46px,42%) minmax(0,1fr)}
 .quote-values span{color:var(--ml-text-secondary)}.quote-values strong{font-family:Consolas,monospace;font-weight:600;white-space:nowrap}
 </style>

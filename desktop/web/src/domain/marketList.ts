@@ -29,8 +29,8 @@ export function nextSortState(
   current: MarketSortState,
   field: string,
 ): MarketSortState {
-  if (current.field !== field) return { field, direction: "asc" };
-  if (current.direction === "asc") return { field, direction: "desc" };
+  if (current.field !== field || !current.direction) return { field, direction: "desc" };
+  if (current.direction === "desc") return { field, direction: "asc" };
   return { field: null, direction: null };
 }
 

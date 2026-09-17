@@ -15,12 +15,12 @@ const client = [
   ["/strategy/", "策略"],
   ["/stats/", "账户分析"],
   ["/industry/", "产业链"],
+  ["/f10/", "F10"],
 ] as const;
 
 const backend = [
   ["/", "仪表盘"],
   ["/data-sources/", "数据源"],
-  ["/f10/", "F10"],
   ["/logs/", "日志"],
 ] as const;
 

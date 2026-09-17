@@ -1,5 +1,31 @@
 # R4 第四轮开发计划（当前唯一活动计划）
 
+## R4 组合策略与桌面布局续期（2026-09-17）
+
+本批覆盖历史三态升序优先、F10后端导航和四类独立信号策略规则。用户现明确每个新策略包含关注/仓位/择时，采用Python形式编辑；保持策略函数预定义和无账户执行的边界。历史定义和监控记录保留，采用新的组合策略存储，不将缺两类规则的旧定义自动改造成组合策略。
+
+| 编号 | 优先级/对象 | 状态/失败次数 | 现状/原因 | 业务目标/方案 | 依赖/涉及文件 | 验收/输出 |
+|---|---|---|---|---|---|---|
+| R4-COMBO-01 | P1/排序、F10、报价 | DONE/0 | 旧需求升序优先、F10在后端、报价标签比例留白较多 | 倒序→顺序→默认；F10移网页客户端导航；公共报价标签/数值间距压缩且保留固定槽位 | marketList/App/QuoteValues/样式 | 数值排序恢复原序、导航位置、长数字与标签不重叠已通过；输出桌面布局调整 |
+| R4-COMBO-02 | P0/策略定义与编辑 | VERIFYING/1 | 当前是四类操作信号和规则树编辑 | Python受限语法三函数attention/position/timing；预定义精确版本函数；缺任一部分不可保存为组合策略 | composite_program.py/web_api/composites.py/CompositeStrategyManager.vue；StrategyView | 功能、API、交互通过，示例涨幅单位失败已修；StrategyView历史lint仍13项，故未全验收DONE |
+| R4-COMBO-03 | P0/状态与目标行情 | DONE/2 | 旧监控以开仓开启轮次 | 关注门控仓位和择时；开仓后才加减平，平仓后可再开，取消关注停止计算；同期同向比较 | composite_monitor.py/web_api/composites.py；targetMarket/TargetMarketView/MarketView标记 | 门控、优先、缺数据、去重、分页快照、未来隔离通过；两次独立复核发现的竞态已修复 |
+
+共同边界：以组合策略版本+标的隔离状态；首次扫描仅最新已结束K线，后续按时间游标补消费。开仓与后续操作不可同根；平仓优先、减仓优先于加仓。取消关注终止观察轮次并清除配置建议，保留终止原因，不伪造平仓成交；重新关注从待开仓开始。旧版本/停用策略结果不作为当前目标。每策略有同一个支持周期，三部分在同一已结束bar上评估。
+
+仓位口径：allocation表示建议名义敞口/参考权益，capitalUsage表示建议保证金或现金占用/参考权益，leverage表示名义敞口倍数。胜率只接受规则计算或实际已结束观察轮次样本；默认无样本为缺失。没有真实保证金率时资金使用率缺失。示例参数仅创建起点，不默认启用或写入真实策略。同期比较按关注规则指定的N根有效bar基准时间对齐，输出原始涨跌幅及方向，不声称识别了带动因果。
+
+实施及验证：受影响Ruff/pytest/Web lint/typecheck/逻辑及交互/build，独立审查；不全量验证或修改Android。实际测试结果、问题原因、文件与最终输出在本节持续维护；原TDX和研究计划脏内容保留，最终精确提交本批。
+
+### 本批验收证据（2026-09-17）
+
+- 后端：composite_program、composite_monitor、web_api/composites、web_app及test_composite_strategies受影响Ruff通过。`pytest desktop/tests/test_composite_strategies.py desktop/tests/test_signal_monitor.py -q`共26通过，覆盖受限Python、函数版本锁、关注生命周期、零/缺失仓位、原子提交、乐观版本冲突、恢复停用、旧定义隔离、真实函数暖机、时区/未结束行情与500根缺口。
+- Web：7个受影响文件ESLint通过；`vue-tsc --noEmit`和production build通过，既有500kB chunk警告保留。StrategyView整文件有13个unused错误；用`git show HEAD:desktop/web/src/views/StrategyView.vue | npx eslint --stdin --stdin-filename src/views/StrategyView.vue`核实基线同样13项，不降低规则、不声称整文件lint通过。R4-COMBO-02保留VERIFYING，后续清理需兼顾原指标/回测历史对话框，不在本批大规模重写。
+- Playwright定向7通过：composite-state、signal-strategies-r4、market-list-r4以及market-layout-r4-s4中两项布局回归。覆盖Python创建/校验/改名/版本/删除恢复、F10客户端导航、组合目标50%配置/无胜率样本、倒序优先/数值稳定/恢复原序、503标的与详情继承、两页14字段长负数不越槽、周期栏与图表菜单。旧四类策略UI断言迁移到组合策略，旧后端signal契约测试保留。
+- 异步测试验证：扫描前加载迟到、停止后旧错误、新扫描筛选固定、扫描期间启动加载晚于最终扫描结果返回均不能覆盖新状态。编辑策略后停止旧扫描并刷新，组件store销毁清理定时器；新代码未改变Canvas/pointer重绘链路。
+- 独立角色r4_tv_review有限复核ACCEPTED；先后修复未关注方向残留、partial过滤掩盖窗口缺口、缺少结束时间提前消费、两种load/scan竞态。复核未自行重跑测试，依据源码和主执行者测试证据。最后7项Web重跑已通过。
+- 无可靠结束时间（含结束不晚于开始）的日及以上bar，周期边界后额外延迟一天确认；真实结束时间按原数据处理。此降级可能延迟观察，不能冒称实时。无保证金率/样本保持缺失；胜率不代表未来表现。同期同向只比较一致时间窗，不证明因果。未运行真实全市场策略扫描或创建用户策略，夹具截图不是实盘结果。
+- 本批输出还包括docs/ARCHITECTURE与CONTEXT的现行规则；原历史计划、TDX代码及日志保留。检查现有.gitignore已覆盖本地策略、数据、服务日志、测试截图、构建及缓存，本次无新临时类型，不做无意义规则改动。发布仅暂存本批及本节计划，推送当前master，不含参考图或运行数据。
+
 ## R4 电脑网页管理仪表盘（2026-09-12，验收完成）
 
 仅电脑Web：F10位置与Android均不修改。用户明确取消的是数据源页面手动主备配置，不更改采集/查询来源选择、Provider注册表或既有配置，不删除真实数据。无库存来源不出现在新页面；未知/盘点失败不得冒充零库存。参考Grafana面板化展示，复用项目主题、指标卡与原生占比图，不引入Grafana服务或新的绘图库。

@@ -420,7 +420,7 @@ interface MonitorResponse {events:SignalEvent[]}
 const monitorEvents=ref<SignalEvent[]>([]);
 const operationLabels: Record<string,string> = {open:"开仓",add:"加仓",reduce:"减仓",close:"平仓"};
 const signalChartMarkers = computed<StrategyChartMarker[]>(()=>monitorEvents.value.filter(event=>event.instrumentId===selected.value?.instrumentId && event.period===history.value.period && typeof event.price==='number').map(event=>({kind:['open','add'].includes(event.action)?'entry' as const:'exit' as const,label:operationLabels[event.action],reason:event.strategyName,time:event.barAt||event.at,price:event.price!,barIndex:displayedBars.value.findIndex(bar=>Date.parse(bar.barOpenTime||bar.tradingDate||'')===Date.parse(event.barAt||event.at))})).filter(item=>item.barIndex>=0));
-async function loadMonitor() { try { monitorEvents.value = (await apiGet<MonitorResponse>("/api/signals/monitor", undefined, { force: true })).events || []; } catch { monitorEvents.value = []; } }
+async function loadMonitor() { try { monitorEvents.value = ((await apiGet<MonitorResponse>("/api/composites/monitor", undefined, { force: true })).events || []).filter(event=>event.action in operationLabels); } catch { monitorEvents.value = []; } }
 const selected = ref<Instrument | undefined>(
   marketStore.items.find((item) => item.instrumentId === marketStore.selectedId) as Instrument | undefined,
 );

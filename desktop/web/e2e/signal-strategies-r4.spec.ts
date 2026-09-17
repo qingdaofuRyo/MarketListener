@@ -1,49 +1,70 @@
 import {test,expect} from '@playwright/test';
-
-test('four signal operations replace default backtest strategies and support editing and recoverable deletion',async({page})=>{
-  page.on('pageerror',error=>{throw error});
-  await page.setViewportSize({width:1440,height:960});
+const source = `def attention():
+    return {"long": close > 10, "short": False, "cancel": close < 5, "lookback": 1}
+def position():
+    return {"rewardRisk": 2, "winRate": observed_win_rate, "allocation": 0.5, "capitalUsage": None, "leverage": 0.5}
+def timing():
+    return {"open": close > 12, "add": False, "reduce": False, "close": close < 8}
+`;
+test('composite Python strategy replaces four action types and supports versioned editing and recovery',async({page})=>{
+  page.on('pageerror',error=>{throw error;});
   let definitions:Array<Record<string,any>>=[], deleted:Record<string,any>|undefined;
-  await page.route('**/api/signals/definitions**',async route=>{
+  await page.route('**/api/composites/monitor',route=>route.fulfill({json:{items:[],events:[]}}));
+  await page.route('**/api/composites/validate',route=>{
+    expect(route.request().postDataJSON().source).toContain('def timing');
+    return route.fulfill({json:{valid:true}});
+  });
+  await page.route('**/api/composites/definitions**',async route=>{
     const path=new URL(route.request().url()).pathname;
-    if(path.endsWith('/restore')){definitions.push(deleted!);await route.fulfill({json:deleted});return;}
-    if(route.request().method()==='DELETE'){deleted=definitions.find(item=>path.endsWith(item.id));definitions=definitions.filter(item=>item!==deleted);await route.fulfill({json:{deleted:true,recoverable:true}});return;}
+    if(path.endsWith('/restore')){definitions.push({...deleted!,enabled:false});return route.fulfill({json:deleted});}
+    if(route.request().method()==='DELETE'){deleted=definitions.find(item=>path.endsWith(item.id));definitions=definitions.filter(item=>item!==deleted);return route.fulfill({json:{deleted:true,recoverable:true}});}
     if(['POST','PUT'].includes(route.request().method())){
       const body=route.request().postDataJSON();
-      expect(body).not.toHaveProperty('positionSizing');expect(body).not.toHaveProperty('backtest');expect(body).not.toHaveProperty('supportedAssetTypes');
+      expect(body).not.toHaveProperty('action');expect(body.source).toContain('def attention');expect(body.source).toContain('def position');expect(body.source).toContain('def timing');
       const previous=definitions.find(item=>path.endsWith(item.id));
-      const item={...body,id:previous?.id||'signal_'+definitions.length,version:(previous?.version||0)+1};
-      definitions=definitions.filter(item=>item!==previous);definitions.push(item);await route.fulfill({json:item});return;
+      const item={...body,id:previous?.id||'combo',version:(previous?.version||0)+1};
+      definitions=definitions.filter(item=>item!==previous);definitions.push(item);return route.fulfill({json:item});
     }
-    await route.fulfill({json:{items:definitions}});
+    return route.fulfill({json:{items:definitions,template:source,legacyCount:2}});
   });
   await page.goto('/strategy/?section=strategy');
-  await expect(page.locator('.signal-strategy-manager')).toContainText('暂无策略');
-  for(const name of ['回测','归档','历史版本','复制','加载到图表'])await expect(page.getByRole('button',{name,exact:true})).toHaveCount(0);
-  for(const [action,label] of [['open','开仓'],['add','加仓'],['reduce','减仓'],['close','平仓']]){
-    await page.getByRole('button',{name:'新建策略',exact:true}).click();
-    const dialog=page.getByRole('dialog',{name:'新建策略',exact:true});
-    await dialog.getByRole('textbox',{name:'策略名称',exact:true}).fill(label+'观察');
-    await dialog.locator('.el-select').filter({has:page.getByRole('combobox',{name:'策略操作',exact:true})}).click();
-    await page.getByRole('option',{name:label,exact:true}).click();
-    await dialog.locator('.el-select').filter({has:page.getByRole('combobox',{name:'策略周期',exact:true})}).click();
-    for(const period of ['5分','15分','30分','60分','120分','日线','周线','月线','季线','年线'])await expect(page.getByRole('option',{name:period,exact:true})).toBeVisible();
-    await page.getByRole('option',{name:'120分',exact:true}).click();
-    for(const name of ['市场类型','仓位','滑点','止盈','初始资金'])await expect(dialog).not.toContainText(name);
-    await dialog.getByRole('button',{name:'保存策略',exact:true}).click();
-    await expect(dialog).not.toBeVisible();
-    expect(definitions.find(item=>item.action===action)?.period).toBe('2h');
-  }
-  const first=page.locator('.el-table__row').filter({hasText:'开仓观察'});
-  await first.getByRole('button',{name:'编辑',exact:true}).click();
-  const editor=page.getByRole('dialog',{name:'编辑策略',exact:true});
-  await editor.getByRole('textbox',{name:'策略名称',exact:true}).fill('开仓观察已修改');
-  await editor.getByRole('button',{name:'保存策略',exact:true}).click();
+  await expect(page.locator('.composite-strategy-manager')).toContainText('暂无组合策略');
+  await expect(page.getByRole('navigation',{name:'客户端',exact:true}).getByRole('link',{name:'F10',exact:true})).toBeVisible();
+  await expect(page.getByRole('navigation',{name:'后端',exact:true}).getByRole('link',{name:'F10',exact:true})).toHaveCount(0);
+  await page.getByRole('button',{name:'新建策略',exact:true}).click();
+  const dialog=page.getByRole('dialog',{name:'新建组合策略',exact:true});
+  await dialog.getByRole('textbox',{name:'组合策略名称',exact:true}).fill('趋势组合');
+  await expect(dialog.getByRole('textbox',{name:'组合策略Python代码'})).toHaveValue(source);
+  await expect(dialog.getByRole('combobox',{name:'策略操作',exact:true})).toHaveCount(0);
+  await dialog.getByRole('button',{name:'校验Python',exact:true}).click();
+  await expect(dialog).toContainText('三类规则和函数依赖校验通过');
+  await dialog.getByRole('button',{name:'保存组合策略',exact:true}).click();
+  await expect(dialog).not.toBeVisible();
+  const row=page.locator('.el-table__row').filter({hasText:'趋势组合'});
+  await row.getByRole('button',{name:'编辑',exact:true}).click();
+  const editor=page.getByRole('dialog',{name:'编辑组合策略',exact:true});
+  await editor.getByRole('textbox',{name:'组合策略名称',exact:true}).fill('趋势组合已修改');
+  await editor.getByRole('button',{name:'保存组合策略',exact:true}).click();
   await expect(editor).not.toBeVisible();
+  expect(definitions[0].version).toBe(2);
   page.once('dialog',dialog=>dialog.accept());
-  await first.getByRole('button',{name:'删除',exact:true}).click();
-  await expect(page.locator('.el-table__row')).toHaveCount(3);
+  await row.getByRole('button',{name:'删除',exact:true}).click();
+  await expect(page.locator('.composite-strategy-manager .el-table__row')).toHaveCount(0);
   await page.getByRole('button',{name:'撤销删除',exact:true}).click();
-  await expect(page.locator('.el-table__row')).toHaveCount(4);
-  await page.screenshot({path:'test-results/r4-signal-strategies.png',animations:'disabled'});
+  await expect(page.locator('.composite-strategy-manager .el-table__row')).toHaveCount(1);
+  await page.screenshot({path:'test-results/r4-composite-strategy.png'});
+});
+test('target market shows only composite attention with position metrics and repeatable timing',async({page})=>{
+  await page.route('**/api/market/categories',route=>route.fulfill({json:{items:[]}}));
+  await page.route('**/api/composites/definitions',route=>route.fulfill({json:{items:[{id:'combo',displayName:'组合A',enabled:true}]}}));
+  const item={strategyId:'combo',strategyVersion:1,strategyName:'组合A',instrumentId:'CN.SHFE.FUTURE.AU0',name:'黄金主连',symbol:'AU0',direction:'long',positionOpen:false,latestPrice:100,referenceAt:'2026-09-01T07:00:00Z',asOf:'2026-09-15T07:00:00Z',changePct:12,peerCount:0,peers:[],position:{rewardRisk:2,winRate:null,allocation:0.5,capitalUsage:null,leverage:0.5,observedRounds:0}};
+  await page.route('**/api/composites/monitor',route=>route.fulfill({json:{items:[],events:[]}}));
+  await page.route('**/api/composites/scan',route=>route.fulfill({json:{items:[item],events:[],scanned:1,total:1,nextOffset:null}}));
+  await page.goto('/market/targets/');
+  await page.getByRole('button',{name:'扫描组合策略',exact:true}).click();
+  await expect(page.locator('.composite-results')).toContainText('等待开仓时机');
+  await expect(page.locator('.composite-results')).toContainText('50.00%');
+  await expect(page.locator('.composite-results')).toContainText('0个已结束轮次');
+  await page.getByRole('button',{name:'黄金主连',exact:true}).click();
+  await expect(page).toHaveURL(/market\/instrument\/CN.SHFE.FUTURE.AU0/);
 });

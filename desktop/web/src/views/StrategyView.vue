@@ -9,8 +9,8 @@ import {
   apiPut,
   formatTime,
 } from "../domain/api";
-import SignalStrategyManager from "../components/strategy/SignalStrategyManager.vue";
-const signalManager = ref<InstanceType<typeof SignalStrategyManager>>();
+import CompositeStrategyManager from "../components/strategy/CompositeStrategyManager.vue";
+const signalManager = ref<InstanceType<typeof CompositeStrategyManager>>();
 import StrategyRuleTreeEditor from "../components/strategy/StrategyRuleTreeEditor.vue";
 import type { StrategyFunctionOption } from "../components/strategy/StrategyOperandEditor.vue";
 import type {
@@ -1420,7 +1420,7 @@ onMounted(() => void loadTab(activeTab.value));
     <header class="page-heading">
       <div>
         <h1 class="page-title">策略</h1>
-        <p>指标负责可视化，策略函数负责纯计算，策略负责开仓、加仓、减仓和平仓信号监控。</p>
+        <p>组合策略包含关注、仓位、择时；预定义策略函数提供计算，指标负责图表显示。</p>
       </div>
       <div class="page-actions">
         <input
@@ -1556,7 +1556,7 @@ onMounted(() => void loadTab(activeTab.value));
           </div>
         </div>
       </template>
-      <template v-else><SignalStrategyManager ref="signalManager"/></template>
+      <template v-else><CompositeStrategyManager ref="signalManager"/></template>
     </section>
     <el-dialog
       v-model="customIndicatorEditorOpen"

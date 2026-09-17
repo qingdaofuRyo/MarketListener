@@ -39,7 +39,7 @@ function instrument(index: number) {
 test("R4 list obtains the full category, virtualizes rows, and carries state into detail", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   const items = Array.from({ length: 503 }, (_, index) => instrument(index + 1));
-  await page.route("**/api/signals/**", (route) => route.fulfill({ json: { items: [], events: [] } }));
+  await page.route("**/api/composites/**", (route) => route.fulfill({ json: { items: [], events: [] } }));
   await page.route("**/api/strategy/**", (route) => route.fulfill({ json: { items: [] } }));
   await page.route("**/api/market/**", async (route) => {
     const url = new URL(route.request().url());
@@ -80,9 +80,9 @@ test("R4 list obtains the full category, virtualizes rows, and carries state int
   await list.evaluate((element) => { element.scrollTop = element.scrollHeight; });
   await expect(page.getByText("测试主连503", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "按最新价排序" }).click();
-  await expect(page.getByRole("button", { name: "按最新价排序" })).toContainText("↑");
-  await page.getByRole("button", { name: "按最新价排序" }).click();
   await expect(page.getByRole("button", { name: "按最新价排序" })).toContainText("↓");
+  await page.getByRole("button", { name: "按最新价排序" }).click();
+  await expect(page.getByRole("button", { name: "按最新价排序" })).toContainText("↑");
   await page.getByRole("button", { name: "按最新价排序" }).click();
   await expect(page.getByRole("button", { name: "按最新价排序" })).not.toContainText(/[↑↓]/);
 
@@ -112,12 +112,15 @@ test("R4 list domain rules retain trading-date wording and stable three-state so
     { instrumentId: "b", latestPrice: 10 },
     { instrumentId: "a", latestPrice: 10 },
     { instrumentId: "none", latestPrice: null },
+    { instrumentId: "high", latestPrice: 20 },
   ];
-  const ascending = nextSortState({ field: null, direction: null }, "latestPrice");
-  expect(ascending).toEqual({ field: "latestPrice", direction: "asc" });
-  expect(sortMarketInstruments(records, ascending).map((item) => item.instrumentId)).toEqual(["b", "a", "none"]);
-  const descending = nextSortState(ascending, "latestPrice");
-  expect(sortMarketInstruments(records, descending).map((item) => item.instrumentId)).toEqual(["b", "a", "none"]);
-  expect(nextSortState(descending, "latestPrice")).toEqual({ field: null, direction: null });
+  const descending = nextSortState({ field: null, direction: null }, "latestPrice");
+  expect(descending).toEqual({ field: "latestPrice", direction: "desc" });
+  expect(sortMarketInstruments(records, descending).map((item) => item.instrumentId)).toEqual(["high", "b", "a", "none"]);
+  const ascending = nextSortState(descending, "latestPrice");
+  expect(ascending.direction).toBe("asc");
+  expect(sortMarketInstruments(records, ascending).map((item) => item.instrumentId)).toEqual(["b", "a", "high", "none"]);
+  expect(sortMarketInstruments(records, nextSortState(ascending, "latestPrice")).map((item) => item.instrumentId)).toEqual(["b", "a", "none", "high"]);
+  expect(nextSortState(ascending, "latestPrice")).toEqual({ field: null, direction: null });
   expect(weekdayLabel("2026-09-04T09:30:00+08:00")).toBe("周五");
 });

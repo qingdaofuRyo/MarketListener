@@ -20,7 +20,7 @@ export async function setup(page: Page, testBars = bars) {
   let saves = 0;
   const requests: Array<{ size: number }> = [];
   await page.route("**/api/strategy/indicators**", (route) => route.fulfill({ json: { items: catalog } }));
-  await page.route("**/api/signals/**", (route) => route.fulfill({json:{items:[],events:[]}}));
+  await page.route("**/api/composites/**", (route) => route.fulfill({json:{items:[],events:[]}}));
   await page.route("**/api/strategy/definitions**", (route) => route.fulfill({ json: { items: [] } }));
   await page.route("**/api/market/**", async (route) => {
     const url = new URL(route.request().url()), path = url.pathname;
