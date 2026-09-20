@@ -2,6 +2,10 @@
 
 当前开发唯一入口：[Plan_R4.md](./Plan_R4.md)。`Plan_R1.md`、`Plan_R2.md`、`Plan_R3.md`、`Plan.md`、`Plan_full.md` 与 `docs/STATUS.md` 保留历史计划和验收事实。
 
+2026-09-20 新增：[性能、功能代码与现代界面改动计划](./docs/Optimization_Plan_20260920.md)。问题证据、优先级、验收矩阵和回退方法已整理；任务状态集中登记在 `Plan_R4.md` 的 `R4-OPT-001～014`，目前为计划阶段。
+
+相关设计详案：[现代化金融终端 UI / UX 专项计划](./docs/UI_Modernization_Plan_20260920.md)。同一组件的性能和视觉改进复用任务与验收，保留当前默认布局。
+
 ## 开发前必读
 
 1. [Plan_R4.md](./Plan_R4.md)：第四轮当前任务、已确认口径、待决策项与下一步。
