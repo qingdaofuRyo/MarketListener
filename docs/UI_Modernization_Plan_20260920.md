@@ -5,6 +5,8 @@
 适用仓库：`qingdaofuRyo/MarketListener`  
 当前唯一活动计划：`Plan_R4.md`
 
+复核更新：结合 [可行性复核](UI_Feasibility_Review_20260920.md) 和 [TradingView 专项](development-plans/ui-r5/TRADINGVIEW_UI_IMPROVEMENT_PLAN.md) 执行。重点保留已有 33px 虚拟列表、七组两行报价、绘图栏/底部周期栏和图表生命周期；本次只修订文档，功能任务状态不变。
+
 > 本文件是桌面 Web UI 专项方案，不替代 `Plan_R4.md` 的任务状态。后续真正进入开发时，应把对应条目登记进当前活动计划。本专项不修改 Android，不改变既定业务口径，不为“现代化”牺牲行情准确性、信息密度或性能。
 
 ## 1. 产品定位
@@ -89,6 +91,8 @@ zIndex
 
 同一 `TerminalTable` / `TerminalPanel` 通过 density prop 控制行高、padding、字体，但不改变数据格式。
 
+首轮只是现有密度的语义归类，不新增用户切换项。行情虚拟列表保持 33px；未来调整行高时须与可见窗口、占位、表头、键盘滚动和锚点同步，禁止只改 CSS。
+
 ## 5. 顶部导航与全局框架
 
 ### ML-UIX-03：保留现有 Topbar，增强层级
@@ -162,7 +166,7 @@ C 层：总/流通市值、辅助字段。
 - 标签不使用省略号遮挡。
 - 长数字可通过数值格式/最小宽度处理，不挤压标签。
 - 正负号、单位、小数位统一。
-- 当右侧容器变窄时使用 Container Query 调整列数，而不是把文字缩到不可读。
+- 首轮保留现有七组×两行和图上 overlay，不以 Container Query 改组序/行数。先测量工具、标签与数值预算；可读字号和固定布局无法同时满足时单列设计取舍，不通过省略、横向滚动或任意缩写掩盖问题。
 
 ## 8. ChartFrame 图表系统
 
@@ -183,6 +187,8 @@ C 层：总/流通市值、辅助字段。
 - 数据源状态
 
 ECharts option 只负责实际图形，不让每个页面重复实现标题栏和异常状态。
+
+Frame 是可选插槽外壳，不强制增加外部标题栏或第二组 ResizeObserver。首轮 KLineChart 继续拥有实例、测量、绘图和清理；保留 overlay 的指针穿透、plot rect 与现有 DPR 处理。状态必须来自同一标的/周期/数据版本的真实请求结果。
 
 ### ML-UIX-09：K 线图视觉规范
 
@@ -245,6 +251,8 @@ Panel 允许：
 
 代码编辑区、结果区、状态区应使用清晰分隔，不用大量彩色卡片。
 
+这里的职责拆分以最新 R4-COMBO 和 CompositeStrategyManager 为准，保留 attention/position/timing 组合策略；不恢复历史四类信号或回测入口，不改变精确版本、缺失值和观察语义。
+
 危险操作（删除策略、停止观察等）使用统一 danger confirm。
 
 ### ML-UIX-14：数据页面
@@ -300,7 +308,7 @@ Panel 允许：
 
 目的：组件可以在不同页面复用，而不依赖全局 viewport breakpoint。
 
-Chrome 108 可使用尺寸型 Container Queries。2026 年的新式 container style queries 不作为本项目核心功能依赖。
+Chrome 108 可使用尺寸型 Container Queries；自定义属性 style queries 从 Chromium 111 起，不能成为核心依赖。还需审计现有 color-mix 的后备颜色、显式构建目标及生产产物，不以现代 Chrome 构建/E2E 代替 Chrome 108 验证。
 
 ## 13. Overlay / Dialog / Popover
 
@@ -426,7 +434,7 @@ styles/
 - 图表重复初始化
 - 长列表重排
 
-只有 trace 证明必要时才引入更复杂虚拟化；不能先为了“架构漂亮”引入额外依赖。
+行情页已经有固定行高虚拟窗口，必须保留；只有 trace 证明必要时才引入更复杂虚拟化，不能退化成全量 DOM，也不先引入额外依赖。
 
 ## 18. 可访问性
 
@@ -442,6 +450,8 @@ styles/
 ## 19. 视觉回归与 Playwright
 
 ### ML-UIX-24：Desktop UI Regression Gate
+
+基线在首个迁移前建立，每项改动执行受影响场景；不等整个专项结束才做回归。性能同时记录 P50/P95，优先沿用优化计划的 P95 复测规则。
 
 固定截图：
 

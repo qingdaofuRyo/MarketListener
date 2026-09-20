@@ -586,3 +586,9 @@
 - 详情左栏价幅同列、周期栏单行无纵向滚动、类型菜单无逐项边框；文本active及激光公共连续收尾修复。
 - 独立审查后修复副图标签未纳入gutter、激光关闭时旧pointer capture未释放、长字段溢出风险；浏览器断言还修复图例与主绘图区2px差。测试读取生产ECharts实例，未加入业务假数据或测试专用渲染配置。
 - 执行受影响Web lint/typecheck/production build和定向Playwright；命令、失败记录、复验与发布结果见Plan_R4续4台账。没有全量回归、Android验证或移动端设计。截图/缓存/构建继续由现有.gitignore排除。
+
+## 2026-09-20 - 最新 UI / TradingView 计划可行性复核
+
+- 对照 master 45a1c41、新 TradingView 专项、现行 R4-COMBO/OPT 与源码，新增 `UI_Feasibility_Review_20260920.md`，并修订两份 UI 计划中的实施歧义。
+- 补充已有 33px 虚拟列表、七组两行 overlay、右绘图栏和底部周期栏、KLineChart 实例所有权、旧浏览器与 color-mix 后备要求；把逐项回归放到首个迁移之前。
+- 本次只有 Markdown 计划和索引变更，功能状态、用户数据、运行代码及 Android 不变。静态审查不等于运行验收；未运行 UI 功能/性能/浏览器兼容测试，后续按受影响任务执行。

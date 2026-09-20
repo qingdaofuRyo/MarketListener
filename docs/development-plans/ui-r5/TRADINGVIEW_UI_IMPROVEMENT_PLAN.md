@@ -5,6 +5,8 @@
 适用范围：`desktop/web` 桌面 Web 端  
 关联文档：`docs/UI_Modernization_Plan_20260920.md`、`Plan_R4.md`
 
+复核更新：实施条件见 [UI 可行性复核](../../UI_Feasibility_Review_20260920.md)。本次修订消除骨架、自适应、虚拟列表、生命周期和验收依赖的歧义；没有实施代码或改变活动任务状态。
+
 > 本文件是现有 UI Modernization 计划的 TradingView 专项补充，不建立与 `Plan_R4.md` 竞争的第二套任务状态。真正进入开发时，应把对应任务登记进当前活动计划。本计划不修改 Android，不改变行情、策略、数据口径，不更换 ECharts 或 Element Plus，不做 TradingView 像素级克隆。
 
 ## 1. 核心设计决策
@@ -18,7 +20,7 @@ MarketListener 桌面 Web 正式以 TradingView Supercharts 的**工作区架构
 MarketListener 的目标是形成：
 
 - chart-first 的金融研究工作区；
-- 左侧标的列表 / 中央主图 / 右侧详情上下文的稳定结构；
+- 保留左侧列表、现有图表/图上报价、详情右侧绘图栏和底部周期栏的稳定结构；
 - 高信息密度、弱装饰、强上下文；
 - 长时间看盘时低视觉疲劳；
 - 表格、K 线、14 字段、指标、策略状态之间稳定联动；
@@ -31,10 +33,10 @@ MarketListener 的目标是形成：
 | TradingView 模式 | MarketListener 对应 | 本项目建议 |
 |---|---|---|
 | Supercharts 中央主图 | `MarketView` / `FuturesView` ECharts | 图表保持最高视觉权重 |
-| Top toolbar | 周期、指标、图表操作 | 抽象 `ChartToolbar` |
+| Top toolbar | 现有周期、指标、图表操作 | 抽象 `ChartToolbar` 的交互样式，不迁移底部周期栏或新增外部 header |
 | Watchlist | 全部行情、目标行情、期货列表 | 抽象 `InstrumentList` |
-| Symbol details | 14 字段详情、标的信息 | 抽象 `InstrumentDetails` + `MetricGrid` |
-| Right toolbar / contextual panel | 详情、状态、数据入口 | 逐步形成 `ContextRail` |
+| Symbol details | 图上 14 字段、标的信息 | 原样复用 `QuoteValues`，必要时提取 `MetricGrid`，不新建右侧报价栏 |
+| Right toolbar / contextual panel | 既有右侧绘图工具及状态入口 | `ContextRail` 仅为后续职责研究，不替换绘图栏 |
 | Bottom panel | 策略、日志、分析结果 | 中长期形成 `WorkspacePanel`，不作为首轮必做 |
 | Screener table | 行情表格 / 统计表格 | 统一 `TerminalTable` |
 | Layout workspace | 页面工作状态 | 先做 layout abstraction，不立即复制多图布局 |
@@ -44,25 +46,18 @@ MarketListener 的目标是形成：
 
 ## 3. 推荐工作区骨架
 
-保持现有主要功能位置，逐步收敛为：
+以当前页面实际布局为骨架，组件名表示职责，不表示重新分配空间：
 
-```text
-┌──────────────────────────────────────────────────────────────┐
-│ Global Topbar：现有客户端 / 后端导航 / 全局状态 / 主题         │
-├──────────────┬────────────────────────────────┬───────────────┤
-│ Instrument   │ Context / Chart Toolbar        │ Context Rail  │
-│ List         ├────────────────────────────────┤ Details       │
-│              │                                │ Metrics       │
-│              │          ECharts 主图          │ Status        │
-│              │                                │               │
-│              ├────────────────────────────────┤               │
-│              │ Volume / Indicators / Subpane │               │
-├──────────────┴────────────────────────────────┴───────────────┤
-│ Optional Bottom Workspace：策略 / Log / 数据 / 分析结果       │
-└──────────────────────────────────────────────────────────────┘
-```
+| 页面区域 | 保留的位置与行为 |
+|---|---|
+| 全局导航 | 客户端 / 后端现有分组与顶部位置 |
+| 全部行情 / 目标行情 | 左列表、右侧既有双看板；列表查询工具仍在左侧 |
+| 标的详情 | 左列表、中图表、最右绘图工具栏、底部 36px 周期栏 |
+| 14 字段 / 指标图例 | 沿用图上 overlay，七组两行；不额外占用主图外部高度 |
+| 状态提示 | 原位插槽或轻量 overlay，不增加永久标题栏 |
+| 可选工作面板 | 首轮不新增 Bottom Workspace 或替换右栏；留作后续需求研究 |
 
-首轮不强制新增 Bottom Workspace，也不重排顶部导航。重点是让既有“左列表 + 右 K 线 + 详情”更加统一和可维护。
+首轮不重排顶部导航，不把详情或报价搬入新 ContextRail。重点是让已有结构更统一和可维护。
 
 ## 4. 组件拆分策略
 
@@ -75,7 +70,7 @@ MarketView.vue
 │  ├─ ChartWorkspace.vue
 │  │  ├─ ChartToolbar.vue
 │  │  ├─ ChartFrame.vue
-│  │  └─ EChartsHost.vue
+│  │  └─ KLineChart.vue（现有实例 owner）
 │  └─ InstrumentDetails.vue
 │     └─ MetricGrid.vue
 └─ composables / orchestration
@@ -89,6 +84,8 @@ StrategyView.vue
 ```
 
 原则：业务 API、store、行情语义与数据格式保持不变；先把视觉容器、状态与交互边界抽出。
+
+上图为职责候选，不要求增加 DOM wrapper。EChartsHost 只在后续证据充分时单独评估；策略拆分以现行 CompositeStrategyManager 和 attention/position/timing 为准，保留旧资源兼容，不恢复已移除入口。
 
 ## 5. Design Token 扩展
 
@@ -144,6 +141,8 @@ StrategyView.vue
 
 密度由 primitive 控制行高、padding、字号与控件高度，不允许每个页面私自写一套 spacing。
 
+首轮仅将现有密度命名，不新增切换项；行情虚拟列表保持 33px。未来切密度必须同步行高、表头、占位、窗口索引、键盘定位和滚动锚点，不能只改 CSS。
+
 ## 7. 行情列表 / Watchlist 设计
 
 `InstrumentList` / `TerminalTable` 必须统一：
@@ -156,7 +155,7 @@ StrategyView.vue
 - 表格列宽和数值格式稳定；
 - 列表切换标的时不销毁整个右侧工作区；
 - 高频 quote tick 不应触发整个 workspace re-render；
-- 长列表如果后续确有性能瓶颈，再评估虚拟化，不先引入复杂度。
+- 行情列表已经有固定行高虚拟窗口，提取组件须保留；不改成全量 DOM 表格，仅在 trace 证明不足时评估更复杂实现。
 
 ## 8. 14 字段详情规范
 
@@ -175,7 +174,7 @@ StrategyView.vue
 - 标签不使用省略号遮挡；
 - 长数字使用统一格式与最小宽度；
 - 单位、正负号、小数位规则统一；
-- narrow 容器时调整列数，不缩小文字到不可读；
+- 首轮保持七组×两行及现有 overlay；窄容器先检查工具/标签/数值预算，不自动改变组序和行数；
 - 全部行情右侧详情与标的详情页复用同一个组件。
 
 ## 9. ChartFrame / ChartToolbar
@@ -189,7 +188,7 @@ StrategyView.vue
 - toolbar slot；
 - tooltip shell。
 
-ECharts instance 生命周期由 `EChartsHost` 管理，禁止 `ChartFrame` 直接负责行情 API 或业务 store。
+首轮 ECharts instance 生命周期继续由现有 `KLineChart` 管理，`ChartFrame` 仅接收状态/插槽，不负责 API/store，也不新增第二组 resize 监听。是否抽取 `EChartsHost` 留作独立、有回归证据的重构；保留缩放、绘图、回放、指针穿透及 DPR 必要重建语义。
 
 `ChartToolbar` 参考 TradingView 上方工具区的组织方式，但只保留 MarketListener 实际存在的功能：
 
@@ -289,6 +288,8 @@ Chrome 108 可使用**尺寸型** Container Queries，因此以下组件优先�
 - 更现代 Popover / Anchor Positioning / View Transition 只能渐进增强；
 - 关键功能必须保留 Element Plus / 常规 DOM 定位 fallback。
 
+还需核对生产构建目标和既有 `color-mix()` 后备颜色；当前 Web Vite 配置未显式指定 Chrome 108。现代 Chrome 的 Playwright 通过不代表 Chrome 108 通过。
+
 ## 15. 无障碍与键盘
 
 至少要求：
@@ -313,12 +314,12 @@ Chrome 108 可使用**尺寸型** Container Queries，因此以下组件优先�
 | R5-UI-004 | P0 | `TerminalPanel` / `SegmentedControl` | components | 002-003 | 两个以上页面复用 |
 | R5-UI-005 | P0 | `TerminalTable` | market/futures tables | 004 | sticky、数字对齐、三态排序、focus/selected 分离 |
 | R5-UI-006 | P0 | TradingView-style `InstrumentList` | MarketView | 005 | 选择稳定、quote tick 不整页重渲染 |
-| R5-UI-007 | P0 | `ChartFrame` + `ChartToolbar` | charts | 002-004 | loading/empty/error/stale 统一 |
-| R5-UI-008 | P0 | `MetricGrid` + 右侧详情 | market detail | 004 | 14 字段七组布局完全保留 |
+| R5-UI-007 | P0 | `ChartFrame` + `ChartToolbar` | charts | 002-004、OPT-002/003/012 状态契约 | 状态对应正确数据；保留原图表 owner、plot rect 和工具位置 |
+| R5-UI-008 | P0 | 原位 `QuoteValues` / `MetricGrid` 复用 | market detail | 004 | 14 字段七组×两行和 overlay 位置完全保留 |
 | R5-UI-009 | P1 | Container-aware workspace | list/details/chart | 006-008 | Chrome108 size CQ；窄容器不遮挡信息 |
 | R5-UI-010 | P1 | Strategy/Data/Stats primitive migration | heavy views | 004-009 | 不改业务流程，逐页迁移 |
-| R5-UI-011 | P0 | Playwright visual + interaction suite | tests | 005-010 | 截图 + 键盘 + 状态覆盖 |
-| R5-UI-012 | P0 | performance/a11y/Chrome108 release gate | CI/docs | 全部 | 性能、兼容、可访问性门禁通过 |
+| R5-UI-011 | P0 | Playwright visual + interaction suite | tests | 001，随每项迁移执行 | 首次改动前有基线；每项有截图 + 键盘 + 状态断言 |
+| R5-UI-012 | P0 | performance/a11y/Chrome108 release gate | CI/docs | 001/011 与本批实际交付项 | 性能、兼容、可访问性通过；不等待未实施 P1/P2 |
 | R5-UI-013 | P2 | ContextRail abstraction | market/futures | 006-009 | 不增加无业务意义入口 |
 | R5-UI-014 | P2 | Optional WorkspacePanel | strategy/log/data | 010 | 仅真实需要时引入，不强制复制 TradingView bottom panel |
 | R5-UI-015 | P2 | Command search prototype | global | 010+ | 只覆盖已有命令与页面，不引入复杂命令系统 |
@@ -374,6 +375,8 @@ reduced-motion
 
 性能回归以**相对基线**为主要门禁：同 fixture、viewport、browser version 下，median interaction/render benchmark 不建议恶化超过 10%；超过 10% 必须说明，超过 20% 默认阻止合并，除非有明确功能收益和批准记录。
 
+同时遵循 Optimization_Plan 的 P95 >10% 复测规则；median 不能替代尾部延迟。固定机器、字体、DPR、数据版本和缓存状态，记录原始样本、长任务、实例/监听器数量；未测量不声称通过。
+
 ## 19. 禁止事项
 
 1. 不把 TradingView 视觉素材、图标、品牌色、Logo 复制进项目。
@@ -404,7 +407,7 @@ Chrome108 失败 → 回退相关 CSS/API
 ## 21. 建议执行顺序
 
 ```text
-Baseline
+Baseline + Visual / Interaction Tests
 → Tokens
 → State / Layer / Motion
 → Primitive Components
@@ -414,11 +417,13 @@ Baseline
 → MetricGrid
 → Container-aware Workspace
 → Strategy / Data / Stats migration
-→ Visual Regression
+→ 每项迁移同步 Visual / Interaction Regression
 → Performance / A11y / Chrome108 Gate
 ```
 
 首批只应做 P0，不做 multi-chart、command palette、完整 bottom panel 等扩展功能。
+
+各小批独立应用 011/012 门禁，不要求先完成 P1 页面迁移或 P2 扩展才能交付首批。与 OPT/ML-UIX 重叠任务合并实施，映射和更细的验收场景见复核文档。
 
 ## 22. 官方参考
 
