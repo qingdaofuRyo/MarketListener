@@ -181,26 +181,47 @@ test("grouped risk reward drawings use three prices and list board periods are d
   await expect(topPeriod).toHaveValue("1h");
 });
 
-test("market filters use only opening signals and ongoing cycles show later operations",async({page})=>{
+test("target market lists enabled composite strategies and updates monitored events",async({page})=>{
   await setup(page);
   await page.keyboard.press('Escape');
   let scans=0;
-  await page.route('**/api/signals/**',async route=>{
+  const at=bars[79].barOpenTime;
+  await page.route('**/api/composites/**',async route=>{
     const path=new URL(route.request().url()).pathname;
-    if(path.endsWith('definitions')) {await route.fulfill({json:{items:[{id:'entry',displayName:'突破开仓',action:'open',enabled:true},{id:'add',displayName:'回调加仓',action:'add',enabled:true},{id:'close',displayName:'转弱平仓',action:'close',enabled:true}]}});return;}
-    if(path.endsWith('/scan'))scans++;
-    const event={instrumentId:id,strategyName:scans>1?'回调加仓':'突破开仓',action:scans>1?'add':'open',direction:'long',at:bars[79].barOpenTime,barAt:bars[79].barOpenTime,period:'1d',price:12};
-    await route.fulfill({json:{items:scans?[{instrumentId:id,name:'浦发银行',symbol:'600000',direction:'long',openingStrategyId:'entry',openedAt:event.at,latestSignal:event}]:[],events:scans?[event]:[],scanned:1,total:1,nextOffset:null}});
+    if(path.endsWith('/definitions')) {
+      await route.fulfill({json:{items:[
+        {id:'combo-entry',displayName:'突破观察组合',enabled:true},
+        {id:'combo-disabled',displayName:'停用组合',enabled:false},
+      ]}});
+      return;
+    }
+    if(path.endsWith('/monitor')) {
+      await route.fulfill({json:{items:[],events:[]}});
+      return;
+    }
+    if(path.endsWith('/scan')) {
+      scans++;
+      const event={instrumentId:id,strategyName:scans>1?'回调加仓':'突破开仓',action:scans>1?'add':'open',direction:'long',at};
+      const item={
+        instrumentId:id,symbol:'600000',name:'浦发银行',latestPrice:12.4,lastClose:12,direction:'long',
+        strategyId:'combo-entry',strategyVersion:1,strategyName:'突破观察组合',categoryId:'cn-stock',positionOpen:true,
+        watchAt:at,referenceAt:at,asOf:at,changePct:1.2,peerCount:0,peers:[],latestSignal:event,
+      };
+      await route.fulfill({json:{items:[item],events:[event],scanned:1,total:1,nextOffset:null}});
+      return;
+    }
+    await route.fulfill({json:{items:[],events:[]}});
   });
-  await page.reload();
   await page.goto('/market/targets/');
   const filters=page.getByRole('navigation',{name:'目标行情策略筛选'});
-  await expect(filters).toContainText('突破开仓');
-  await expect(filters).not.toContainText('回调加仓');
-  await page.getByRole('button',{name:'检查开仓信号',exact:true}).click();
-  await expect(page.locator('.target-results')).toContainText('浦发银行');
-  await page.getByRole('button',{name:'更新已开仓监控',exact:true}).click();
+  await expect(filters).toContainText('突破观察组合');
+  await expect(filters).not.toContainText('停用组合');
+  await page.getByRole('button',{name:'扫描组合策略',exact:true}).click();
+  await expect(page.locator('.composite-results')).toContainText('浦发银行');
+  await expect(page.locator('.composite-results')).toContainText('突破观察组合');
+  await page.getByRole('button',{name:'更新已关注标的',exact:true}).click();
   await expect(page.locator('.target-monitor-panel')).toContainText('回调加仓');
-  await page.locator('.target-results').getByRole('button',{name:/浦发银行/}).click();
-  await expect(page.locator('.workbench-chart .chart-root')).toHaveAttribute('data-strategy-marker-count','1');
+  await page.locator('.composite-results').getByRole('button',{name:/浦发银行/}).click();
+  await expect(page).toHaveURL(/\/market\/instrument\/CN\.SSE\.STOCK\.600000\/?/);
+  await expect(page.locator('.workbench-chart .chart-root')).toBeVisible();
 });
