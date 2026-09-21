@@ -1,0 +1,59 @@
+/* MarketListener terminal structural tokens.
+ *
+ * These values intentionally mirror the existing desktop UI for a visually neutral
+ * first migration. Theme-specific colors continue to come from design/tokens.ts.
+ */
+:root {
+  --ml-space-1: 4px;
+  --ml-space-2: 6px;
+  --ml-space-3: 8px;
+  --ml-space-4: 12px;
+  --ml-space-5: 16px;
+  --ml-space-6: 20px;
+  --ml-space-8: 32px;
+
+  --ml-radius-control: 6px;
+  --ml-radius-panel: 8px;
+  --ml-radius-dialog: 10px;
+
+  --ml-control-height-dense: 28px;
+  --ml-control-height-standard: 32px;
+  --ml-line-height-dense: 1.25;
+  --ml-line-height-normal: 1.45;
+
+  --ml-motion-fast: 120ms;
+  --ml-motion-normal: 180ms;
+  --ml-motion-panel: 220ms;
+
+  --ml-focus-ring-width: 2px;
+  --ml-focus-ring-offset: 2px;
+
+  --ml-layer-sticky: 50;
+  --ml-layer-popover: 2000;
+  --ml-layer-modal: 3000;
+  --ml-layer-alert: 4000;
+}
+
+/* Keep keyboard focus visually distinct from hover/selected states. */
+:where(
+  button,
+  a[href],
+  input,
+  select,
+  textarea,
+  [tabindex]:not([tabindex="-1"])
+):focus-visible {
+  outline: var(--ml-focus-ring-width) solid var(--ml-accent);
+  outline-offset: var(--ml-focus-ring-offset);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
