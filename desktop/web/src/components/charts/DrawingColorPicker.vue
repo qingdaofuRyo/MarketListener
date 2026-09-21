@@ -151,6 +151,7 @@ function checkerboardColor(index: number): string {
   width: 24px;
   height: 24px;
   padding: 0;
+  border: 1px solid var(--ml-divider);
   border: 1px solid color-mix(in srgb, var(--ml-text-primary) 24%, transparent);
   border-radius: 3px;
   cursor: pointer;
