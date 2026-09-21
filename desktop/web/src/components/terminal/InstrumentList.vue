@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { ref } from 'vue';
+
 withDefaults(
   defineProps<{
     ariaLabel?: string;
@@ -18,9 +20,15 @@ withDefaults(
   },
 );
 
+const viewport = ref<HTMLDivElement>();
 const emit = defineEmits<{
   scroll: [event: Event];
+  wheel: [event: WheelEvent];
 }>();
+
+defineExpose({
+  getViewport: () => viewport.value,
+});
 </script>
 
 <template>
@@ -38,7 +46,12 @@ const emit = defineEmits<{
       <slot name="header" />
     </div>
 
-    <div class="instrument-list-frame__viewport" @scroll.passive="emit('scroll', $event)">
+    <div
+      ref="viewport"
+      class="instrument-list-frame__viewport"
+      @scroll.passive="emit('scroll', $event)"
+      @wheel="emit('wheel', $event)"
+    >
       <div
         v-if="topSpacer > 0"
         class="instrument-list-frame__spacer"
