@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { setup } from './chart-workbench-r4.spec';
+import { setupMarketWorkbench as setup } from './helpers/market-workbench';
 import { quoteFieldGroups } from '../src/domain/quoteFieldGroups';
 import { chartAxisGutter, CHART_LAYOUT } from '../src/domain/chartLayout';
 import { subchartSeries } from '../src/domain/chartSubchart';
