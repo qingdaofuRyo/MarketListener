@@ -1,9 +1,9 @@
 import { expect, test } from '@playwright/test';
-import { setup } from './chart-workbench-r4.spec';
+import { setupMarketWorkbench } from './helpers/market-workbench';
 import { quoteFieldGroups } from '../src/domain/quoteFieldGroups';
 
 test.beforeEach(async ({ page }) => {
-  await setup(page);
+  await setupMarketWorkbench(page);
 });
 
 test('R5 行情终端基线保持虚拟列表与 14 字段布局', async ({ page }) => {
