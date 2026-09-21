@@ -43,6 +43,39 @@ export interface Palette {
   heatExtremeLong: string;
 }
 
+/**
+ * Theme-independent terminal structure tokens.
+ *
+ * The initial values intentionally match the current UI so the first migration is
+ * visually neutral. Components can adopt these variables incrementally without
+ * changing the established TradingView-like workspace geometry or density.
+ */
+export const terminalTokens = {
+  space1: "4px",
+  space2: "6px",
+  space3: "8px",
+  space4: "12px",
+  space5: "16px",
+  space6: "20px",
+  space8: "32px",
+  radiusControl: "6px",
+  radiusPanel: "8px",
+  radiusDialog: "10px",
+  controlHeightDense: "28px",
+  controlHeightStandard: "32px",
+  lineHeightDense: "1.25",
+  lineHeightNormal: "1.45",
+  motionFast: "120ms",
+  motionNormal: "180ms",
+  motionPanel: "220ms",
+  focusRingWidth: "2px",
+  focusRingOffset: "2px",
+  layerSticky: "50",
+  layerPopover: "2000",
+  layerModal: "3000",
+  layerAlert: "4000",
+} as const;
+
 export const palettes: Record<EffectiveTheme, Palette> = {
   dark: {
     background: "#0b0e14",
@@ -116,13 +149,20 @@ export const palettes: Record<EffectiveTheme, Palette> = {
   },
 };
 
+function toCssVariableName(name: string): string {
+  return name.replace(/[A-Z]/g, (char) => `-${char.toLowerCase()}`);
+}
+
+function applyTokenRecord(root: HTMLElement, values: object): void {
+  for (const [name, value] of Object.entries(values)) {
+    root.style.setProperty(`--ml-${toCssVariableName(name)}`, String(value));
+  }
+}
+
 export function applyTokens(theme: EffectiveTheme): void {
   const root = document.documentElement;
   root.dataset.theme = theme;
   root.classList.toggle("dark", theme === "dark");
-  const palette = palettes[theme];
-  for (const [name, value] of Object.entries(palette)) {
-    const variable = name.replace(/[A-Z]/g, (char) => `-${char.toLowerCase()}`);
-    root.style.setProperty(`--ml-${variable}`, value);
-  }
+  applyTokenRecord(root, palettes[theme]);
+  applyTokenRecord(root, terminalTokens);
 }
