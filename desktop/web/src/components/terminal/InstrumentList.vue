@@ -9,6 +9,7 @@ withDefaults(
     bottomSpacer?: number;
     rowHeight?: number;
     headerHeight?: number;
+    viewportClass?: string;
   }>(),
   {
     ariaLabel: '行情列表',
@@ -17,6 +18,7 @@ withDefaults(
     bottomSpacer: 0,
     rowHeight: 33,
     headerHeight: 30,
+    viewportClass: '',
   },
 );
 
@@ -48,7 +50,7 @@ defineExpose({
 
     <div
       ref="viewport"
-      class="instrument-list-frame__viewport"
+      :class="['instrument-list-frame__viewport', viewportClass]"
       @scroll.passive="emit('scroll', $event)"
       @wheel="emit('wheel', $event)"
     >
