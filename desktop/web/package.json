@@ -5,12 +5,12 @@
   "type": "module",
   "scripts": {
     "lint": "eslint",
-    "lint:ui": "eslint src/design src/components/terminal src/components/charts/QuoteValues.vue src/views/DataSourcesView.vue e2e/helpers/market-workbench.ts e2e/market-layout-r4-s4.spec.ts e2e/chart-workbench-r4.spec.ts e2e/ui-r5-baseline.spec.ts e2e/ui-r5-data-state.spec.ts vite.config.ts playwright.config.ts",
+    "lint:ui": "eslint src/design src/components/terminal src/components/charts/QuoteValues.vue src/views/DataSourcesView.vue e2e/helpers/market-workbench.ts e2e/market-layout-r4-s4.spec.ts e2e/chart-workbench-r4.spec.ts e2e/market-list-r4.spec.ts e2e/ui-r5-baseline.spec.ts e2e/ui-r5-data-state.spec.ts vite.config.ts playwright.config.ts",
     "typecheck": "vue-tsc --noEmit",
     "build": "vue-tsc --noEmit && vite build",
     "dev": "vite",
     "test:e2e": "playwright test",
-    "test:e2e:ui": "playwright test e2e/market-layout-r4-s4.spec.ts e2e/chart-workbench-r4.spec.ts e2e/ui-r5-baseline.spec.ts e2e/ui-r5-data-state.spec.ts --workers=1",
+    "test:e2e:ui": "playwright test e2e/market-layout-r4-s4.spec.ts e2e/chart-workbench-r4.spec.ts e2e/market-list-r4.spec.ts e2e/ui-r5-baseline.spec.ts e2e/ui-r5-data-state.spec.ts --workers=1",
     "verify:ui": "npm run lint:ui && npm run typecheck && vite build",
     "test": "npm run verify:ui"
   },
