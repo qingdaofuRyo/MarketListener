@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import DataState from "../components/terminal/DataState.vue";
 import { apiGet, formatAssetType, formatMarket as legacyMarketName, formatNumber, formatPeriod, formatTime } from "../domain/api";
 import { formatBytes, occupiedSources, share, type InventoryPayload } from "../domain/sourceDashboard";
 const data = ref<InventoryPayload | null>(null);
@@ -28,9 +29,13 @@ onBeforeUnmount(() => { disposed = true; });
 <template>
   <section class="source-dashboard">
     <div class="panel-title"><div><h1 class="page-title">数据源</h1><p class="page-note">本地数据盘点 · 沿用系统现有来源，不在此页手动切换</p></div><el-button :loading="loading" @click="load">刷新盘点</el-button></div>
-    <el-alert v-if="error" :title="error" type="error" :closable="false" />
-    <p v-if="loading" role="status">正在读取本地数据目录…</p>
-    <el-alert v-if="data?.storage?.available === false" title="本地行情清单尚未就绪，暂不能确认库存数量及来源。请稍后刷新。" type="warning" :closable="false" />
+    <DataState v-if="error" state="error" title="数据盘点加载失败" :detail="error">
+      <template #actions><el-button size="small" @click="load">重试</el-button></template>
+    </DataState>
+    <DataState v-else-if="loading && !data" state="loading" title="正在读取本地数据目录…" compact />
+    <DataState v-if="data?.storage?.available === false" state="unavailable" title="本地行情清单尚未就绪" detail="暂不能确认库存数量及来源，请稍后刷新。">
+      <template #actions><el-button size="small" @click="load">重新检查</el-button></template>
+    </DataState>
     <template v-if="data && data.storage?.available !== false">
       <div class="source-metrics">
         <article class="panel"><span>已登记行情文件容量</span><strong>{{ formatBytes(data.storage?.available ? data.storage.bytes : null) }}</strong><small>{{ data.storage?.files ?? '—' }} 个可读取文件 · 不含原始下载和缓存</small></article>
