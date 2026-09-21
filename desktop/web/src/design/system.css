@@ -34,6 +34,10 @@
   --ml-layer-alert: 4000;
 }
 
+.ml-numeric {
+  font-variant-numeric: tabular-nums;
+}
+
 /* Keep keyboard focus visually distinct from hover/selected states. */
 :where(
   button,
@@ -45,6 +49,22 @@
 ):focus-visible {
   outline: var(--ml-focus-ring-width) solid var(--ml-accent);
   outline-offset: var(--ml-focus-ring-offset);
+}
+
+/* Chrome 108 does not understand color-mix(). Keep basic borders/surfaces usable
+ * while newer browsers continue using the component-local progressive styles. */
+@supports not (color: color-mix(in srgb, #000 50%, transparent)) {
+  .row-main > span {
+    border-right: 1px solid var(--ml-divider);
+  }
+
+  .replay-preview {
+    background: var(--ml-background);
+  }
+
+  .drawing-color-popover .preset-grid button {
+    border-color: var(--ml-divider);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
