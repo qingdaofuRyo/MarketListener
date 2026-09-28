@@ -2,6 +2,7 @@ import { computed, ref, type Ref, watch } from "vue";
 import type { LongShortHeatWeightRange } from "../domain/futures";
 
 export const LONG_SHORT_HEAT_WEIGHT_KEY = "marketlistener.futures.longShortHeat.fundWeight";
+export const CONTRACT_TURNOVER_HEAT_WEIGHT_KEY = "marketlistener.futures.contractTurnoverHeat.turnoverWeight";
 
 function normalizeWeight(value: unknown, fallback: number, range: LongShortHeatWeightRange): number {
   const parsed = typeof value === "number" ? value : Number(value);
@@ -12,9 +13,9 @@ function normalizeWeight(value: unknown, fallback: number, range: LongShortHeatW
   return Math.round(Math.max(range.min, Math.min(range.max, stepped)) * 1e12) / 1e12;
 }
 
-function storedWeight(range: LongShortHeatWeightRange): number | null {
+function storedWeight(range: LongShortHeatWeightRange, storageKey: string): number | null {
   try {
-    const raw = localStorage.getItem(LONG_SHORT_HEAT_WEIGHT_KEY);
+    const raw = localStorage.getItem(storageKey);
     if (raw === null) return null;
     const value = Number(raw);
     return Number.isFinite(value) ? normalizeWeight(value, range.min, range) : null;
@@ -26,8 +27,9 @@ function storedWeight(range: LongShortHeatWeightRange): number | null {
 export function useLongShortHeatPreferences(
   defaultFundWeight: Ref<number>,
   weightRange: Ref<LongShortHeatWeightRange>,
+  storageKey = LONG_SHORT_HEAT_WEIGHT_KEY,
 ) {
-  const stored = storedWeight(weightRange.value);
+  const stored = storedWeight(weightRange.value, storageKey);
   const hasStoredPreference = ref(stored !== null);
   const fundWeight = ref(stored ?? normalizeWeight(defaultFundWeight.value, weightRange.value.min, weightRange.value));
   const breadthWeight = computed(() => Math.round((1 - fundWeight.value) * 100) / 100);
@@ -42,7 +44,7 @@ export function useLongShortHeatPreferences(
 
   function persist(): void {
     try {
-      localStorage.setItem(LONG_SHORT_HEAT_WEIGHT_KEY, String(fundWeight.value));
+      localStorage.setItem(storageKey, String(fundWeight.value));
       hasStoredPreference.value = true;
     } catch {
       // Browsers may disable local storage; the current-session value remains usable.

@@ -1,7 +1,7 @@
 import { expect, type Page } from '@playwright/test';
 
-const id = 'CN.SSE.STOCK.600000';
-const bars = Array.from({ length: 80 }, (_, i) => ({
+export const id = 'CN.SSE.STOCK.600000';
+export const bars = Array.from({ length: 80 }, (_, i) => ({
   barOpenTime: new Date(Date.UTC(2026, 5, i + 1)).toISOString(),
   open: 12 + Math.sin(i / 8),
   high: 13 + Math.sin(i / 8),

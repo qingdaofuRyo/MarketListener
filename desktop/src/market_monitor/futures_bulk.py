@@ -93,7 +93,8 @@ def decode_lc5_day(value: int) -> str:
 
 def read_tdx_file(path: Path, *, start_offset: int = 0) -> list[dict[str, Any]]:
     """Read a stable snapshot of one standard 32-byte TDX Futures file."""
-    size_before = path.stat().st_size
+    stat_before = path.stat()
+    size_before = stat_before.st_size
     if size_before % 32:
         raise ValueError(f"文件长度不是32字节倍数: {path.name}")
     if start_offset < 0 or start_offset > size_before or start_offset % 32:
@@ -101,7 +102,8 @@ def read_tdx_file(path: Path, *, start_offset: int = 0) -> list[dict[str, Any]]:
     with path.open("rb") as stream:
         stream.seek(start_offset)
         payload = stream.read()
-    if path.stat().st_size != size_before:
+    stat_after = path.stat()
+    if (stat_after.st_size, stat_after.st_mtime_ns) != (size_before, stat_before.st_mtime_ns):
         raise RuntimeError(f"期货通正在写入，稍后重试: {path.name}")
     suffix = path.suffix.lower()
     rows: list[dict[str, Any]] = []
@@ -266,6 +268,7 @@ def _incremental_offset(old: Mapping[str, Any] | None, size: int, *, full_rescan
 def _tdx_rows(
     root: Path, state: dict[str, Any], *, full_rescan: bool, emit: Callable[[list[dict[str, Any]]], int],
     checkpoint: Callable[[Mapping[str, Any]], None] | None = None,
+    start_date: str | None = None, end_date: str | None = None,
 ) -> tuple[int, dict[str, Any], list[str]]:
     metadata = _metadata(root)
     written = 0
@@ -306,6 +309,9 @@ def _tdx_rows(
                 errors.append(f"{path.name}:{type(error).__name__}")
                 continue
             next_files[relative] = _file_signature(path, records)
+            if start_date or end_date:
+                records = [r for r in records if (not start_date or r["day"] >= start_date)
+                           and (not end_date or r["day"] <= end_date)]
             period = "1d" if path.suffix.lower() == ".day" else "5m"
             # 通达信期货通的本地连续合约缓存可能带有零散的更早分钟
             # 历史；桌面项目仅保留完整覆盖开始日之后的 5 分钟数据。
@@ -478,6 +484,8 @@ def _ak_indexes(api: Any, errors: list[str]) -> list[dict[str, Any]]:
 def _ak_global(api: Any, errors: list[str]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for symbol, name, exchange in _GLOBAL_CONTINUOUS:
+        if symbol.endswith("00Y"):
+            continue  # User-retired source series must not return via fallback.
         try:
             frame = api.futures_global_hist_em(symbol=symbol)
         except Exception as error:
@@ -521,10 +529,20 @@ def _ak_global(api: Any, errors: list[str]) -> list[dict[str, Any]]:
 def run_bulk_futures(
     data_root: Path, *, tdx_futures_root: Path | None = None, include_domestic: bool = True,
     include_global: bool = True, include_akshare: bool = True, full_rescan: bool = False, api: Any | None = None,
+    start_date: str | None = None, end_date: str | None = None,
 ) -> dict[str, Any]:
     """Import all available local domestic series and the curated AKShare set."""
     data_root = Path(data_root)
+    for bound in (start_date, end_date):
+        if bound is not None and date.fromisoformat(bound).isoformat() != bound:
+            raise ValueError("日期必须为YYYY-MM-DD")
+    if start_date and end_date and start_date > end_date:
+        raise ValueError("开始日期不能晚于结束日期")
+    if (start_date or end_date) and include_akshare:
+        raise ValueError("日期限定仅用于本地文件导入")
     state_path = data_root / "state" / "futures_import.json"
+    if start_date or end_date:
+        state_path = state_path.with_name(f"futures_import_{start_date or 'begin'}_{end_date or 'latest'}.json")
     catalog_path = data_root / "state" / "futures_catalog.json"
     state = _load_state(state_path)
     errors: list[str] = []
@@ -540,6 +558,7 @@ def run_bulk_futures(
         try:
             local_written, next_state, local_errors = _tdx_rows(
                 tdx_root, state, full_rescan=full_rescan,
+                start_date=start_date, end_date=end_date,
                 emit=lambda rows: _partition_writes(
                     store,
                     tdx_run_id,

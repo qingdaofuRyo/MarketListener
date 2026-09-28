@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import os
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,6 +17,9 @@ import duckdb
 
 from .market_data_version import advance_market_data_version, market_data_version
 from .market_query_cache import apply_kline_cache_update
+
+
+_SCHEMA_INIT_LOCK = threading.RLock()
 
 
 @dataclass(frozen=True)
@@ -42,7 +46,8 @@ class MarketStore:
         self.root = root
         self.root.mkdir(parents=True, exist_ok=True)
         self.connection = duckdb.connect(str(root / "catalog.duckdb"))
-        self._create_schema()
+        with _SCHEMA_INIT_LOCK:
+            self._create_schema()
 
     def close(self) -> None:
         self.connection.close()
@@ -317,6 +322,150 @@ class MarketStore:
             raise
         return len(values)
 
+    def record_futures_official_daily(
+        self, rows: Sequence[Mapping[str, Any]], coverage: Mapping[str, Any]
+    ) -> int:
+        """Keep one exchange/day's normalized daily facts and source result isolated."""
+
+        day = str(coverage["trade_date"])
+        exchange = str(coverage["exchange"])
+        adapter = str(coverage["adapter"])
+        if coverage["status"] not in {"PASS", "FAILED", "UNSUPPORTED", "NO_PUBLICATION", "DEFERRED"}:
+            raise ValueError("invalid official futures daily coverage status")
+        if coverage["status"] == "PASS" and not rows:
+            raise ValueError("PASS coverage requires normalized daily rows")
+        if any(
+            row["trade_date"] != day or row["exchange"] != exchange or row["adapter"] != adapter
+            for row in rows
+        ):
+            raise ValueError("official futures daily rows must belong to one source day")
+        if coverage["status"] != "PASS" and rows:
+            raise ValueError("failed official source cannot publish normalized rows")
+        columns = _OFFICIAL_FUTURES_DAILY_COLUMNS
+        coverage_columns = _OFFICIAL_FUTURES_DAILY_COVERAGE_COLUMNS
+        prepared_rows = [
+            {
+                **row,
+                "volume_sidedness": row.get("volume_sidedness"),
+                "open_interest_sidedness": row.get("open_interest_sidedness"),
+                "turnover_quality_status": row.get("turnover_quality_status") or (
+                    "PASS" if row.get("turnover_cny") is not None else "UNVERIFIED"
+                ),
+                "parser_version": row.get("parser_version") or str(row["adapter"]),
+            }
+            for row in rows
+        ]
+        try:
+            self.connection.execute("BEGIN TRANSACTION")
+            if coverage["status"] == "PASS":
+                self.connection.execute(
+                    "DELETE FROM futures_contract_daily_official WHERE trade_date=? AND exchange=? AND adapter=?",
+                    [day, exchange, adapter],
+                )
+                self.connection.executemany(
+                    "INSERT INTO futures_contract_daily_official (" + ", ".join(columns) + ") VALUES ("
+                    + ", ".join("?" for _ in columns) + ")",
+                    [[row[column] for column in columns] for row in prepared_rows],
+                )
+            self.connection.execute(
+                "INSERT INTO futures_contract_daily_official_coverage ("
+                + ", ".join(coverage_columns) + ") VALUES ("
+                + ", ".join("?" for _ in coverage_columns) + ") "
+                "ON CONFLICT(trade_date, exchange, adapter) DO UPDATE SET "
+                + ", ".join(
+                    f"{column}=excluded.{column}" for column in coverage_columns
+                    if column not in {"trade_date", "exchange", "adapter"}
+                ),
+                [coverage[column] for column in coverage_columns],
+            )
+            self.connection.execute("COMMIT")
+        except Exception:
+            self.connection.execute("ROLLBACK")
+            raise
+        return len(rows)
+
+    def list_futures_official_daily(
+        self, *, start_day: str | None = None, end_day: str | None = None
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        parameters: list[str] = []
+        if start_day is not None:
+            clauses.append("trade_date >= ?")
+            parameters.append(start_day)
+        if end_day is not None:
+            clauses.append("trade_date <= ?")
+            parameters.append(end_day)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        columns = _OFFICIAL_FUTURES_DAILY_COLUMNS
+        rows = self.connection.execute(
+            "SELECT " + ", ".join(columns) + " FROM futures_contract_daily_official"
+            + where + " ORDER BY trade_date, exchange, contract_code",
+            parameters,
+        ).fetchall()
+        return [dict(zip(columns, row, strict=True)) for row in rows]
+
+    def list_futures_official_daily_coverage(
+        self, *, start_day: str | None = None, end_day: str | None = None
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        parameters: list[str] = []
+        if start_day is not None:
+            clauses.append("trade_date >= ?")
+            parameters.append(start_day)
+        if end_day is not None:
+            clauses.append("trade_date <= ?")
+            parameters.append(end_day)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        columns = _OFFICIAL_FUTURES_DAILY_COVERAGE_COLUMNS
+        rows = self.connection.execute(
+            "SELECT " + ", ".join(columns) + " FROM futures_contract_daily_official_coverage"
+            + where + " ORDER BY trade_date, exchange",
+            parameters,
+        ).fetchall()
+        return [dict(zip(columns, row, strict=True)) for row in rows]
+
+    def replace_futures_contract_turnover_heat(
+        self, rows: Sequence[Mapping[str, Any]], *, formula_version: str
+    ) -> int:
+        if not formula_version or any(row["formula_version"] != formula_version for row in rows):
+            raise ValueError("all contract turnover heat rows must use one formula_version")
+        columns = _FUTURES_CONTRACT_TURNOVER_HEAT_COLUMNS
+        try:
+            self.connection.execute("BEGIN TRANSACTION")
+            self.connection.execute(
+                "DELETE FROM futures_contract_turnover_heat_daily WHERE formula_version=?", [formula_version]
+            )
+            if rows:
+                self.connection.executemany(
+                    "INSERT INTO futures_contract_turnover_heat_daily (" + ", ".join(columns) + ") VALUES ("
+                    + ", ".join("?" for _ in columns) + ")",
+                    [[row[column] for column in columns] for row in rows],
+                )
+            self.connection.execute("COMMIT")
+        except Exception:
+            self.connection.execute("ROLLBACK")
+            raise
+        return len(rows)
+
+    def list_futures_contract_turnover_heat(
+        self, *, formula_version: str, start_day: str | None = None, end_day: str | None = None
+    ) -> list[dict[str, Any]]:
+        clauses = ["formula_version = ?"]
+        parameters = [formula_version]
+        if start_day is not None:
+            clauses.append("trade_date >= ?")
+            parameters.append(start_day)
+        if end_day is not None:
+            clauses.append("trade_date <= ?")
+            parameters.append(end_day)
+        columns = _FUTURES_CONTRACT_TURNOVER_HEAT_COLUMNS
+        rows = self.connection.execute(
+            "SELECT " + ", ".join(columns) + " FROM futures_contract_turnover_heat_daily WHERE "
+            + " AND ".join(clauses) + " ORDER BY trade_date",
+            parameters,
+        ).fetchall()
+        return [dict(zip(columns, row, strict=True)) for row in rows]
+
     def replace_futures_structure_daily(
         self,
         rows: Sequence[Mapping[str, Any]],
@@ -443,12 +592,58 @@ class MarketStore:
             for row in cursor.fetchall()
         ]
 
+    def replace_futures_structure_input_coverage(
+        self, rows: Sequence[Mapping[str, Any]], *, chart_id: str, formula_version: str,
+    ) -> int:
+        columns = _FUTURES_STRUCTURE_INPUT_COVERAGE_COLUMNS
+        prepared = [
+            {
+                **row,
+                "missing_volume_count": int(row.get("missing_volume_count") or 0),
+                "missing_exchange_count": int(row.get("missing_exchange_count") or 0),
+                "missing_exchanges_json": row.get("missing_exchanges_json") or "[]",
+                "unverified_volume_count": int(row.get("unverified_volume_count") or 0),
+                "unverified_open_interest_count": int(row.get("unverified_open_interest_count") or 0),
+                "quality_status": row.get("quality_status") or "PARTIAL",
+            }
+            for row in rows
+        ]
+        try:
+            self.connection.execute("BEGIN TRANSACTION")
+            self.connection.execute(
+                "DELETE FROM futures_structure_input_coverage WHERE chart_id=? AND formula_version=?",
+                [chart_id, formula_version],
+            )
+            if prepared:
+                self.connection.executemany(
+                    "INSERT INTO futures_structure_input_coverage (" + ", ".join(columns) + ") VALUES ("
+                    + ", ".join("?" for _ in columns) + ")",
+                    [[row[column] for column in columns] for row in prepared],
+                )
+            self.connection.execute("COMMIT")
+        except Exception:
+            self.connection.execute("ROLLBACK")
+            raise
+        return len(rows)
+
+    def list_futures_structure_input_coverage(
+        self, *, chart_id: str, formula_version: str,
+    ) -> list[dict[str, Any]]:
+        columns = _FUTURES_STRUCTURE_INPUT_COVERAGE_COLUMNS
+        rows = self.connection.execute(
+            "SELECT " + ", ".join(columns) + " FROM futures_structure_input_coverage "
+            "WHERE chart_id=? AND formula_version=? ORDER BY trade_date",
+            [chart_id, formula_version],
+        ).fetchall()
+        return [dict(zip(columns, row, strict=True)) for row in rows]
+
     def upsert_futures_member_position_ranks(self, rows: Sequence[Mapping[str, Any]]) -> int:
         """Persist exchange-published rank rows without inventing absent directions."""
 
         if not rows:
             return 0
-        for row in rows:
+        prepared = [_member_rank_with_provenance(row) for row in rows]
+        for row in prepared:
             _validate_futures_member_position_rank(row)
         columns = _FUTURES_MEMBER_POSITION_RANK_COLUMNS
         placeholders = ", ".join("?" for _ in columns)
@@ -460,7 +655,7 @@ class MarketStore:
         self.connection.executemany(
             f"""INSERT INTO futures_member_position_ranks ({', '.join(columns)}) VALUES ({placeholders})
             ON CONFLICT(trading_day, exchange, contract_code, side, rank, source) DO UPDATE SET {updates}""",
-            [[row[column] for column in columns] for row in rows],
+            [[row[column] for column in columns] for row in prepared],
         )
         self.connection.commit()
         return len(rows)
@@ -499,6 +694,7 @@ class MarketStore:
         exchange: str | None = None,
         contract_code: str | None = None,
         product_code: str | None = None,
+        member_key: str | None = None,
         commodity_only: bool = True,
     ) -> list[dict[str, Any]]:
         """Read raw published rank rows; this never derives missing rankings as zero."""
@@ -517,6 +713,9 @@ class MarketStore:
         if product_code is not None:
             clauses.append("product_code = ?")
             parameters.append(product_code)
+        if member_key is not None:
+            clauses.append("member_key = ?")
+            parameters.append(member_key)
         if commodity_only:
             clauses.append("exchange <> 'CFFEX'")
         where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
@@ -541,7 +740,8 @@ class MarketStore:
 
         if not rows:
             return 0
-        for row in rows:
+        prepared = [_member_coverage_with_provenance(row) for row in rows]
+        for row in prepared:
             _validate_futures_member_position_coverage(row)
         columns = _FUTURES_MEMBER_POSITION_COVERAGE_COLUMNS
         placeholders = ", ".join("?" for _ in columns)
@@ -553,7 +753,7 @@ class MarketStore:
         self.connection.executemany(
             f"""INSERT INTO futures_member_position_coverage ({', '.join(columns)}) VALUES ({placeholders})
             ON CONFLICT(trading_day, exchange, source) DO UPDATE SET {updates}""",
-            [[row[column] for column in columns] for row in rows],
+            [[row[column] for column in columns] for row in prepared],
         )
         self.connection.commit()
         return len(rows)
@@ -588,6 +788,52 @@ class MarketStore:
             dict(zip(_FUTURES_MEMBER_POSITION_COVERAGE_COLUMNS, row, strict=True))
             for row in cursor.fetchall()
         ]
+
+    def upsert_futures_member_trade_ranks(self, rows: Sequence[Mapping[str, Any]]) -> int:
+        """Persist the exchange's member volume leaderboard separately from positions."""
+
+        if not rows:
+            return 0
+        prepared = [_member_trade_rank_with_provenance(row) for row in rows]
+        for row in prepared:
+            _validate_futures_member_trade_rank(row)
+        columns = _FUTURES_MEMBER_TRADE_RANK_COLUMNS
+        updates = ", ".join(
+            f"{column}=excluded.{column}" for column in columns
+            if column not in {"trading_day", "exchange", "contract_code", "rank", "member_key", "source"}
+        )
+        self.connection.executemany(
+            f"INSERT INTO futures_member_trade_ranks ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)}) "
+            "ON CONFLICT(trading_day, exchange, contract_code, rank, member_key, source) DO UPDATE SET " + updates,
+            [[row[column] for column in columns] for row in prepared],
+        )
+        self.connection.commit()
+        return len(rows)
+
+    def list_futures_member_trade_ranks(
+        self, *, trading_day: str | None = None, exchange: str | None = None,
+        product_code: str | None = None, contract_code: str | None = None,
+        member_key: str | None = None, commodity_only: bool = False,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        parameters: list[str] = []
+        for column, value in (
+            ("trading_day", trading_day), ("exchange", exchange),
+            ("product_code", product_code), ("contract_code", contract_code),
+            ("member_key", member_key),
+        ):
+            if value is not None:
+                clauses.append(f"{column}=?")
+                parameters.append(value)
+        if commodity_only:
+            clauses.append("exchange <> 'CFFEX'")
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        cursor = self.connection.execute(
+            f"SELECT {', '.join(_FUTURES_MEMBER_TRADE_RANK_COLUMNS)} FROM futures_member_trade_ranks{where} "
+            "ORDER BY trading_day, exchange, contract_code, rank, member_key",
+            parameters,
+        )
+        return [dict(zip(_FUTURES_MEMBER_TRADE_RANK_COLUMNS, row, strict=True)) for row in cursor.fetchall()]
 
     def _atomic_json(self, target: Path, data: Any) -> None:
         staging = target.with_suffix(f".{uuid4().hex}.json")
@@ -624,9 +870,11 @@ class MarketStore:
             )"""
         )
         self._ensure_futures_long_short_heat_schema()
+        self._ensure_futures_contract_turnover_schema()
         self._ensure_futures_structure_schema()
         self._ensure_futures_member_position_rank_schema()
         self._ensure_futures_member_position_coverage_schema()
+        self._ensure_futures_member_trade_rank_schema()
 
     def _ensure_futures_long_short_heat_schema(self) -> None:
         table_name = "futures_long_short_heat_daily"
@@ -665,6 +913,98 @@ class MarketStore:
             self.connection.execute("ROLLBACK")
             raise
 
+    def _ensure_futures_contract_turnover_schema(self) -> None:
+        self.connection.execute(
+            """CREATE TABLE IF NOT EXISTS futures_contract_daily_official (
+                trade_date VARCHAR NOT NULL, exchange VARCHAR NOT NULL,
+                contract_code VARCHAR NOT NULL, product_code VARCHAR NOT NULL,
+                close DOUBLE, settlement DOUBLE,
+                volume DOUBLE, open_interest DOUBLE, turnover_raw DOUBLE,
+                turnover_cny DOUBLE, turnover_unit VARCHAR,
+                turnover_sidedness VARCHAR, source_url VARCHAR NOT NULL,
+                adapter VARCHAR NOT NULL, payload_sha256 VARCHAR NOT NULL,
+                retrieved_at VARCHAR NOT NULL, quality_status VARCHAR NOT NULL,
+                volume_sidedness VARCHAR, open_interest_sidedness VARCHAR,
+                turnover_quality_status VARCHAR,
+                parser_version VARCHAR,
+                PRIMARY KEY(trade_date, exchange, contract_code, adapter)
+            )"""
+        )
+        column_info = self.connection.execute(
+            "PRAGMA table_info('futures_contract_daily_official')"
+        ).fetchall()
+        existing_columns = {str(row[1]) for row in column_info}
+        not_null_columns = {str(row[1]) for row in column_info if bool(row[3])}
+        if "open_interest" not in existing_columns:
+            self.connection.execute(
+                "ALTER TABLE futures_contract_daily_official ADD COLUMN open_interest DOUBLE"
+            )
+        for column in ("close", "turnover_raw", "turnover_cny", "turnover_unit", "turnover_sidedness"):
+            if column in not_null_columns:
+                self.connection.execute(
+                    f"ALTER TABLE futures_contract_daily_official ALTER COLUMN {column} DROP NOT NULL"
+                )
+        added_columns: set[str] = set()
+        for column in ("volume_sidedness", "open_interest_sidedness", "turnover_quality_status", "parser_version"):
+            if column not in existing_columns:
+                self.connection.execute(
+                    f"ALTER TABLE futures_contract_daily_official ADD COLUMN {column} VARCHAR"
+                )
+                added_columns.add(column)
+        if "turnover_quality_status" in added_columns:
+            self.connection.execute(
+                "UPDATE futures_contract_daily_official SET turnover_quality_status="
+                "CASE WHEN turnover_cny IS NOT NULL THEN 'PASS' ELSE 'UNVERIFIED' END "
+                "WHERE turnover_quality_status IS NULL"
+            )
+        if "parser_version" in added_columns:
+            self.connection.execute(
+                "UPDATE futures_contract_daily_official SET parser_version=adapter "
+                "WHERE parser_version IS NULL"
+            )
+        self.connection.execute(
+            """CREATE TABLE IF NOT EXISTS futures_contract_daily_official_coverage (
+                trade_date VARCHAR NOT NULL, exchange VARCHAR NOT NULL,
+                status VARCHAR NOT NULL, record_count INTEGER NOT NULL,
+                usable_count INTEGER NOT NULL, adapter VARCHAR NOT NULL,
+                source_url VARCHAR NOT NULL, payload_sha256 VARCHAR,
+                error VARCHAR, retrieved_at VARCHAR NOT NULL,
+                PRIMARY KEY(trade_date, exchange, adapter)
+            )"""
+        )
+        self.connection.execute(
+            """CREATE TABLE IF NOT EXISTS futures_contract_turnover_heat_daily (
+                formula_version VARCHAR NOT NULL, trade_date VARCHAR NOT NULL,
+                total_contract_count INTEGER NOT NULL,
+                valid_contract_count INTEGER NOT NULL,
+                missing_direction_count INTEGER NOT NULL,
+                up_contract_count INTEGER NOT NULL,
+                down_contract_count INTEGER NOT NULL,
+                flat_contract_count INTEGER NOT NULL,
+                turnover_valid_contract_count INTEGER NOT NULL,
+                turnover_missing_contract_count INTEGER NOT NULL,
+                up_turnover_cny DOUBLE NOT NULL,
+                down_turnover_cny DOUBLE NOT NULL,
+                flat_turnover_cny DOUBLE NOT NULL,
+                total_deposit_cny DOUBLE,
+                direction_coverage DOUBLE NOT NULL,
+                turnover_coverage DOUBLE NOT NULL,
+                deposit_coverage DOUBLE NOT NULL,
+                count_score_daily DOUBLE,
+                turnover_score_daily DOUBLE,
+                count_score_10d DOUBLE,
+                turnover_score_10d DOUBLE,
+                divergence DOUBLE,
+                is_warmup BOOLEAN NOT NULL,
+                data_quality_status VARCHAR NOT NULL,
+                missing_exchanges_json VARCHAR NOT NULL,
+                source_cutoff VARCHAR NOT NULL,
+                calculation_method VARCHAR NOT NULL,
+                calculated_at VARCHAR NOT NULL,
+                PRIMARY KEY(formula_version, trade_date)
+            )"""
+        )
+
     def _ensure_futures_structure_schema(self) -> None:
         self.connection.execute(
             """CREATE TABLE IF NOT EXISTS futures_structure_daily (
@@ -701,6 +1041,56 @@ class MarketStore:
                 PRIMARY KEY(chart_id, direction, formula_version)
             )"""
         )
+        self.connection.execute(
+            """CREATE TABLE IF NOT EXISTS futures_structure_input_coverage (
+                chart_id VARCHAR NOT NULL, direction VARCHAR NOT NULL,
+                formula_version VARCHAR NOT NULL, trade_date VARCHAR NOT NULL,
+                input_contract_count INTEGER NOT NULL,
+                missing_settlement_count INTEGER NOT NULL,
+                missing_open_interest_count INTEGER NOT NULL,
+                missing_multiplier_count INTEGER NOT NULL,
+                missing_products_json VARCHAR NOT NULL,
+                missing_contracts_json VARCHAR NOT NULL,
+                missing_volume_count INTEGER NOT NULL DEFAULT 0,
+                missing_exchange_count INTEGER NOT NULL DEFAULT 0,
+                missing_exchanges_json VARCHAR NOT NULL DEFAULT '[]',
+                unverified_volume_count INTEGER NOT NULL DEFAULT 0,
+                unverified_open_interest_count INTEGER NOT NULL DEFAULT 0,
+                quality_status VARCHAR NOT NULL DEFAULT 'PARTIAL',
+                source VARCHAR NOT NULL, calculated_at VARCHAR NOT NULL,
+                PRIMARY KEY(chart_id, direction, formula_version, trade_date)
+            )"""
+        )
+        existing_coverage_columns = {
+            str(row[1]) for row in self.connection.execute(
+                "PRAGMA table_info('futures_structure_input_coverage')"
+            ).fetchall()
+        }
+        extra_coverage_columns = {
+            "missing_volume_count": "INTEGER",
+            "missing_exchange_count": "INTEGER",
+            "missing_exchanges_json": "VARCHAR",
+            "unverified_volume_count": "INTEGER",
+            "unverified_open_interest_count": "INTEGER",
+            "quality_status": "VARCHAR",
+        }
+        added_coverage_columns = False
+        for column, definition in extra_coverage_columns.items():
+            if column not in existing_coverage_columns:
+                self.connection.execute(
+                    f"ALTER TABLE futures_structure_input_coverage ADD COLUMN {column} {definition}"
+                )
+                added_coverage_columns = True
+        if added_coverage_columns:
+            self.connection.execute(
+                "UPDATE futures_structure_input_coverage SET "
+                "missing_volume_count=coalesce(missing_volume_count, 0), "
+                "missing_exchange_count=coalesce(missing_exchange_count, 0), "
+                "missing_exchanges_json=coalesce(missing_exchanges_json, '[]'), "
+                "unverified_volume_count=coalesce(unverified_volume_count, 0), "
+                "unverified_open_interest_count=coalesce(unverified_open_interest_count, 0), "
+                "quality_status=coalesce(quality_status, 'PARTIAL')"
+            )
 
     def _ensure_futures_member_position_rank_schema(self) -> None:
         self.connection.execute(
@@ -717,9 +1107,17 @@ class MarketStore:
                 position_change DOUBLE,
                 source VARCHAR NOT NULL,
                 collected_at VARCHAR NOT NULL,
+                publisher VARCHAR,
+                source_url VARCHAR,
+                adapter VARCHAR,
+                retrieved_at VARCHAR,
+                payload_sha256 VARCHAR,
+                quality_status VARCHAR,
+                legacy_adapter VARCHAR,
                 PRIMARY KEY(trading_day, exchange, contract_code, side, rank, source)
             )"""
         )
+        self._ensure_member_position_provenance_columns("futures_member_position_ranks")
 
     def _ensure_futures_member_position_coverage_schema(self) -> None:
         self.connection.execute(
@@ -732,10 +1130,82 @@ class MarketStore:
                 source VARCHAR NOT NULL,
                 error VARCHAR,
                 collected_at VARCHAR NOT NULL,
+                publisher VARCHAR,
+                source_url VARCHAR,
+                adapter VARCHAR,
+                retrieved_at VARCHAR,
+                payload_sha256 VARCHAR,
+                quality_status VARCHAR,
+                legacy_adapter VARCHAR,
                 PRIMARY KEY(trading_day, exchange, source)
             )"""
         )
+        self._ensure_member_position_provenance_columns("futures_member_position_coverage")
 
+    def _ensure_futures_member_trade_rank_schema(self) -> None:
+        self.connection.execute(
+            """CREATE TABLE IF NOT EXISTS futures_member_trade_ranks (
+                trading_day VARCHAR NOT NULL, exchange VARCHAR NOT NULL,
+                contract_code VARCHAR NOT NULL, product_code VARCHAR NOT NULL,
+                rank INTEGER NOT NULL, member_key VARCHAR NOT NULL, member_name VARCHAR NOT NULL,
+                volume DOUBLE NOT NULL, volume_change DOUBLE, source VARCHAR NOT NULL,
+                collected_at VARCHAR NOT NULL, publisher VARCHAR, source_url VARCHAR,
+                adapter VARCHAR, retrieved_at VARCHAR, payload_sha256 VARCHAR,
+                quality_status VARCHAR, legacy_adapter VARCHAR,
+                PRIMARY KEY(trading_day, exchange, contract_code, rank, member_key, source)
+            )"""
+        )
+        self._ensure_member_position_provenance_columns("futures_member_trade_ranks")
+
+    def _ensure_member_position_provenance_columns(self, table: str) -> None:
+        columns = {
+            str(row[1]) for row in self.connection.execute(f"PRAGMA table_info('{table}')").fetchall()
+        }
+        for column in _FUTURES_MEMBER_POSITION_PROVENANCE_COLUMNS:
+            if column not in columns:
+                self.connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} VARCHAR")
+        self.connection.execute(
+            f"UPDATE {table} SET publisher=exchange WHERE publisher IS NULL"
+        )
+        self.connection.execute(
+            f"UPDATE {table} SET adapter=source WHERE adapter IS NULL"
+        )
+        self.connection.execute(
+            f"UPDATE {table} SET retrieved_at=collected_at WHERE retrieved_at IS NULL"
+        )
+        self.connection.execute(
+            f"UPDATE {table} SET legacy_adapter=source "
+            "WHERE legacy_adapter IS NULL AND source LIKE 'akshare-%'"
+        )
+        self.connection.execute(
+            f"UPDATE {table} SET quality_status="
+            "CASE WHEN source LIKE 'akshare-%' THEN 'LEGACY_WRAPPED' ELSE 'UNVERIFIED' END "
+            "WHERE quality_status IS NULL"
+        )
+
+
+_OFFICIAL_FUTURES_DAILY_COLUMNS = (
+    "trade_date", "exchange", "contract_code", "product_code", "close", "settlement",
+    "volume", "open_interest", "turnover_raw", "turnover_cny", "turnover_unit", "turnover_sidedness",
+    "source_url", "adapter", "payload_sha256", "retrieved_at", "quality_status",
+    "volume_sidedness", "open_interest_sidedness", "turnover_quality_status", "parser_version",
+)
+
+_OFFICIAL_FUTURES_DAILY_COVERAGE_COLUMNS = (
+    "trade_date", "exchange", "status", "record_count", "usable_count", "adapter",
+    "source_url", "payload_sha256", "error", "retrieved_at",
+)
+
+_FUTURES_CONTRACT_TURNOVER_HEAT_COLUMNS = (
+    "formula_version", "trade_date", "total_contract_count", "valid_contract_count",
+    "missing_direction_count", "up_contract_count", "down_contract_count", "flat_contract_count",
+    "turnover_valid_contract_count", "turnover_missing_contract_count", "up_turnover_cny",
+    "down_turnover_cny", "flat_turnover_cny", "total_deposit_cny", "direction_coverage",
+    "turnover_coverage", "deposit_coverage", "count_score_daily", "turnover_score_daily",
+    "count_score_10d", "turnover_score_10d", "divergence", "is_warmup",
+    "data_quality_status", "missing_exchanges_json", "source_cutoff", "calculation_method",
+    "calculated_at",
+)
 
 _FUTURES_LONG_SHORT_HEAT_COLUMNS = (
     "trade_date",
@@ -872,6 +1342,15 @@ _FUTURES_STRUCTURE_DAILY_COLUMNS = (
     "calculated_at",
 )
 
+_FUTURES_STRUCTURE_INPUT_COVERAGE_COLUMNS = (
+    "chart_id", "direction", "formula_version", "trade_date",
+    "input_contract_count", "missing_settlement_count",
+    "missing_open_interest_count", "missing_multiplier_count",
+    "missing_products_json", "missing_contracts_json", "source", "calculated_at",
+    "missing_volume_count", "missing_exchange_count", "missing_exchanges_json",
+    "unverified_volume_count", "unverified_open_interest_count", "quality_status",
+)
+
 
 def _validate_futures_structure_row(row: Mapping[str, Any]) -> None:
     missing = [column for column in _FUTURES_STRUCTURE_DAILY_COLUMNS if column not in row]
@@ -912,8 +1391,8 @@ def _validate_futures_structure_baseline(row: Mapping[str, Any]) -> None:
         if not isinstance(row[field], str) or not row[field].strip():
             raise ValueError(f"{field} must be a non-empty string")
     threshold = _finite_number(row["threshold"], "threshold")
-    if not 0 < threshold < 1:
-        raise ValueError("threshold must be between 0 and 1")
+    if not 0 <= threshold < 1:
+        raise ValueError("threshold must be between 0 and 1, with zero for rank-based selection")
     for field in ("stack_order", "primary_members", "other_members"):
         if not isinstance(row[field], list):
             raise ValueError(f"{field} must be a list")
@@ -945,6 +1424,11 @@ def _futures_structure_baseline_dict(row: Sequence[Any]) -> dict[str, Any]:
     }
 
 
+_FUTURES_MEMBER_POSITION_PROVENANCE_COLUMNS = (
+    "publisher", "source_url", "adapter", "retrieved_at",
+    "payload_sha256", "quality_status", "legacy_adapter",
+)
+
 _FUTURES_MEMBER_POSITION_RANK_COLUMNS = (
     "trading_day",
     "exchange",
@@ -958,6 +1442,7 @@ _FUTURES_MEMBER_POSITION_RANK_COLUMNS = (
     "position_change",
     "source",
     "collected_at",
+    *_FUTURES_MEMBER_POSITION_PROVENANCE_COLUMNS,
 )
 
 _FUTURES_MEMBER_POSITION_COVERAGE_COLUMNS = (
@@ -969,7 +1454,39 @@ _FUTURES_MEMBER_POSITION_COVERAGE_COLUMNS = (
     "source",
     "error",
     "collected_at",
+    *_FUTURES_MEMBER_POSITION_PROVENANCE_COLUMNS,
 )
+
+_FUTURES_MEMBER_TRADE_RANK_COLUMNS = (
+    "trading_day", "exchange", "contract_code", "product_code", "rank",
+    "member_key", "member_name", "volume", "volume_change", "source", "collected_at",
+    *_FUTURES_MEMBER_POSITION_PROVENANCE_COLUMNS,
+)
+
+
+def _member_rank_with_provenance(row: Mapping[str, Any]) -> dict[str, Any]:
+    prepared = dict(row)
+    source = str(prepared.get("source") or "")
+    prepared["publisher"] = prepared.get("publisher") or prepared.get("exchange")
+    prepared.setdefault("source_url", None)
+    prepared["adapter"] = prepared.get("adapter") or source
+    prepared["retrieved_at"] = prepared.get("retrieved_at") or prepared.get("collected_at")
+    prepared.setdefault("payload_sha256", None)
+    prepared["quality_status"] = prepared.get("quality_status") or (
+        "LEGACY_WRAPPED" if source.startswith("akshare-") else "UNVERIFIED"
+    )
+    prepared["legacy_adapter"] = prepared.get("legacy_adapter") or (
+        source if source.startswith("akshare-") else None
+    )
+    return prepared
+
+
+def _member_coverage_with_provenance(row: Mapping[str, Any]) -> dict[str, Any]:
+    return _member_rank_with_provenance(row)
+
+
+def _member_trade_rank_with_provenance(row: Mapping[str, Any]) -> dict[str, Any]:
+    return _member_rank_with_provenance(row)
 
 
 def _validate_futures_member_position_rank(row: Mapping[str, Any]) -> None:
@@ -991,6 +1508,9 @@ def _validate_futures_member_position_rank(row: Mapping[str, Any]) -> None:
         raise ValueError("position must be non-negative")
     if row["position_change"] is not None:
         _finite_number(row["position_change"], "position_change")
+    for field in ("publisher", "adapter", "retrieved_at", "quality_status"):
+        if not isinstance(row[field], str) or not row[field].strip():
+            raise ValueError(f"{field} must be a non-empty string")
 
 
 def _validate_futures_member_position_coverage(row: Mapping[str, Any]) -> None:
@@ -1000,8 +1520,8 @@ def _validate_futures_member_position_coverage(row: Mapping[str, Any]) -> None:
     for field in ("trading_day", "exchange", "status", "source", "collected_at"):
         if not isinstance(row[field], str) or not row[field].strip():
             raise ValueError(f"{field} must be a non-empty string")
-    if row["status"] not in {"PASS", "FAILED", "UNSUPPORTED"}:
-        raise ValueError("member position coverage status must be PASS, FAILED or UNSUPPORTED")
+    if row["status"] not in {"PASS", "PARTIAL", "FAILED", "UNSUPPORTED", "NO_PUBLICATION", "DEFERRED"}:
+        raise ValueError("unsupported member position coverage status")
     for field in ("contract_count", "record_count"):
         value = row[field]
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
@@ -1009,6 +1529,29 @@ def _validate_futures_member_position_coverage(row: Mapping[str, Any]) -> None:
     error = row["error"]
     if error is not None and (not isinstance(error, str) or not error.strip()):
         raise ValueError("error must be a non-empty string or null")
+    for field in ("publisher", "adapter", "retrieved_at", "quality_status"):
+        if not isinstance(row[field], str) or not row[field].strip():
+            raise ValueError(f"{field} must be a non-empty string")
+
+
+def _validate_futures_member_trade_rank(row: Mapping[str, Any]) -> None:
+    missing = [column for column in _FUTURES_MEMBER_TRADE_RANK_COLUMNS if column not in row]
+    if missing:
+        raise ValueError(f"member trade rank row missing columns: {missing}")
+    for field in (
+        "trading_day", "exchange", "contract_code", "product_code", "member_key",
+        "member_name", "source", "collected_at", "publisher", "adapter",
+        "retrieved_at", "quality_status",
+    ):
+        if not isinstance(row[field], str) or not row[field].strip():
+            raise ValueError(f"{field} must be a non-empty string")
+    rank = row["rank"]
+    if isinstance(rank, bool) or not isinstance(rank, int) or rank <= 0:
+        raise ValueError("trade rank must be a positive integer")
+    if _finite_number(row["volume"], "volume") < 0:
+        raise ValueError("volume must be non-negative")
+    if row["volume_change"] is not None:
+        _finite_number(row["volume_change"], "volume_change")
 
 
 def _now() -> str:

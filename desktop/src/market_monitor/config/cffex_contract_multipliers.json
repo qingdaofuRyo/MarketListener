@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "description": "中金所期货合约的日期生效交易乘数；国债期货按每百元净价报价将合约面值换算为每报价点的人民币值。仅用于名义持仓规模，不提供保证金率。",
+  "products": {
+    "IF": {"effectiveFrom": "2010-04-16", "contractMultiplier": 300, "sourceUrl": "https://www.cffex.com.cn/u/cms/www/202003/27160915uqs5.pdf"},
+    "IH": {"effectiveFrom": "2015-04-16", "contractMultiplier": 300, "sourceUrl": "https://www.cffex.com.cn/cn/sz50gzqh.html"},
+    "IC": {"effectiveFrom": "2015-04-16", "contractMultiplier": 200, "sourceUrl": "https://www.cffex.com.cn/cn/zz500.html"},
+    "IM": {"effectiveFrom": "2022-07-22", "contractMultiplier": 200, "sourceUrl": "https://www.cffex.com.cn/cn/ssxz/20220718/43093.html"},
+    "TS": {"effectiveFrom": "2018-08-17", "contractMultiplier": 20000, "faceValueCny": 2000000, "quoteFaceValueCny": 100, "sourceUrl": "https://www.e-cffex.com.cn/u/cms/www/202007/08152522nwhg.pdf"},
+    "TF": {"effectiveFrom": "2013-09-06", "contractMultiplier": 10000, "faceValueCny": 1000000, "quoteFaceValueCny": 100, "sourceUrl": "https://www.e-cffex.com.cn/u/cms/www/202007/08152340rnz2.pdf"},
+    "T": {"effectiveFrom": "2015-03-20", "contractMultiplier": 10000, "faceValueCny": 1000000, "quoteFaceValueCny": 100, "sourceUrl": "https://www.e-cffex.com.cn/u/cms/www/202007/08152235b2ys.pdf"},
+    "TL": {"effectiveFrom": "2023-04-21", "contractMultiplier": 10000, "faceValueCny": 1000000, "quoteFaceValueCny": 100, "sourceUrl": "https://www.cffex.com.cn/30tl/"}
+  }
+}

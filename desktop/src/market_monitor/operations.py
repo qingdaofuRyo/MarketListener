@@ -23,6 +23,12 @@ class OperationKind(StrEnum):
     ATLAS_BUILD = "ATLAS_BUILD"
     ANDROID_PACKAGE_BUILD = "ANDROID_PACKAGE_BUILD"
     STATUS_REFRESH = "STATUS_REFRESH"
+    TDX_COVERAGE_CHECK = "TDX_COVERAGE_CHECK"
+    TDX_AFTERHOURS_DOWNLOAD = "TDX_AFTERHOURS_DOWNLOAD"
+    TDX_LOCAL_IMPORT = "TDX_LOCAL_IMPORT"
+    FUTURES_HEAT_UPDATE = "FUTURES_HEAT_UPDATE"
+    FUTURES_OFFICIAL_DAILY_UPDATE = "FUTURES_OFFICIAL_DAILY_UPDATE"
+    FUTURES_STRUCTURE_UPDATE = "FUTURES_STRUCTURE_UPDATE"
 
 
 class OperationStatus(StrEnum):
@@ -184,6 +190,14 @@ def _operation_category(kind: OperationKind) -> str:
         return "Industry"
     if kind == OperationKind.ANDROID_PACKAGE_BUILD:
         return "Android"
+    if kind in {
+        OperationKind.TDX_AFTERHOURS_DOWNLOAD,
+        OperationKind.TDX_LOCAL_IMPORT,
+        OperationKind.FUTURES_HEAT_UPDATE,
+        OperationKind.FUTURES_OFFICIAL_DAILY_UPDATE,
+        OperationKind.FUTURES_STRUCTURE_UPDATE,
+    }:
+        return "Market"
     return "Quality"
 
 

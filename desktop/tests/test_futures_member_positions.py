@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from market_monitor.collector import _collect_oi_leaderboard
@@ -12,6 +14,7 @@ from market_monitor.futures_member_positions import (
     normalise_exchange_member_position_ranks,
 )
 from market_monitor.storage import MarketStore
+from market_monitor.futures_official_member_sources import DirectOfficialRankApi
 from market_monitor.web_app import create_web_app
 
 
@@ -128,6 +131,17 @@ def test_collects_each_exchange_independently_when_dce_fails() -> None:
 
 def test_oi_collection_persists_each_exchange_coverage_even_when_one_source_fails(monkeypatch) -> None:
     class Api:
+        raw_artifacts: list[dict[str, object]] = []
+
+        def evidence_for(self, exchange: str) -> dict[str, object]:
+            return {
+                "publisher": exchange, "source_url": f"https://example.invalid/{exchange}",
+                "adapter": f"official-{exchange.lower()}-rank-v1",
+                "retrieved_at": "2026-08-27T08:00:00+00:00",
+                "payload_sha256": "synthetic-fixture", "quality_status": "PASS",
+                "legacy_adapter": None,
+            }
+
         def get_cffex_rank_table(self, *, date: str):
             assert date == "20260827"
             return {"IF2609": _Frame([_record()])}
@@ -144,11 +158,10 @@ def test_oi_collection_persists_each_exchange_coverage_even_when_one_source_fail
         def futures_gfex_position_rank(self, *, date: str):
             return {"SI2610": _Frame([_record()])}
 
-    monkeypatch.setattr("market_monitor.collector._ak", lambda: Api())
     monkeypatch.setattr("market_monitor.collector._last_trading_day_compact", lambda: "20260827")
     monkeypatch.setattr("market_monitor.collector._now", lambda: "2026-08-27T08:00:00+00:00")
 
-    result = _collect_oi_leaderboard()
+    result = _collect_oi_leaderboard(Api())
 
     coverage = {item["exchange"]: item for item in result.persist.member_position_coverage}
     assert result.status == "PARTIAL_FAILURE"
@@ -156,7 +169,39 @@ def test_oi_collection_persists_each_exchange_coverage_even_when_one_source_fail
     assert coverage["DCE"]["error"] == "ValueError: not a zip"
     assert coverage["INE"]["status"] == "PASS"
     assert coverage["INE"]["contract_count"] == 1
+    assert coverage["CFFEX"]["status"] == "PASS"
+    assert coverage["SHFE"]["publisher"] == "SHFE"
+    assert coverage["SHFE"]["quality_status"] == "PASS"
+    assert coverage["SHFE"]["payload_sha256"] == "synthetic-fixture"
+    assert all(item["source"].startswith("official-") for item in result.persist.member_position_ranks)
     assert {item["trading_day"] for item in coverage.values()} == {"2026-08-27"}
+
+
+def test_direct_rank_http_failure_keeps_status_and_payload_hash_without_archiving_challenge() -> None:
+    challenge = b"<html>temporary verification page</html>"
+
+    class Response:
+        content = challenge
+        status_code = 412
+        headers = {"Content-Type": "text/html; charset=utf-8"}
+
+        def raise_for_status(self) -> None:
+            raise RuntimeError("412 Precondition Failed")
+
+    class Session:
+        def request(self, *args: object, **kwargs: object) -> Response:
+            assert kwargs["timeout"] == 15
+            return Response()
+
+    api = DirectOfficialRankApi(session=Session())  # type: ignore[arg-type]
+    with pytest.raises(RuntimeError, match="412"):
+        api.futures_dce_position_rank(date="20260827")
+    evidence = api.evidence_for("DCE")
+    assert evidence["http_status"] == 412
+    assert evidence["response_content_type"] == "text/html; charset=utf-8"
+    assert evidence["payload_sha256"] == sha256(challenge).hexdigest()
+    assert evidence["quality_status"] == "FAILED"
+    assert api.raw_artifacts == []
 
 
 def test_member_position_api_preserves_unpublished_direction_as_null(tmp_path: Path) -> None:
@@ -196,13 +241,50 @@ def test_member_position_api_preserves_unpublished_direction_as_null(tmp_path: P
     assert body["coverage"]["dataQualityStatus"] == "PARTIAL"
     exchange_coverage = {item["exchange"]: item for item in body["coverage"]["exchangeCoverage"]}
     assert exchange_coverage["SHFE"]["status"] == "PASS"
+    assert exchange_coverage["SHFE"]["qualityStatus"] == "UNVERIFIED"
     assert exchange_coverage["DCE"]["error"] == "fixture DCE unavailable"
     by_member = {item["memberName"]: item for item in body["rows"]}
     assert by_member["甲"]["netPosition"] == 30
+    assert by_member["甲"]["publishers"] == ["SHFE"]
+    assert by_member["甲"]["qualityStatuses"] == ["LEGACY_WRAPPED"]
+    assert by_member["甲"]["legacyAdapters"] == ["akshare-shfe-member-ranking"]
     assert by_member["乙"]["shortPosition"] is None
     assert by_member["乙"]["netPosition"] is None
     assert client.get("/api/futures/member-positions", params={"exchange": "INE"}).status_code == 200
     assert client.get("/api/futures/member-positions", params={"exchange": "UNKNOWN"}).status_code == 422
+
+
+def test_member_position_api_lists_products_by_exchange_scoped_member(tmp_path: Path) -> None:
+    root = tmp_path / "data"
+    store = MarketStore(root)
+    try:
+        store.upsert_futures_member_position_ranks([
+            _rank(exchange="SHFE", contract="RB2610", side="LONG", member="甲", position=120),
+            _rank(exchange="SHFE", contract="RB2610", side="SHORT", member="甲", position=90),
+            _rank(exchange="SHFE", contract="HC2610", side="LONG", member="甲", position=50),
+            _rank(exchange="DCE", contract="JM2610", side="LONG", member="甲", position=70),
+        ])
+    finally:
+        store.close()
+    client = TestClient(create_web_app(root), client=("127.0.0.1", 50000))
+    overview = client.get("/api/futures/member-positions").json()
+    assert overview["rows"] == []
+    assert {(item["exchange"], item["memberKey"]) for item in overview["members"]} == {
+        ("SHFE", "甲"), ("DCE", "甲"),
+    }
+    assert client.get("/api/futures/member-positions", params={"member_key": "甲"}).status_code == 422
+    shfe = client.get(
+        "/api/futures/member-positions", params={"exchange": "SHFE", "member_key": "甲"}
+    ).json()
+    assert shfe["filters"]["memberKey"] == "甲"
+    assert {(row["productCode"], row["contractCode"]) for row in shfe["rows"]} == {
+        ("RB", "RB2610"), ("HC", "HC2610"),
+    }
+    assert next(row for row in shfe["rows"] if row["productCode"] == "HC")["shortPosition"] is None
+    dce = client.get(
+        "/api/futures/member-positions", params={"exchange": "DCE", "member_key": "甲"}
+    ).json()
+    assert [row["productCode"] for row in dce["rows"]] == ["JM"]
 
 
 def test_member_position_api_exposes_a_failed_coverage_run_without_fake_rank_rows(tmp_path: Path) -> None:
@@ -227,3 +309,123 @@ def test_member_position_api_exposes_a_failed_coverage_run_without_fake_rank_row
     assert body["coverage"]["missingExchanges"] == ["CZCE", "DCE", "GFEX", "INE", "SHFE"]
     assert body["coverage"]["dataQualityStatus"] == "PARTIAL"
     assert body["coverage"]["exchangeCoverage"][0]["error"].startswith("fixture")
+
+
+def test_member_position_api_exposes_last_published_day_after_newer_failure(tmp_path: Path) -> None:
+    root = tmp_path / "data"
+    store = MarketStore(root)
+    try:
+        store.upsert_futures_member_position_ranks([_rank(member="甲", contract="RB2610")])
+        store.upsert_futures_member_position_coverage([
+            {**_coverage(exchange, "FAILED", error="fixture unavailable"), "trading_day": "2026-08-28"}
+            for exchange in ("DCE", "CZCE", "SHFE", "INE", "GFEX")
+        ])
+    finally:
+        store.close()
+    client = TestClient(create_web_app(root), client=("127.0.0.1", 50000))
+    latest = client.get("/api/futures/member-positions").json()
+    assert latest["available"] is False
+    assert latest["tradingDay"] == "2026-08-28"
+    assert latest["latestPublishedDay"] == "2026-08-27"
+    historical = client.get(
+        "/api/futures/member-positions", params={"trading_day": "2026-08-27", "product_code": "RB"}
+    ).json()
+    assert historical["rows"][0]["memberName"] == "甲"
+
+
+def test_member_position_history_keeps_failed_days_and_unpublished_net_null(tmp_path: Path) -> None:
+    root = tmp_path / "data"
+    store = MarketStore(root)
+    try:
+        store.upsert_futures_member_position_ranks([
+            _rank(contract="RB2610", member="甲", side="LONG", position=120),
+            _rank(contract="RB2610", member="甲", side="SHORT", position=90),
+            _rank(contract="HC2610", member="甲", side="LONG", position=50),
+            {**_rank(contract="RB2610", member="甲", side="LONG", position=130), "trading_day": "2026-08-28"},
+        ])
+        store.upsert_futures_member_position_coverage([
+            _coverage("SHFE", "PASS"),
+            {**_coverage("SHFE", "PASS"), "trading_day": "2026-08-28"},
+            {**_coverage("SHFE", "FAILED", error="fixture unavailable"), "trading_day": "2026-08-31"},
+        ])
+    finally:
+        store.close()
+    client = TestClient(create_web_app(root), client=("127.0.0.1", 50000))
+    member = client.get(
+        "/api/futures/member-positions/history", params={"exchange": "SHFE", "member_key": "甲"}
+    )
+    assert member.status_code == 200
+    body = member.json()
+    assert body["dates"] == ["2026-08-27", "2026-08-28", "2026-08-31"]
+    assert body["sourceStatusByDay"]["2026-08-31"] == "FAILED"
+    first = next(row for row in body["rows"] if row["tradingDay"] == "2026-08-27" and row["productCode"] == "RB")
+    assert first["productName"] == "螺纹钢"
+    assert first["netLongPosition"] == 30
+    next_day = next(row for row in body["rows"] if row["tradingDay"] == "2026-08-28")
+    assert next_day["shortPosition"] is None
+    assert next_day["netLongPosition"] is None
+    product = client.get(
+        "/api/futures/member-positions/history", params={"exchange": "SHFE", "product_code": "RB"}
+    ).json()
+    assert {row["productCode"] for row in product["rows"]} == {"RB"}
+    assert client.get("/api/futures/member-positions/history", params={"exchange": "SHFE"}).status_code == 422
+    assert client.get(
+        "/api/futures/member-positions/history",
+        params={"exchange": "SHFE", "product_code": "RB", "member_key": "甲"},
+    ).status_code == 422
+
+
+def test_cross_exchange_overview_selects_largest_product_and_exact_member(tmp_path: Path) -> None:
+    root = tmp_path / "data"
+    store = MarketStore(root)
+    try:
+        store.upsert_futures_member_position_ranks([
+            _rank(exchange="SHFE", contract="RB2610", side="LONG", member="甲", position=100),
+            _rank(exchange="SHFE", contract="RB2610", side="SHORT", member="甲", position=80),
+            _rank(exchange="DCE", contract="JM2610", side="LONG", member="甲", position=90),
+            _rank(exchange="DCE", contract="JM2610", side="SHORT", member="甲", position=70),
+            _rank(exchange="SHFE", contract="HC2610", side="LONG", member="乙", position=300),
+        ])
+        store.upsert_futures_member_position_coverage([
+            _coverage("SHFE", "PASS"), _coverage("DCE", "PASS"),
+        ])
+    finally:
+        store.close()
+    client = TestClient(create_web_app(root), client=("127.0.0.1", 50000))
+    overview = client.get("/api/futures/member-positions/overview").json()
+    assert overview["tradingDay"] == "2026-08-27"
+    assert overview["defaultProductKey"] == "SHFE.HC"
+    assert overview["products"][0]["displayName"] == "热卷（HC）"
+    assert overview["defaultMemberKey"] == "甲"
+    assert overview["members"][0]["grossPublishedPosition"] == 340
+    assert overview["members"][0]["exchanges"] == ["DCE", "SHFE"]
+
+    member_history = client.get(
+        "/api/futures/member-positions/history", params={"member_key": "甲"}
+    ).json()
+    assert {(row["exchange"], row["productKey"]) for row in member_history["rows"]} == {
+        ("SHFE", "SHFE.RB"), ("DCE", "DCE.JM"),
+    }
+    assert {row["productDisplayName"] for row in member_history["rows"]} == {
+        "螺纹钢（RB）", "焦煤（JM）",
+    }
+    product_history = client.get(
+        "/api/futures/member-positions/history", params={"product_key": "DCE.JM"}
+    ).json()
+    assert product_history["productKey"] == "DCE.JM"
+    assert {row["exchange"] for row in product_history["rows"]} == {"DCE"}
+    product_day = client.get(
+        "/api/futures/member-positions",
+        params={"trading_day": "2026-08-27", "product_key": "DCE.JM"},
+    )
+    assert product_day.status_code == 200
+    assert product_day.json()["filters"]["exchange"] == "DCE"
+    assert product_day.json()["filters"]["productCode"] == "JM"
+    assert {row["exchange"] for row in product_day.json()["rows"]} == {"DCE"}
+    assert client.get(
+        "/api/futures/member-positions",
+        params={"product_key": "DCE.JM", "exchange": "SHFE"},
+    ).status_code == 422
+    assert client.get(
+        "/api/futures/member-positions/history", params={"product_key": "JM"}
+    ).status_code == 422

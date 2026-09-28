@@ -10,9 +10,20 @@ const props = withDefaults(defineProps<{
   breadthWeight: number;
   fundWeight: number;
   fundUnit?: string;
+  countLabel?: string;
+  amountLabel?: string;
+  upAmountLabel?: string;
+  downAmountLabel?: string;
+  countUnitLabel?: string;
+  countCoverageLabel?: string;
+  amountCoverageLabel?: string;
   min?: number;
   max?: number;
-}>(), { fundUnit: "亿元", min: -100, max: 100, points: () => [] });
+}>(), {
+  fundUnit: "亿元", countLabel: "品种多空热度", amountLabel: "资金多空热度",
+  upAmountLabel: "上涨沉淀资金", downAmountLabel: "下跌沉淀资金", countUnitLabel: "品种",
+  countCoverageLabel: "品种", amountCoverageLabel: "资金", min: -100, max: 100, points: () => [],
+});
 
 const theme = useThemeStore();
 const element = ref<HTMLElement>();
@@ -66,7 +77,10 @@ function formatCoverage(point: LongShortHeatPoint): string {
     const variety = typeof coverage.variety === "number" ? coverage.variety : null;
     const fund = typeof coverage.fund === "number" ? coverage.fund : null;
     const percent = (value: number) => `${(value <= 1 ? value * 100 : value).toFixed(1)}%`;
-    return [variety === null ? "" : `品种 ${percent(variety)}`, fund === null ? "" : `资金 ${percent(fund)}`]
+    return [
+      variety === null ? "" : `${props.countCoverageLabel} ${percent(variety)}`,
+      fund === null ? "" : `${props.amountCoverageLabel} ${percent(fund)}`,
+    ]
       .filter(Boolean)
       .join(" · ") || "暂无数据";
   }
@@ -86,13 +100,13 @@ function tooltipHtml(params: unknown): string {
   const total = combineHeatScores(point.breadthScore10, point.fundScore10, props.breadthWeight, props.fundWeight);
   return `<div style="min-width:245px"><strong>${escapeHtml(point.tradeDate)}</strong>`
     + `<div style="margin-top:5px">${row("总多空热度", signedHeat(total), palette.heatTotal)}`
-    + `${row("品种多空热度", signedHeat(point.breadthScore10), palette.heatBreadth)}`
-    + `${row("资金多空热度", signedHeat(point.fundScore10), palette.heatFund)}</div>`
+    + `${row(props.countLabel, signedHeat(point.breadthScore10), palette.heatBreadth)}`
+    + `${row(props.amountLabel, signedHeat(point.fundScore10), palette.heatFund)}</div>`
     + `<div style="height:1px;background:${palette.divider};margin:6px 0"></div>`
-    + row("当前权重", `品种 ${Math.round(props.breadthWeight * 100)}% · 资金 ${Math.round(props.fundWeight * 100)}%`)
-    + row("上涨 / 下跌 / 平盘", `${point.upVarietyCount} / ${point.downVarietyCount} / ${point.flatVarietyCount}`)
-    + row("上涨沉淀资金", formatFund(point.upFund))
-    + row("下跌沉淀资金", formatFund(point.downFund))
+    + row("当前权重", `${props.countCoverageLabel} ${Math.round(props.breadthWeight * 100)}% · ${props.amountCoverageLabel} ${Math.round(props.fundWeight * 100)}%`)
+    + row(`上涨 / 下跌 / 平盘${props.countUnitLabel}`, `${point.upVarietyCount} / ${point.downVarietyCount} / ${point.flatVarietyCount}`)
+    + row(props.upAmountLabel, formatFund(point.upFund))
+    + row(props.downAmountLabel, formatFund(point.downFund))
     + row("数据覆盖率", formatCoverage(point))
     + row("窗口状态", point.isWarmup ? "预热期" : "完整10交易日")
     + `</div>`;
@@ -123,7 +137,7 @@ function render(): void {
       formatter: tooltipHtml,
     },
     legend: {
-      data: ["总多空热度", "品种多空热度", "资金多空热度"],
+      data: ["总多空热度", props.countLabel, props.amountLabel],
       selected: legendSelection,
       top: 0,
       right: 4,
@@ -186,7 +200,7 @@ function render(): void {
       },
       {
         id: "breadth-heat",
-        name: "品种多空热度",
+        name: props.countLabel,
         type: "line",
         data: breadthData.value,
         smooth: false,
@@ -199,7 +213,7 @@ function render(): void {
       },
       {
         id: "fund-heat",
-        name: "资金多空热度",
+        name: props.amountLabel,
         type: "line",
         data: fundData.value,
         smooth: false,

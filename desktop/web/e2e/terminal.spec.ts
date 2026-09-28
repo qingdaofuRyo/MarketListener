@@ -77,7 +77,9 @@ test("home only exposes predefined operations and rejects arbitrary payloads", a
 }) => {
   await page.goto("/");
   const operationButtons = page.locator(".operation-buttons button");
-  await expect(operationButtons).toHaveCount(10);
+  await expect(operationButtons).toHaveCount(12);
+  await expect(page.getByRole("button", { name: "检查通达信盘后数据", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "下载通达信盘后数据", exact: true })).toBeVisible();
   await expect(
     page.locator(".operation-buttons input, .operation-buttons textarea"),
   ).toHaveCount(0);
@@ -97,8 +99,8 @@ test("home only exposes predefined operations and rejects arbitrary payloads", a
   });
   expect(arbitrary.status()).toBe(422);
 
-  await page.reload();
-  const queue = page.locator(".el-table").last();
+  await page.goto("/logs/");
+  const queue = page.getByRole("region", { name: "任务队列" }).locator(".el-table");
   await expect(queue).toContainText("操作");
   await expect(queue).not.toContainText("STATUS_REFRESH");
 });

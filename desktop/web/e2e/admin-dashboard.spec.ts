@@ -33,6 +33,60 @@ test("dashboard moves queue to logs and cancellation errors remain visible", asy
   await page.reload();
   await expect(page.getByRole("heading",{name:"任务队列"})).toBeVisible();
 });
+
+test("dashboard acknowledges TDX check and keeps its result separate from task status", async ({page}) => {
+  await page.route("**/api/health", route=>route.fulfill({json:{stats:{run_count:1}}}));
+  await page.route("**/api/tdx-afterhours/coverage", route=>route.fulfill({json:{available:false}}));
+  let checkPosts = 0;
+  await page.route("**/api/operations", route=>{
+    if (route.request().method() === "POST") {
+      checkPosts++;
+      return route.fulfill({status:202,json:{created:true,operation:{operation_id:"tdx-check",kind:"TDX_COVERAGE_CHECK",status:"QUEUED"}}});
+    }
+    return route.fulfill({json:{items:[{operation_id:"tdx-check",kind:"TDX_COVERAGE_CHECK",status:"RUNNING"}]}});
+  });
+  await page.goto("/");
+  await expect(page.getByText("尚未运行检查。")).toBeVisible();
+  await page.getByRole("button",{name:"检查通达信盘后数据",exact:true}).click();
+  await expect(page.locator('[data-test="submitted-operation"]')).toContainText(/检查通达信盘后数据：已创建任务 · (排队中|执行中)/);
+  await expect(page.locator('[data-test="submitted-operation"]')).toContainText("查看任务详情");
+  expect(checkPosts).toBe(1);
+});
+
+test("dashboard confirms downloads and shows queued market work immediately", async ({page}) => {
+  await page.route("**/api/health", route=>route.fulfill({json:{stats:{run_count:1}}}));
+  await page.route("**/api/tdx-afterhours/coverage", route=>route.fulfill({json:{available:false}}));
+  const submitted: string[] = [];
+  await page.route("**/api/operations", async route=>{
+    if (route.request().method() !== "POST") return route.fulfill({json:{items:[]}});
+    const body = route.request().postDataJSON() as {kind:string};
+    submitted.push(body.kind);
+    return route.fulfill({status:202,json:{created:true,operation:{operation_id:`op-${submitted.length}`,kind:body.kind,status:"QUEUED"}}});
+  });
+  await page.goto("/");
+  await page.getByRole("button",{name:"更新行情",exact:true}).click();
+  await expect(page.locator('[data-test="submitted-operation"]')).toContainText("更新行情：已创建任务 · 排队中");
+  await page.getByRole("button",{name:"下载通达信盘后数据",exact:true}).click();
+  await expect(page.getByText("确认下载通达信盘后数据")).toBeVisible();
+  await page.getByRole("button",{name:"取消",exact:true}).click();
+  expect(submitted).toEqual(["MARKET_UPDATE"]);
+  await page.getByRole("button",{name:"下载通达信盘后数据",exact:true}).click();
+  await page.getByRole("button",{name:"创建下载任务",exact:true}).click();
+  await expect(page.locator('[data-test="submitted-operation"]')).toContainText("下载通达信盘后数据：已创建任务 · 排队中");
+  expect(submitted).toEqual(["MARKET_UPDATE","TDX_AFTERHOURS_DOWNLOAD"]);
+});
+
+test("dashboard reload explains the latest completed market operation", async ({page}) => {
+  await page.route("**/api/health", route=>route.fulfill({json:{stats:{run_count:1}}}));
+  await page.route("**/api/tdx-afterhours/coverage", route=>route.fulfill({json:{available:false}}));
+  await page.route("**/api/operations", route=>route.fulfill({json:{items:[{
+    operation_id:"market-finished",kind:"MARKET_UPDATE",status:"PARTIAL_FAILURE",
+    created_at:new Date().toISOString(),detail:JSON.stringify({task_count:17,passed:13,partial_failure:3,failed:1}),
+  }]}}));
+  await page.goto("/");
+  await expect(page.locator('[data-test="submitted-operation"]')).toContainText("更新行情：最近任务 · 部分失败");
+  await expect(page.locator('[data-test="submitted-operation"]')).toContainText("共 17 项：通过 13，部分失败 3，失败 1。");
+});
 for (const theme of ["light","dark"]) {
   test(`Chinese read-only inventory dashboard ${theme}`, async ({page}) => {
     await page.addInitScript(theme=>localStorage.setItem("marketlistener.theme",theme),theme);

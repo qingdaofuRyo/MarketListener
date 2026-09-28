@@ -155,8 +155,10 @@ def test_verified_financial_ds_prefixes_keep_float_prices_and_raw_future_units(t
         "currency": "HKD", "daily_price_format": "FLOAT32", "symbol": "00700", "period": "1d",
     }
     assert financial_ds_metadata("16#GC00W.day")["series_kind"] == "MAIN"  # type: ignore[index]
-    assert financial_ds_metadata("17#CL00Y.day")["series_kind"] == "CONTINUOUS"  # type: ignore[index]
+    assert financial_ds_metadata("17#CL00Y.day") is None  # R4: explicitly retired by user
+    assert financial_ds_metadata("16#GC00Y.lc5") is None
     assert financial_ds_metadata("18#ZS2609.day")["series_kind"] == "CONTRACT"  # type: ignore[index]
+    assert financial_ds_metadata("18#ZS2608.day")["series_kind"] == "CONTRACT"  # type: ignore[index]
     assert financial_ds_metadata("10#AUDUSD.day")["asset_type"] == "FX_RATE"  # type: ignore[index]
     assert financial_ds_metadata("12#B_DAX.K.day")["asset_type"] == "INDEX"  # type: ignore[index]
     assert financial_ds_metadata("38#1_GDP.day")["asset_type"] == "MACRO"  # type: ignore[index]

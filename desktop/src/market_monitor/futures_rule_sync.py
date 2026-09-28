@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
+from functools import lru_cache
 import json
 import math
 import os
@@ -29,6 +30,7 @@ import duckdb
 SNAPSHOT_SCHEMA = "market-listener/futures-contract-rule-snapshots/v1"
 SNAPSHOT_PROVIDER = "akshare.futures_rule"
 SNAPSHOT_RELATIVE_PATH = Path("state") / "futures_contract_rule_snapshots.json"
+_CFFEX_MULTIPLIER_PATH = Path(__file__).with_name("config") / "cffex_contract_multipliers.json"
 
 _CODE_POSITION = 2
 _MARGIN_PERCENT_POSITION = 3
@@ -149,12 +151,13 @@ class RuleBook:
         exchange: str,
         product_code: str,
     ) -> float | None:
-        """Return only an exact-day contract multiplier for notional valuation.
+        """Return a date-effective contract multiplier for notional valuation.
 
         Notional open-interest value requires the multiplier but not a margin
         rate.  Keeping this lookup separate prevents a missing historical
         margin field from incorrectly suppressing an otherwise auditable
-        settlement-value observation.
+        settlement-value observation.  Commodity rules use exact-day local
+        snapshots; CFFEX uses dated, exchange-published product specifications.
         """
 
         day = _parse_day(trading_day)
@@ -162,13 +165,39 @@ class RuleBook:
             return None
         venue = str(exchange or "").strip().upper()
         product = str(product_code or "").strip().upper()
-        if not venue or not _PRODUCT.fullmatch(product) or venue == "CFFEX":
+        if not venue or not _PRODUCT.fullmatch(product):
             return None
+        if venue == "CFFEX":
+            return _cffex_multiplier(day, product)
         snapshot = self._days.get(day.isoformat())
         if snapshot is None:
             return None
         base = snapshot["products"].get(f"{venue}.{product}")
         return _positive_float(base.get("contractMultiplier")) if isinstance(base, Mapping) else None
+
+
+@lru_cache(maxsize=1)
+def _cffex_specs() -> Mapping[str, Any]:
+    try:
+        payload = json.loads(_CFFEX_MULTIPLIER_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return _mapping(payload.get("products")) if payload.get("schemaVersion") == 1 else {}
+
+
+def _cffex_multiplier(day: date, product: str) -> float | None:
+    record = _cffex_specs().get(product)
+    if not isinstance(record, Mapping):
+        return None
+    effective = _parse_day(record.get("effectiveFrom"))
+    if effective is None or day < effective:
+        return None
+    multiplier = _positive_float(record.get("contractMultiplier"))
+    face = _positive_float(record.get("faceValueCny"))
+    quote = _positive_float(record.get("quoteFaceValueCny"))
+    if face is not None and quote is not None and multiplier != face / quote:
+        return None
+    return multiplier
 
 
 def load_rule_book(data_root: Path) -> RuleBook:
@@ -189,6 +218,7 @@ def sync_futures_rule_snapshots(
     data_root: Path,
     *,
     lookback_days: int = 10,
+    target_days: Sequence[str] | None = None,
     fetcher: RuleFetcher | None = None,
     retrieved_at: str | None = None,
 ) -> dict[str, Any]:
@@ -203,7 +233,12 @@ def sync_futures_rule_snapshots(
     if lookback_days <= 0:
         raise ValueError("lookback_days must be > 0")
     root = Path(data_root)
-    inventory = _recent_silver_inventory(root, lookback_days)
+    requested = None
+    if target_days is not None:
+        requested = {_parse_day(value).isoformat() for value in target_days if _parse_day(value) is not None}
+        if len(requested) != len(target_days):
+            raise ValueError("target_days must contain unique YYYY-MM-DD dates")
+    inventory = _recent_silver_inventory(root, lookback_days, target_days=requested)
     path = root / SNAPSHOT_RELATIVE_PATH
     payload = _load_snapshot_for_merge(path)
     existing_days: dict[str, dict[str, Any]] = {}
@@ -297,7 +332,7 @@ def sync_futures_rule_snapshots(
 
 
 def _recent_silver_inventory(
-    data_root: Path, lookback_days: int
+    data_root: Path, lookback_days: int, *, target_days: set[str] | None = None
 ) -> dict[str, dict[str, str]]:
     base = (
         data_root
@@ -347,7 +382,7 @@ def _recent_silver_inventory(
                 f"ambiguous Silver product exchange on {parsed_day}: {product}"
             )
     effective_days = sorted((day for day, products in by_day.items() if products))
-    selected = set(effective_days[-lookback_days:])
+    selected = target_days if target_days is not None else set(effective_days[-lookback_days:])
     return {
         day: dict(sorted(by_day[day].items()))
         for day in effective_days

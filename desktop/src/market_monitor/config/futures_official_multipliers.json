@@ -1,0 +1,71 @@
+{
+  "schemaVersion": 1,
+  "description": "交易所公开合约交易单位；只用于单边名义持仓规模。未取得可核验来源的交易所保持缺失。",
+  "evidence": {
+    "SHFE_20260129": {
+      "sourceUrl": "https://www.shfe.com.cn/reports/tradedata/dailyandweeklydata/?query_date=20260129&query_options=1&query_params=kx&query_product_code=zn_f",
+      "retrievedAt": "2026-09-26T18:03:25+00:00",
+      "payloadSha256": "ba6663c9548180a19fb2b81026b31d919f0c76a01de3965405251e17883b0642",
+      "qualityStatus": "PASS"
+    },
+    "CZCE_202512": {
+      "sourceUrl": "https://www.czce.com.cn/cn/content_file/jysj/ydscbg/2025/12/4604d76e3eb5427e955e4dfa2412e51d.pdf",
+      "retrievedAt": "2026-09-26T18:03:25+00:00",
+      "payloadSha256": "b5e337cab13494b125554f430982a8fc9121d24d176954778f9e73e7762a8a9e",
+      "qualityStatus": "PASS"
+    }
+  },
+  "exchangeCoverage": {
+    "SHFE": "PASS", "INE": "PASS", "CZCE": "PASS",
+    "DCE": "UNAVAILABLE", "GFEX": "UNAVAILABLE", "CFFEX": "LEGACY_OFFICIAL_SPEC"
+  },
+  "products": {
+    "SHFE.CU": {"effectiveFrom": "2026-01-29", "effectiveTo": null, "contractMultiplier": 5, "quoteUnit": "CNY/ton", "evidenceId": "SHFE_20260129"},
+    "SHFE.AL": {"effectiveFrom": "2026-01-29", "effectiveTo": null, "contractMultiplier": 5, "quoteUnit": "CNY/ton", "evidenceId": "SHFE_20260129"},
+    "SHFE.ZN": {"effectiveFrom": "2026-01-29", "effectiveTo": null, "contractMultiplier": 5, "quoteUnit": "CNY/ton", "evidenceId": "SHFE_20260129"},
+    "SHFE.PB": {"effectiveFrom": "2026-01-29", "effectiveTo": null, "contractMultiplier": 5, "quoteUnit": "CNY/ton", "evidenceId": "SHFE_20260129"},
+    "SHFE.NI": {"effectiveFrom": "2026-01-29", "effectiveTo": null, "contractMultiplier": 1, "quoteUnit": "CNY/ton", "evidenceId": "SHFE_20260129"},
+    "SHFE.SN": {"effectiveFrom": "2026-01-29", "effectiveTo": null, "contractMultiplier": 1, "quoteUnit": "CNY/ton", "evidenceId": "SHFE_20260129"},
+    "SHFE.AU": {"effectiveFrom": "2026-01-29", "effectiveTo": null, "contractMultiplier": 1000, "quoteUnit": "CNY/gram", "evidenceId": "SHFE_20260129"},
+    "SHFE.AG": {"effectiveFrom": "2026-01-29", "effectiveTo": null, "contractMultiplier": 15, "quoteUnit": "CNY/kg", "evidenceId": "SHFE_20260129"},
+    "SHFE.RB": {"effectiveFrom": "2026-01-29", "effectiveTo": null, "contractMultiplier": 10, "quoteUnit": "CNY/ton", "evidenceId": "SHFE_20260129"},
+    "SHFE.WR": {"effectiveFrom": "2026-01-29", "effectiveTo": null, "contractMultiplier": 10, "quoteUnit": "CNY/ton", "evidenceId": "SHFE_20260129"},
+    "SHFE.HC": {"effectiveFrom": "2026-01-29", "effectiveTo": null, "contractMultiplier": 10, "quoteUnit": "CNY/ton", "evidenceId": "SHFE_20260129"},
+    "SHFE.SS": {"effectiveFrom": "2026-01-29", "effectiveTo": null, "contractMultiplier": 5, "quoteUnit": "CNY/ton", "evidenceId": "SHFE_20260129"},
+    "SHFE.FU": {"effectiveFrom": "2026-01-29", "effectiveTo": null, "contractMultiplier": 10, "quoteUnit": "CNY/ton", "evidenceId": "SHFE_20260129"},
+    "SHFE.BU": {"effectiveFrom": "2026-01-29", "effectiveTo": null, "contractMultiplier": 10, "quoteUnit": "CNY/ton", "evidenceId": "SHFE_20260129"},
+    "SHFE.RU": {"effectiveFrom": "2026-01-29", "effectiveTo": null, "contractMultiplier": 10, "quoteUnit": "CNY/ton", "evidenceId": "SHFE_20260129"},
+    "SHFE.SP": {"effectiveFrom": "2026-01-29", "effectiveTo": null, "contractMultiplier": 10, "quoteUnit": "CNY/ton", "evidenceId": "SHFE_20260129"},
+    "SHFE.AO": {"effectiveFrom": "2026-01-29", "effectiveTo": null, "contractMultiplier": 20, "quoteUnit": "CNY/ton", "evidenceId": "SHFE_20260129"},
+    "SHFE.BR": {"effectiveFrom": "2026-01-29", "effectiveTo": null, "contractMultiplier": 5, "quoteUnit": "CNY/ton", "evidenceId": "SHFE_20260129"},
+    "SHFE.AD": {"effectiveFrom": "2026-01-29", "effectiveTo": null, "contractMultiplier": 10, "quoteUnit": "CNY/ton", "evidenceId": "SHFE_20260129"},
+    "SHFE.OP": {"effectiveFrom": "2026-01-29", "effectiveTo": null, "contractMultiplier": 40, "quoteUnit": "CNY/ton", "evidenceId": "SHFE_20260129"},
+    "INE.SC": {"effectiveFrom": "2026-01-29", "effectiveTo": null, "contractMultiplier": 1000, "quoteUnit": "CNY/barrel", "evidenceId": "SHFE_20260129"},
+    "INE.LU": {"effectiveFrom": "2026-01-29", "effectiveTo": null, "contractMultiplier": 10, "quoteUnit": "CNY/ton", "evidenceId": "SHFE_20260129"},
+    "INE.NR": {"effectiveFrom": "2026-01-29", "effectiveTo": null, "contractMultiplier": 10, "quoteUnit": "CNY/ton", "evidenceId": "SHFE_20260129"},
+    "INE.BC": {"effectiveFrom": "2026-01-29", "effectiveTo": null, "contractMultiplier": 5, "quoteUnit": "CNY/ton", "evidenceId": "SHFE_20260129"},
+    "INE.EC": {"effectiveFrom": "2026-01-29", "effectiveTo": null, "contractMultiplier": 50, "quoteUnit": "index-point", "evidenceId": "SHFE_20260129"},
+    "CZCE.CF": {"effectiveFrom": "2026-01-01", "effectiveTo": null, "contractMultiplier": 5, "quoteUnit": "CNY/ton", "evidenceId": "CZCE_202512"},
+    "CZCE.CJ": {"effectiveFrom": "2026-01-01", "effectiveTo": null, "contractMultiplier": 5, "quoteUnit": "CNY/ton", "evidenceId": "CZCE_202512"},
+    "CZCE.CY": {"effectiveFrom": "2026-01-01", "effectiveTo": null, "contractMultiplier": 5, "quoteUnit": "CNY/ton", "evidenceId": "CZCE_202512"},
+    "CZCE.PF": {"effectiveFrom": "2026-01-01", "effectiveTo": null, "contractMultiplier": 5, "quoteUnit": "CNY/ton", "evidenceId": "CZCE_202512"},
+    "CZCE.PK": {"effectiveFrom": "2026-01-01", "effectiveTo": null, "contractMultiplier": 5, "quoteUnit": "CNY/ton", "evidenceId": "CZCE_202512"},
+    "CZCE.PX": {"effectiveFrom": "2026-01-01", "effectiveTo": null, "contractMultiplier": 5, "quoteUnit": "CNY/ton", "evidenceId": "CZCE_202512"},
+    "CZCE.SF": {"effectiveFrom": "2026-01-01", "effectiveTo": null, "contractMultiplier": 5, "quoteUnit": "CNY/ton", "evidenceId": "CZCE_202512"},
+    "CZCE.SM": {"effectiveFrom": "2026-01-01", "effectiveTo": null, "contractMultiplier": 5, "quoteUnit": "CNY/ton", "evidenceId": "CZCE_202512"},
+    "CZCE.TA": {"effectiveFrom": "2026-01-01", "effectiveTo": null, "contractMultiplier": 5, "quoteUnit": "CNY/ton", "evidenceId": "CZCE_202512"},
+    "CZCE.AP": {"effectiveFrom": "2026-01-01", "effectiveTo": null, "contractMultiplier": 10, "quoteUnit": "CNY/ton", "evidenceId": "CZCE_202512"},
+    "CZCE.MA": {"effectiveFrom": "2026-01-01", "effectiveTo": null, "contractMultiplier": 10, "quoteUnit": "CNY/ton", "evidenceId": "CZCE_202512"},
+    "CZCE.OI": {"effectiveFrom": "2026-01-01", "effectiveTo": null, "contractMultiplier": 10, "quoteUnit": "CNY/ton", "evidenceId": "CZCE_202512"},
+    "CZCE.RM": {"effectiveFrom": "2026-01-01", "effectiveTo": null, "contractMultiplier": 10, "quoteUnit": "CNY/ton", "evidenceId": "CZCE_202512"},
+    "CZCE.RS": {"effectiveFrom": "2026-01-01", "effectiveTo": null, "contractMultiplier": 10, "quoteUnit": "CNY/ton", "evidenceId": "CZCE_202512"},
+    "CZCE.SR": {"effectiveFrom": "2026-01-01", "effectiveTo": null, "contractMultiplier": 10, "quoteUnit": "CNY/ton", "evidenceId": "CZCE_202512"},
+    "CZCE.PR": {"effectiveFrom": "2026-01-01", "effectiveTo": null, "contractMultiplier": 15, "quoteUnit": "CNY/ton", "evidenceId": "CZCE_202512"},
+    "CZCE.FG": {"effectiveFrom": "2026-01-01", "effectiveTo": null, "contractMultiplier": 20, "quoteUnit": "CNY/ton", "evidenceId": "CZCE_202512"},
+    "CZCE.PL": {"effectiveFrom": "2026-01-01", "effectiveTo": null, "contractMultiplier": 20, "quoteUnit": "CNY/ton", "evidenceId": "CZCE_202512"},
+    "CZCE.SA": {"effectiveFrom": "2026-01-01", "effectiveTo": null, "contractMultiplier": 20, "quoteUnit": "CNY/ton", "evidenceId": "CZCE_202512"},
+    "CZCE.UR": {"effectiveFrom": "2026-01-01", "effectiveTo": null, "contractMultiplier": 20, "quoteUnit": "CNY/ton", "evidenceId": "CZCE_202512"},
+    "CZCE.SH": {"effectiveFrom": "2026-01-01", "effectiveTo": null, "contractMultiplier": 30, "quoteUnit": "CNY/ton", "evidenceId": "CZCE_202512"},
+    "CZCE.ZC": {"effectiveFrom": "2026-01-01", "effectiveTo": null, "contractMultiplier": 100, "quoteUnit": "CNY/ton", "evidenceId": "CZCE_202512"}
+  }
+}

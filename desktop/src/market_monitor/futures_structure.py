@@ -2,36 +2,43 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import date, datetime, timezone
+import json
 import math
 from pathlib import Path
 from typing import Any, Mapping
 
 import duckdb
 
-from .futures import is_expired_futures_contract
+from .futures import contract_delivery_month, futures_product_name
 from .futures_heat_pipeline import _optional_day
+from .futures_official_multipliers import OfficialMultiplierRegistry, load_official_multiplier_registry
 from .futures_rule_sync import RuleBook, load_rule_book
 from .storage import MarketStore
 
 
 PRODUCT_OPEN_INTEREST_CHART_ID = "product-open-interest"
 PRODUCT_NOTIONAL_CHART_ID = "product-notional"
+PRODUCT_VOLUME_CHART_ID = "product-volume"
 MEMBER_OPEN_INTEREST_CHART_ID = "member-open-interest"
 STRUCTURE_DIRECTION_GROSS = "gross"
-STRUCTURE_FORMULA_VERSION = "futures-structure-oi-v1"
-PRODUCT_NOTIONAL_FORMULA_VERSION = "futures-structure-notional-settlement-v1"
+STRUCTURE_FORMULA_VERSION = "futures-structure-oi-top40-v3"
+PRODUCT_NOTIONAL_FORMULA_VERSION = "futures-structure-notional-settlement-top40-v3"
+PRODUCT_NOTIONAL_OFFICIAL_FORMULA_VERSION = "futures-structure-notional-official-v4"
 MEMBER_STRUCTURE_FORMULA_VERSION = "futures-member-position-v1"
 SETTLEMENT_PRICE_BASIS = "SETTLEMENT"
-STRUCTURE_THRESHOLD = 0.015
+PRODUCT_STRUCTURE_RANK_LIMIT = 40
+MEMBER_STRUCTURE_THRESHOLD = 0.015
 STRUCTURE_SOURCE = "CN_FUTURE_SILVER"
-PRODUCT_NOTIONAL_SOURCE = "CN_FUTURE_SILVER+FUTURES_CONTRACT_RULE_SNAPSHOT"
+PRODUCT_NOTIONAL_SOURCE = "CN_FUTURE_SILVER+FUTURES_CONTRACT_RULE_SNAPSHOT+CFFEX_OFFICIAL_CONTRACT_SPEC"
+PRODUCT_NOTIONAL_OFFICIAL_SOURCE = "CN_FUTURE_SILVER+OFFICIAL_EFFECTIVE_MULTIPLIER"
 MEMBER_STRUCTURE_SOURCE = "FUTURES_MEMBER_POSITION_DAILY"
 # A local TDX futures directory can also contain overseas contracts or
 # provider-specific pseudo exchanges.  Structure charts must use explicit
 # domestic exchange keys, not a permissive "not CFFEX" predicate.
 COMMODITY_EXCHANGES = frozenset({"SHFE", "INE", "DCE", "CZCE", "GFEX"})
+PRODUCT_EXCHANGES = COMMODITY_EXCHANGES | {"CFFEX"}
 
 
 def run_product_open_interest_structure_pipeline(
@@ -87,6 +94,30 @@ def run_product_notional_structure_pipeline(
     )
 
 
+def run_product_official_notional_structure_pipeline(
+    data_root: Path,
+    *,
+    start_day: str | None = None,
+    end_day: str | None = None,
+    calculated_at: str | None = None,
+    rebuild_baseline: bool = False,
+) -> dict[str, Any]:
+    """Build a separate Gold version using exchange-published multiplier intervals."""
+
+    return _run_product_structure_pipeline(
+        data_root,
+        chart_id=PRODUCT_NOTIONAL_CHART_ID,
+        formula_version=PRODUCT_NOTIONAL_OFFICIAL_FORMULA_VERSION,
+        source=PRODUCT_NOTIONAL_OFFICIAL_SOURCE,
+        price_basis=SETTLEMENT_PRICE_BASIS,
+        metric="settlement_notional_official",
+        start_day=start_day,
+        end_day=end_day,
+        calculated_at=calculated_at,
+        rebuild_baseline=rebuild_baseline,
+    )
+
+
 def _run_product_structure_pipeline(
     data_root: Path,
     *,
@@ -114,34 +145,66 @@ def _run_product_structure_pipeline(
         files,
         end_day=end.isoformat() if end else None,
     )
-    rule_book = load_rule_book(root) if metric == "settlement_notional" else None
+    rule_book = load_rule_book(root) if metric in {
+        "settlement_notional", "settlement_notional_official",
+    } else None
+    official_registry = (
+        load_official_multiplier_registry()
+        if metric == "settlement_notional_official" else None
+    )
     daily_values: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
     daily_names: dict[str, dict[str, str]] = defaultdict(dict)
     daily_sources: dict[str, set[str]] = defaultdict(set)
     daily_input_rows: dict[str, int] = defaultdict(int)
     daily_missing_rows: dict[str, int] = defaultdict(int)
+    official_missing: dict[str, dict[str, Any]] = defaultdict(lambda: {
+        "input": 0, "settlement": 0, "open_interest": 0,
+        "multiplier": 0, "products": set(), "contracts": set(),
+    })
 
     for bar in bars:
         trade_date = str(bar["trade_date"])
         member_key = f"{bar['exchange']}.{bar['product_code']}"
-        daily_input_rows[trade_date] += int(bar["input_row_count"])
-        daily_missing_rows[trade_date] += int(bar["missing_row_count"])
-        value = (
-            _positive_or_zero(bar.get("open_interest"))
-            if metric == "open_interest"
-            else _settlement_notional(bar, rule_book)
-        )
+        if metric == "settlement_notional_official":
+            daily_input_rows[trade_date] += 1
+            official_missing[trade_date]["input"] += 1
+            value, missing_reason = _settlement_notional_official(
+                bar, official_registry, rule_book,
+            )
+            if missing_reason is not None:
+                daily_missing_rows[trade_date] += 1
+                official_missing[trade_date][missing_reason] += 1
+                official_missing[trade_date]["products"].add(member_key)
+                official_missing[trade_date]["contracts"].add(
+                    f"{bar['exchange']}.{bar['contract_code']}"
+                )
+        else:
+            daily_input_rows[trade_date] += int(bar["input_row_count"])
+            daily_missing_rows[trade_date] += int(bar["missing_row_count"])
+            value = (
+                _positive_or_zero(bar.get("open_interest"))
+                if metric == "open_interest"
+                else _settlement_notional(bar, rule_book)
+            )
         if value is None:
             if metric == "settlement_notional":
                 daily_missing_rows[trade_date] += 1
             continue
         daily_values[trade_date][member_key] += value
-        daily_names[trade_date][member_key] = str(bar["product_code"])
+        product_code = str(bar["product_code"])
+        daily_names[trade_date][member_key] = (
+            futures_product_name(product_code, str(bar["exchange"])) or product_code
+        )
         actual_source = str(bar.get("actual_source") or "").strip()
         if actual_source:
             daily_sources[trade_date].add(actual_source)
         if metric == "settlement_notional":
-            daily_sources[trade_date].add("FUTURES_CONTRACT_RULE_SNAPSHOT")
+            daily_sources[trade_date].add(
+                "CFFEX_OFFICIAL_CONTRACT_SPEC" if bar["exchange"] == "CFFEX"
+                else "FUTURES_CONTRACT_RULE_SNAPSHOT"
+            )
+        elif metric == "settlement_notional_official":
+            daily_sources[trade_date].add("OFFICIAL_EFFECTIVE_MULTIPLIER")
 
     timestamp = calculated_at or datetime.now(timezone.utc).isoformat(timespec="seconds")
     selected_days = [
@@ -169,6 +232,23 @@ def _run_product_structure_pipeline(
                     "calculated_at": timestamp,
                 }
             )
+
+    official_coverage_rows = [
+        {
+            "chart_id": chart_id, "direction": STRUCTURE_DIRECTION_GROSS,
+            "formula_version": formula_version, "trade_date": day,
+            "input_contract_count": details["input"],
+            "missing_settlement_count": details["settlement"],
+            "missing_open_interest_count": details["open_interest"],
+            "missing_multiplier_count": details["multiplier"],
+            "missing_products_json": json.dumps(sorted(details["products"]), ensure_ascii=False),
+            "missing_contracts_json": json.dumps(sorted(details["contracts"]), ensure_ascii=False),
+            "source": source, "calculated_at": timestamp,
+        }
+        for day, details in sorted(official_missing.items())
+        if (start is None or day >= start.isoformat())
+        and (end is None or day <= end.isoformat())
+    ] if metric == "settlement_notional_official" else []
 
     store = MarketStore(root)
     try:
@@ -210,18 +290,38 @@ def _run_product_structure_pipeline(
             start_day=start.isoformat() if start else None,
             end_day=end.isoformat() if end else None,
         )
+        if metric == "settlement_notional_official":
+            store.replace_futures_structure_input_coverage(
+                official_coverage_rows, chart_id=chart_id,
+                formula_version=formula_version,
+            )
     finally:
         store.close()
+    latest_official_day = max(official_missing, default=None)
+    if metric == "settlement_notional_official":
+        status = (
+            "PASS" if latest_official_day is not None
+            and daily_missing_rows[latest_official_day] == 0
+            and existing_baseline is not None
+            else "PARTIAL" if official_coverage_rows else "NO_DATA"
+        )
+    else:
+        status = "PASS" if written and existing_baseline is not None else "NO_DATA"
     return {
-        "status": "PASS" if written and existing_baseline is not None else "NO_DATA",
+        "status": status,
         "chartId": chart_id,
         "silverFiles": len(files),
         "sourceRows": source_rows,
         "preparedRows": len(bars),
         "rejectedRows": rejected_rows,
         "writtenRows": written,
-        "startDay": selected_days[0] if selected_days else None,
-        "endDay": selected_days[-1] if selected_days else None,
+        "coverageDays": len(official_coverage_rows),
+        "missingProductsLatest": (
+            len(official_missing[max(official_missing)]["products"])
+            if official_missing else None
+        ),
+        "startDay": min(official_missing) if official_missing else selected_days[0] if selected_days else None,
+        "endDay": latest_official_day if latest_official_day else selected_days[-1] if selected_days else None,
         "baselineDay": existing_baseline["baseline_day"] if existing_baseline else None,
         "baselineVersion": existing_baseline["baseline_version"] if existing_baseline else None,
         "baselineCreated": baseline_created,
@@ -461,7 +561,7 @@ def _read_contract_aggregates(
     if not files:
         return [], 0, 0
     paths = [str(path) for path in files]
-    exchange_sql = ", ".join(f"'{exchange}'" for exchange in sorted(COMMODITY_EXCHANGES))
+    exchange_sql = ", ".join(f"'{exchange}'" for exchange in sorted(PRODUCT_EXCHANGES))
     end_clause = " AND trade_date <= ?" if end_day is not None else ""
     parameters: list[Any] = [paths]
     if end_day is not None:
@@ -475,6 +575,7 @@ def _read_contract_aggregates(
                 upper(coalesce(json_extract_string(bar_json, '$.symbol'), json_extract_string(bar_json, '$.contract_code'), '')) AS contract_code,
                 try_cast(json_extract_string(bar_json, '$.open_interest') AS DOUBLE) AS open_interest,
                 try_cast(json_extract_string(bar_json, '$.settlement') AS DOUBLE) AS settlement,
+                try_cast(json_extract_string(bar_json, '$.close') AS DOUBLE) AS close,
                 coalesce(json_extract_string(bar_json, '$.fetched_at'), '') AS fetched_at,
                 coalesce(json_extract_string(bar_json, '$.actual_source'), json_extract_string(bar_json, '$.source'), '') AS source
             FROM read_parquet(?, union_by_name=true)
@@ -491,6 +592,7 @@ def _read_contract_aggregates(
         SELECT trade_date, exchange, product_code, contract_code,
             arg_max(open_interest, fetched_at) AS open_interest,
             arg_max(settlement, fetched_at) AS settlement,
+            arg_max(close, fetched_at) AS close,
             count(*) AS input_row_count,
             count_if(open_interest IS NULL) AS missing_row_count,
             max(source) AS actual_source
@@ -507,7 +609,7 @@ def _read_contract_aggregates(
     output: list[dict[str, Any]] = []
     rejected = 0
     source_rows = 0
-    for trade_date, exchange, product_code, contract_code, open_interest, settlement, input_count, missing_count, source in rows:
+    for trade_date, exchange, product_code, contract_code, open_interest, settlement, close, input_count, missing_count, source in rows:
         input_row_count = int(input_count)
         source_rows += input_row_count
         try:
@@ -515,9 +617,10 @@ def _read_contract_aggregates(
         except ValueError:
             rejected += input_row_count
             continue
-        if trade_day.weekday() >= 5 or is_expired_futures_contract(
+        delivery = contract_delivery_month(
             str(contract_code), str(exchange), reference_day=trade_day, last_trading_day=trade_day
-        ):
+        )
+        if trade_day.weekday() >= 5 or delivery is None or delivery < trade_day.replace(day=1):
             rejected += input_row_count
             continue
         output.append(
@@ -525,8 +628,10 @@ def _read_contract_aggregates(
                 "trade_date": str(trade_date),
                 "exchange": str(exchange),
                 "product_code": str(product_code),
+                "contract_code": str(contract_code),
                 "open_interest": open_interest,
                 "settlement": settlement,
+                "close": close,
                 "input_row_count": input_row_count,
                 "missing_row_count": int(missing_count),
                 "actual_source": str(source or ""),
@@ -564,10 +669,24 @@ def _build_baseline(
     if total <= 0:
         raise ValueError("structure baseline requires a positive total")
     ordered_keys = sorted(values, key=lambda key: (-values[key], key))
-    primary_keys = [key for key in ordered_keys if values[key] / total >= STRUCTURE_THRESHOLD]
+    if chart_id in {PRODUCT_OPEN_INTEREST_CHART_ID, PRODUCT_NOTIONAL_CHART_ID, PRODUCT_VOLUME_CHART_ID}:
+        threshold = 0.0  # Stored sentinel: product selection is rank-based.
+        primary_keys = ordered_keys[:PRODUCT_STRUCTURE_RANK_LIMIT]
+    else:
+        threshold = MEMBER_STRUCTURE_THRESHOLD
+        primary_keys = [
+            key for key in ordered_keys
+            if values[key] / total > threshold
+            or math.isclose(values[key] / total, threshold, rel_tol=1e-12, abs_tol=1e-15)
+        ]
     other_keys = [key for key in ordered_keys if key not in primary_keys]
+    name_counts = Counter(names.get(key, key) for key in ordered_keys)
     members = [
-        {"memberKey": key, "memberName": names.get(key, key)}
+        {
+            "memberKey": key,
+            "memberName": names.get(key, key) if name_counts[names.get(key, key)] == 1
+            else f"{names.get(key, key)}（{key}）",
+        }
         for key in ordered_keys
     ]
     return {
@@ -575,7 +694,7 @@ def _build_baseline(
         "direction": direction,
         "baseline_version": f"{formula_version}:{baseline_day}",
         "baseline_day": baseline_day,
-        "threshold": STRUCTURE_THRESHOLD,
+        "threshold": threshold,
         "stack_order": [*primary_keys, *( ["OTHER"] if other_keys else [])],
         "primary_members": [member for member in members if member["memberKey"] in primary_keys],
         "other_members": [member for member in members if member["memberKey"] in other_keys],
@@ -621,17 +740,47 @@ def _settlement_notional(bar: Mapping[str, Any], rule_book: RuleBook | None) -> 
     return settlement * multiplier * open_interest
 
 
+def _settlement_notional_official(
+    bar: Mapping[str, Any],
+    registry: OfficialMultiplierRegistry | None,
+    rule_book: RuleBook | None,
+) -> tuple[float | None, str | None]:
+    """Return value or the first missing official input for one contract day."""
+
+    open_interest = _positive_or_zero(bar.get("open_interest"))
+    if open_interest is None:
+        return None, "open_interest"
+    settlement = _positive_number(bar.get("settlement"))
+    if settlement is None:
+        return None, "settlement"
+    exchange = str(bar.get("exchange") or "")
+    product_code = str(bar.get("product_code") or "")
+    day = date.fromisoformat(str(bar["trade_date"]))
+    if exchange == "CFFEX":
+        multiplier = rule_book.resolve_multiplier(day, exchange, product_code) if rule_book else None
+    else:
+        evidence = registry.resolve(day, exchange, product_code) if registry else None
+        multiplier = evidence.contract_multiplier if evidence else None
+    if multiplier is None:
+        return None, "multiplier"
+    return settlement * multiplier * open_interest, None
+
+
 __all__ = (
     "MEMBER_OPEN_INTEREST_CHART_ID",
     "MEMBER_STRUCTURE_FORMULA_VERSION",
     "PRODUCT_NOTIONAL_CHART_ID",
+    "PRODUCT_VOLUME_CHART_ID",
     "PRODUCT_NOTIONAL_FORMULA_VERSION",
+    "PRODUCT_NOTIONAL_OFFICIAL_FORMULA_VERSION",
     "PRODUCT_OPEN_INTEREST_CHART_ID",
     "SETTLEMENT_PRICE_BASIS",
     "STRUCTURE_DIRECTION_GROSS",
     "STRUCTURE_FORMULA_VERSION",
-    "STRUCTURE_THRESHOLD",
+    "PRODUCT_STRUCTURE_RANK_LIMIT",
+    "MEMBER_STRUCTURE_THRESHOLD",
     "run_member_open_interest_structure_pipeline",
     "run_product_notional_structure_pipeline",
+    "run_product_official_notional_structure_pipeline",
     "run_product_open_interest_structure_pipeline",
 )

@@ -88,6 +88,9 @@ def collect_exchange_member_position_ranks(
     day_compact: str,
     trading_day: str,
     collected_at: str,
+    source_prefix: str = "akshare",
+    include_cffex: bool = True,
+    exchanges: tuple[str, ...] | None = None,
 ) -> tuple[list[MemberPositionRank], list[ExchangeRankCoverage]]:
     """Read available exchange tables without treating a partial source as full market.
 
@@ -99,8 +102,13 @@ def collect_exchange_member_position_ranks(
 
     rows: list[MemberPositionRank] = []
     coverage: list[ExchangeRankCoverage] = []
+    selected_exchanges = set(exchanges) if exchanges is not None else None
     for exchange, function_name in _EXCHANGE_FUNCTIONS:
-        source = f"akshare-{exchange.lower()}-member-ranking"
+        if (exchange == "CFFEX" and not include_cffex) or (
+            selected_exchanges is not None and exchange not in selected_exchanges
+        ):
+            continue
+        source = f"{source_prefix}-{exchange.lower()}-member-ranking"
         coverage_exchanges = _COVERAGE_EXCHANGES[exchange]
         fn = getattr(api, function_name, None)
         if not callable(fn):
@@ -132,8 +140,13 @@ def collect_exchange_member_position_ranks(
             collected_at=collected_at,
         )
         if not normalised:
+            evidence_for = getattr(api, "evidence_for", None)
+            evidence = evidence_for(exchange) if callable(evidence_for) else {}
+            no_publication = str(evidence.get("quality_status") or "").upper() == "NO_PUBLICATION"
+            status = "NO_PUBLICATION" if no_publication else "FAILED"
+            message = str(evidence.get("error") or "no usable published ranking rows")
             coverage.extend(
-                ExchangeRankCoverage(item, "FAILED", len(frames), 0, source, "no usable published ranking rows")
+                ExchangeRankCoverage(item, status, len(frames), 0, source, message)
                 for item in coverage_exchanges
             )
             continue
@@ -141,9 +154,16 @@ def collect_exchange_member_position_ranks(
         for effective_exchange in coverage_exchanges:
             exchange_rows = [row for row in normalised if row.exchange == effective_exchange]
             contracts = {row.contract_code for row in exchange_rows}
+            source_evidence_fn = getattr(api, "evidence_for", None)
+            source_evidence = source_evidence_fn(effective_exchange) if callable(source_evidence_fn) else {}
+            partial_source = str(source_evidence.get("quality_status") or "").upper() == "PARTIAL"
             if exchange_rows:
                 coverage.append(
-                    ExchangeRankCoverage(effective_exchange, "PASS", len(contracts), len(exchange_rows), source)
+                    ExchangeRankCoverage(
+                        effective_exchange, "PARTIAL" if partial_source else "PASS",
+                        len(contracts), len(exchange_rows), source,
+                        str(source_evidence.get("error")) if partial_source and source_evidence.get("error") else None,
+                    )
                 )
             else:
                 coverage.append(

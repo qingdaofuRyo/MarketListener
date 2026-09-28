@@ -166,6 +166,27 @@ def test_bulk_imports_specific_month_contracts_and_searches_polysilicon(tmp_path
     ).status_code == 200
 
 
+def test_bulk_preserves_expired_month_contract_history(tmp_path: Path) -> None:
+    root = _future_root(tmp_path)
+    (root / "vipdoc" / "ds" / "lday" / "29#JM2608.day").write_bytes(
+        struct.pack("<IffffIIf", 20260814, 1400, 1410, 1390, 1405, 100, 200, 1402)
+    )
+    data_root = tmp_path / "data"
+
+    run_bulk_futures(data_root, tdx_futures_root=root, include_global=False, api=_EmptyAk())
+
+    client = TestClient(create_web_app(data_root), client=("127.0.0.1", 50000))
+    response = client.get(
+        "/api/futures/contracts",
+        params={"exchange": "DCE", "product": "JM", "trading_day": "2026-08-14"},
+    )
+    assert response.status_code == 200
+    assert any(item["contractCode"] == "JM2608" for item in response.json()["items"])
+    assert client.get(
+        "/api/market/instruments", params={"q": "JM2608", "seriesKind": "CONTRACT", "includeExpired": True}
+    ).json()["total"] == 1
+
+
 def test_tdx_commodity_index_uses_index_metadata_name(tmp_path: Path) -> None:
     root = _future_root(tmp_path)
     (root / "vipdoc" / "ds" / "lday" / "42#T003.day").write_bytes(

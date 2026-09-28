@@ -50,6 +50,8 @@ export interface LongShortHeatPoint {
   isWarmup: boolean;
   dataQualityStatus: string;
   coverage?: number | LongShortHeatCoverage | null;
+  totalDepositCny?: number | null;
+  depositCoverage?: number;
 }
 
 export interface LongShortHeatResponse {
@@ -67,6 +69,55 @@ export interface LongShortHeatDisplayPoint extends LongShortHeatPoint {
   totalScore10: number | null;
 }
 
+export interface ContractTurnoverHeatPoint {
+  tradeDate: string;
+  totalContractCount: number;
+  validContractCount: number;
+  missingDirectionCount: number;
+  upContractCount: number;
+  downContractCount: number;
+  flatContractCount: number;
+  turnoverValidContractCount: number;
+  turnoverMissingContractCount: number;
+  upTurnoverCny: number;
+  downTurnoverCny: number;
+  flatTurnoverCny: number;
+  totalDepositCny: number | null;
+  countScore10: number | null;
+  turnoverScore10: number | null;
+  divergence: number | null;
+  isWarmup: boolean;
+  dataQualityStatus: string;
+  coverage: {
+    direction: number;
+    turnover: number;
+    deposit: number;
+    missingExchanges: string[];
+  };
+}
+
+export interface ContractTurnoverHeatResponse {
+  available: boolean;
+  config: {
+    defaultUserWeight: { contractWeight: number; turnoverWeight: number };
+    userWeight: LongShortHeatWeightRange;
+    score: { min: number; max: number };
+    stateBands: LongShortHeatStateBand[];
+    lookbackTradingDays: number;
+    halfLife: number;
+    divergenceThreshold: number;
+    minTurnoverCoverage: number;
+    turnoverUnit: string;
+    depositUnit: string;
+  };
+  points: ContractTurnoverHeatPoint[];
+  latest?: ContractTurnoverHeatPoint | null;
+  generatedAt?: string | null;
+  source?: string | null;
+  formulaVersion?: string | null;
+  limitations?: string[];
+}
+
 export type FuturesStructureRange = "1y" | "3y" | "5y" | "all";
 
 export interface FuturesStructureMember {
@@ -77,6 +128,7 @@ export interface FuturesStructureMember {
 export interface FuturesStructureSeries extends FuturesStructureMember {
   memberCount?: number;
   values: Array<number | null>;
+  lineValues?: Array<number | null>;
 }
 
 export interface FuturesStructureCoverage {
@@ -84,6 +136,17 @@ export interface FuturesStructureCoverage {
   inputRowCount: number;
   missingRowCount: number;
   dataQualityStatus: "PASS" | "PARTIAL";
+  officialInputRowCount?: number;
+  missingSettlementCount?: number;
+  missingOpenInterestCount?: number;
+  missingMultiplierCount?: number;
+  missingVolumeCount?: number;
+  missingExchangeCount?: number;
+  missingExchanges?: string[];
+  unverifiedVolumeCount?: number;
+  unverifiedOpenInterestCount?: number;
+  missingProducts?: string[];
+  missingContracts?: string[];
 }
 
 export interface FuturesStructureResponse {
@@ -93,16 +156,18 @@ export interface FuturesStructureResponse {
   direction: string;
   unit: string | null;
   baselineDay: string | null;
+  baselineQualityStatus?: "PASS" | "PARTIAL" | null;
   baselineVersion: string | null;
   threshold: number | null;
+  rankLimit?: number | null;
   stackOrder: string[];
   primaryMembers: FuturesStructureMember[];
   otherMembers: FuturesStructureMember[];
   unclassifiedMembers: FuturesStructureMember[];
   dates: string[];
   series: FuturesStructureSeries[];
-  totals: number[];
-  unclassifiedTotals: number[];
+  totals: Array<number | null>;
+  unclassifiedTotals: Array<number | null>;
   coverage: FuturesStructureCoverage[];
   formulaVersion: string | null;
   priceBasis: string | null;
@@ -115,6 +180,12 @@ export interface FuturesMemberPositionContract {
   exchange: string;
   productCode: string;
   contractCode: string;
+}
+
+export interface FuturesMemberPositionMember {
+  exchange: string;
+  memberKey: string;
+  memberName: string;
 }
 
 export interface FuturesMemberPositionRow {
@@ -132,15 +203,31 @@ export interface FuturesMemberPositionRow {
   netPosition: number | null;
   netLongPosition: number | null;
   netShortPosition: number | null;
+  netLongPositionChange: number | null;
+  netShortPositionChange: number | null;
   sources: string[];
+  publishers?: string[];
+  sourceUrls?: string[];
+  adapters?: string[];
+  legacyAdapters?: string[];
+  payloadSha256s?: string[];
+  qualityStatuses?: string[];
+  retrievedAt?: string | null;
 }
 
 export interface FuturesMemberPositionExchangeCoverage {
   exchange: string;
-  status: "PASS" | "FAILED" | "UNSUPPORTED" | "LEGACY_UNVERIFIED" | "NOT_COLLECTED";
+  status: "PASS" | "PARTIAL" | "FAILED" | "UNSUPPORTED" | "NO_PUBLICATION" | "DEFERRED" | "LEGACY_UNVERIFIED" | "NOT_COLLECTED";
   contractCount: number;
   recordCount: number;
   sources: string[];
+  publishers?: string[];
+  adapters?: string[];
+  sourceUrls?: string[];
+  payloadSha256s?: string[];
+  qualityStatuses?: string[];
+  qualityStatus?: string;
+  retrievedAt?: string | null;
   error: string | null;
   collectedAt: string | null;
 }
@@ -148,13 +235,16 @@ export interface FuturesMemberPositionExchangeCoverage {
 export interface FuturesMemberPositionResponse {
   available: boolean;
   tradingDay: string | null;
+  latestPublishedDay: string | null;
   filters: {
     exchange: string | null;
     contractCode: string | null;
     productCode: string | null;
+    memberKey: string | null;
     commodityOnly: boolean;
   };
   contracts: FuturesMemberPositionContract[];
+  members: FuturesMemberPositionMember[];
   rows: FuturesMemberPositionRow[];
   coverage: {
     publishedDirectionRankCount: number;
@@ -165,6 +255,69 @@ export interface FuturesMemberPositionResponse {
     missingExchanges: string[];
     isComplete: boolean;
     dataQualityStatus?: "PASS" | "PARTIAL" | "UNAVAILABLE";
+  };
+  limitations: string[];
+}
+
+export interface FuturesMemberPositionHistoryRow extends FuturesMemberPositionRow {
+  tradingDay: string;
+  productKey: string;
+  productName: string;
+  productDisplayName: string;
+}
+
+export interface FuturesMemberPositionHistoryResponse {
+  available: boolean;
+  exchange: string | null;
+  productKey: string | null;
+  filters: {
+    productCode: string | null;
+    contractCode: string | null;
+    memberKey: string | null;
+  };
+  dates: string[];
+  rows: FuturesMemberPositionHistoryRow[];
+  sourceStatusByDay: Record<string, string>;
+  sourceStatusByExchange: Record<string, Record<string, string>>;
+  limitations: string[];
+}
+
+export interface FuturesMemberOverviewProduct {
+  productKey: string;
+  exchange: string;
+  productCode: string;
+  displayName: string;
+  grossPublishedPosition: number;
+  contracts: string[];
+}
+
+export interface FuturesMemberOverviewMember {
+  memberKey: string;
+  memberName: string;
+  grossPublishedPosition: number;
+  exchanges: string[];
+}
+
+export interface FuturesMemberOverviewResponse {
+  available: boolean;
+  tradingDay: string | null;
+  latestPublishedDay: string | null;
+  latestObservationDay: string | null;
+  latestObservationCoverage: {
+    exchangeCoverage: FuturesMemberPositionExchangeCoverage[];
+    missingExchanges: string[];
+    isComplete: boolean;
+    dataQualityStatus: "PASS" | "PARTIAL" | "UNAVAILABLE";
+  } | null;
+  defaultProductKey: string | null;
+  defaultMemberKey: string | null;
+  products: FuturesMemberOverviewProduct[];
+  members: FuturesMemberOverviewMember[];
+  coverage: {
+    exchangeCoverage: FuturesMemberPositionExchangeCoverage[];
+    missingExchanges: string[];
+    isComplete: boolean;
+    dataQualityStatus: "PASS" | "PARTIAL" | "UNAVAILABLE";
   };
   limitations: string[];
 }

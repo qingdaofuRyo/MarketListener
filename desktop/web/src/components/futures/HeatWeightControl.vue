@@ -1,14 +1,21 @@
 <script setup lang="ts">
 import { computed } from "vue";
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   fundWeight: number;
   defaultFundWeight: number;
   min: number;
   max: number;
   step: number;
   disabled?: boolean;
-}>();
+  countWeightLabel?: string;
+  amountWeightLabel?: string;
+  sliderAriaLabel?: string;
+}>(), {
+  countWeightLabel: "品种热度",
+  amountWeightLabel: "资金热度",
+  sliderAriaLabel: "资金热度权重",
+});
 
 const emit = defineEmits<{
   "update:fundWeight": [value: number];
@@ -34,8 +41,8 @@ function commit(): void {
 <template>
   <section class="weight-control" aria-label="总多空热度权重">
     <div class="weight-labels">
-      <span>品种热度 <strong data-test="breadth-weight">{{ breadthPercent }}%</strong></span>
-      <span>资金热度 <strong data-test="fund-weight">{{ sliderValue }}%</strong></span>
+      <span>{{ countWeightLabel }} <strong data-test="breadth-weight">{{ breadthPercent }}%</strong></span>
+      <span>{{ amountWeightLabel }} <strong data-test="fund-weight">{{ sliderValue }}%</strong></span>
     </div>
     <el-slider
       v-model="sliderValue"
@@ -43,8 +50,8 @@ function commit(): void {
       :max="sliderMax"
       :step="sliderStep"
       :disabled="disabled"
-      :format-tooltip="(value: number) => `资金 ${value}% · 品种 ${100 - value}%`"
-      aria-label="资金热度权重"
+      :format-tooltip="(value: number) => `${amountWeightLabel} ${value}% · ${countWeightLabel} ${100 - value}%`"
+      :aria-label="sliderAriaLabel"
       data-test="heat-weight-slider"
       @change="commit"
     />

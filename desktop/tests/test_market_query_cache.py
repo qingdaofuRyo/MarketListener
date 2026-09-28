@@ -81,6 +81,28 @@ def test_persistent_cache_is_a_file_manifest_not_a_full_json_copy(tmp_path: Path
     assert indexed_rows == 12
 
 
+def test_refresh_replaces_legacy_relative_path_alias_without_duplicate_rows(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    with duckdb.connect(str(store.path)) as connection:
+        rows = connection.execute("SELECT * FROM instrument_file").fetchall()
+        assert {row[2] for row in rows} == {rows[0][2]}
+        absolute_path = Path(str(rows[0][2]))
+        relative_path = str(Path(store.data_root.name) / absolute_path.relative_to(store.data_root))
+        for row in rows:
+            duplicate = list(row)
+            duplicate[2] = relative_path
+            connection.execute("INSERT INTO instrument_file VALUES (?, ?, ?, ?, ?, ?, ?, ?)", duplicate)
+
+    assert store.refresh_partition_files([absolute_path]) is True
+
+    with duckdb.connect(str(store.path), read_only=True) as connection:
+        file_paths = connection.execute("SELECT DISTINCT file_path FROM instrument_file").fetchall()
+        indexed_rows = connection.execute("SELECT sum(row_count) FROM instrument_file").fetchone()[0]
+        period_rows = connection.execute("SELECT sum(row_count) FROM instrument_period").fetchone()[0]
+    assert file_paths == [(str(absolute_path),)]
+    assert indexed_rows == period_rows == 12
+
+
 def test_default_inventory_does_not_hide_instruments_after_the_legacy_cap(tmp_path: Path) -> None:
     """Discovery must include the complete local universe, not only the first 20k IDs."""
 

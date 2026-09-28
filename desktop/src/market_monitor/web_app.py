@@ -7,6 +7,7 @@ it neither shells out to the CLI nor introduces another industry database.
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 import socket
 import threading
 import json
@@ -66,15 +67,33 @@ def create_web_app(
     *,
     web_dist: Path | None = None,
     operation_manager: OperationManager | None = None,
+    auto_update_on_startup: bool = False,
 ) -> FastAPI:
-    """Create the read-only FastAPI surface for the Vue terminal shell."""
+    """Create the FastAPI surface, optionally queuing startup data refreshes."""
 
     root = Path(data_root)
     dist = web_dist or Path(__file__).with_name("web_dist")
     repository = CompanyRepository(root)
     events = EventLog(root)
     operations = operation_manager or OperationManager(root, _operation_handlers(root), event_sink=events.append)
-    app = FastAPI(title="MarketListener Local Research Terminal", docs_url=None, redoc_url=None)
+    startup_operations = (
+            OperationKind.MARKET_UPDATE,
+            OperationKind.FUTURES_OFFICIAL_DAILY_UPDATE,
+            OperationKind.TDX_COVERAGE_CHECK,
+            OperationKind.FUTURES_STRUCTURE_UPDATE,
+    )
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        if auto_update_on_startup:
+            for kind in startup_operations:
+                operations.submit(kind)
+        yield
+
+    app = FastAPI(
+        title="MarketListener Local Research Terminal", docs_url=None, redoc_url=None,
+        lifespan=lifespan,
+    )
     app.state.data_root = root
     app.include_router(market_api.router)
     app.include_router(sources_api.router)
@@ -99,6 +118,21 @@ def create_web_app(
     @app.get("/api/health")
     def health() -> dict[str, object]:
         return build_control_center_report(root)
+
+    @app.get("/api/ready")
+    def ready() -> dict[str, str]:
+        return {"status": "READY"}
+
+    @app.get("/favicon.svg", include_in_schema=False)
+    def favicon_svg() -> Response:
+        path = dist / "favicon.svg"
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail="favicon is not built")
+        return FileResponse(path, media_type="image/svg+xml")
+
+    @app.get("/favicon.ico", include_in_schema=False)
+    def legacy_favicon() -> RedirectResponse:
+        return RedirectResponse("/favicon.svg", status_code=307)
 
     @app.get("/api/datasets")
     def datasets() -> list[dict[str, object]]:
@@ -152,6 +186,18 @@ def create_web_app(
         if operation is None:
             raise HTTPException(status_code=404, detail="operation not found")
         return {"operation": operation.to_dict()}
+
+    @app.get("/api/tdx-afterhours/coverage")
+    def tdx_afterhours_coverage() -> dict[str, object]:
+        """Return the latest local raw-file coverage report, if one exists.
+
+        The endpoint deliberately returns only aggregate/sampled evidence.  A
+        coverage scan can touch tens of thousands of raw terminal files, so
+        exposing its complete per-file report through the dashboard would make
+        a read-only status page unexpectedly expensive.
+        """
+
+        return _tdx_coverage_payload(root)
 
     @app.get("/api/f10/companies")
     def companies(
@@ -239,6 +285,15 @@ def _operation_handlers(data_root: Path) -> dict[OperationKind, object]:
     from .industry_atlas import build_atlas
     from .package_builder import build_android_package
     from .report_pipeline import build_chain_index, process_report_batch, verify_report_batch
+    from .futures_calendar import load_futures_trading_calendar, sync_futures_trading_calendar
+    from .futures_official_backfill import default_backfill_range, run_official_futures_backfill
+    from .futures_official_structure import run_official_product_structure_pipeline
+    from .futures_structure import (
+        run_member_open_interest_structure_pipeline,
+        run_product_notional_structure_pipeline,
+        run_product_open_interest_structure_pipeline,
+    )
+    from .tdx_local import run_tdx_local_import
 
     desktop_root = Path(__file__).resolve().parents[2]
     repository_root = desktop_root.parent
@@ -250,6 +305,147 @@ def _operation_handlers(data_root: Path) -> dict[OperationKind, object]:
     def invoke(callable_: object) -> str:
         result = callable_()  # type: ignore[operator]
         return json.dumps(result, ensure_ascii=False, sort_keys=True) if isinstance(result, dict) else str(result or "PASS")
+
+    def check_tdx_coverage() -> str:
+        from .tdx_coverage import run_tdx_coverage_check
+
+        report = run_tdx_coverage_check(data_root)
+        summary = report.get("summary") if isinstance(report, dict) else None
+        summary = summary if isinstance(summary, dict) else {}
+        files = _nonnegative_int(summary.get("files"))
+        gaps = _nonnegative_int(summary.get("gapFiles"))
+        unreadable = _nonnegative_int(summary.get("unreadableFiles"))
+        writing = _nonnegative_int(summary.get("writingFiles"))
+        unknown = _nonnegative_int(summary.get("unknownCalendarFiles"))
+        detail = (
+            f"通达信本地K线检查：文件 {files}，缺口文件 {gaps}，"
+            f"不可读 {unreadable}，写入中 {writing}，待日历/时段核验 {unknown}。"
+        )
+        if str(report.get("status") or "").upper() == "PASS" and not (gaps or unreadable or writing or unknown):
+            return f"PASS: {detail}"
+        return f"PARTIAL_FAILURE: {detail} 详情见仪表盘最近检查结果。"
+
+    def download_tdx_afterhours() -> str:
+        """Run only when explicitly queued; terminal launch/login stay manual."""
+
+        from .tdx_download_ui import main as tdx_download_main
+
+        state_dir = data_root / "state" / "tdx_download_ui"
+        exit_code = tdx_download_main(["--execute", "--state-dir", str(state_dir)])
+        latest = _read_json_object(state_dir / "latest.json")
+        status = str(latest.get("status") or "UNKNOWN")
+        terminals = latest.get("terminals")
+        terminal_text = ", ".join(
+            f"{key}={value}" for key, value in sorted(terminals.items())
+        ) if isinstance(terminals, dict) else ""
+        if exit_code == 0 and status == "UI_DONE_UNVERIFIED":
+            suffix = f"（{terminal_text}）" if terminal_text else ""
+            return (
+                "PASS: 通达信界面下载已完成"
+                f"{suffix}；这只证明界面完成，仍请运行“检查通达信盘后数据”核验文件覆盖。"
+            )
+        return (
+            "PARTIAL_FAILURE: 通达信盘后下载未确认完成"
+            f"（{status}{'；' + terminal_text if terminal_text else ''}）。"
+            "请先在启动器中启动并登录两款终端，再重试下载；"
+            "若期货通菜单无法自动打开，请手动打开“盘后数据下载”窗口。"
+        )
+
+    def update_futures_heat() -> str:
+        from .futures_contract_heat_update import run_futures_contract_heat_update
+
+        summary = run_futures_contract_heat_update(data_root)
+        latest = summary.get("calculation", {})
+        official = summary.get("officialTurnover", {})
+        venues = official.get("exchanges", []) if isinstance(official, dict) else []
+        passed = sum(isinstance(item, dict) and item.get("status") == "PASS" for item in venues)
+        total = len(venues)
+        missing = [str(item.get("exchange")) for item in venues if isinstance(item, dict) and item.get("status") != "PASS"]
+        state = "PASS" if summary.get("status") == "PASS" else "PARTIAL_FAILURE"
+        missing_text = f"；缺失/待核验交易所：{'、'.join(missing)}" if missing else ""
+        return (
+            f"{state}: 期货月份合约热度已刷新至 {latest.get('latestDay') or '暂无日期'}；"
+            f"官方逐合约成交额 {passed}/{total} 个交易所通过，"
+            f"成交额覆盖 {float(latest.get('latestTurnoverCoverage') or 0):.1%}"
+            f"{missing_text}。"
+        )
+
+    def import_tdx_local_data() -> str:
+        from datetime import datetime, timedelta
+
+        from .tdx_afterhours import BEIJING
+
+        download_state = _read_json_object(data_root / "state" / "tdx_download_ui" / "latest.json")
+        try:
+            slot_time = datetime.fromisoformat(str(download_state.get("slot") or ""))
+            age = datetime.now(BEIJING) - slot_time.astimezone(BEIJING)
+            fresh_slot = timedelta(0) <= age <= timedelta(hours=24)
+        except ValueError:
+            fresh_slot = False
+        if (
+            str(download_state.get("status") or "").upper() != "UI_DONE_UNVERIFIED"
+            or not fresh_slot
+        ):
+            status = str(download_state.get("status") or "NO_CONFIRMED_DOWNLOAD")
+            return (
+                "PARTIAL_FAILURE: 通达信盘后下载未确认完成，跳过本地文件导入，"
+                f"以免读取仍在写入的数据（{status}）。"
+            )
+        summary = run_tdx_local_import(data_root)
+        state = str(summary.get("状态") or "")
+        import_status = "PASS" if state == "完成" else "PARTIAL_FAILURE"
+        heat_detail = update_futures_heat()
+        heat_status = "PARTIAL_FAILURE" if heat_detail.startswith("PARTIAL_FAILURE") else "PASS"
+        status = "PASS" if import_status == heat_status == "PASS" else "PARTIAL_FAILURE"
+        return (
+            f"{status}: 通达信本地数据导入扫描 {summary.get('扫描文件', 0)} 个文件、"
+            f"写入 {summary.get('写入K线', 0)} 根K线（{state or '状态未知'}）；{heat_detail}"
+        )
+
+    def latest_completed_futures_day() -> str:
+        if load_futures_trading_calendar(data_root) is None:
+            sync_futures_trading_calendar(data_root)
+        _start_day, end_day = default_backfill_range(data_root)
+        return end_day
+
+    def update_official_futures_daily() -> str:
+        day = latest_completed_futures_day()
+        daily = run_official_futures_backfill(
+            data_root, start_day=day, end_day=day, max_days=1,
+        )
+        structures = [
+            run_official_product_structure_pipeline(
+                data_root, metric=metric, start_day=day, end_day=day,
+            )
+            for metric in ("open_interest", "notional", "volume")
+        ]
+        passed = sum(item.get("status") == "PASS" for item in structures)
+        status = "PASS" if daily.get("status") == "PASS" and passed == len(structures) else "PARTIAL_FAILURE"
+        return (
+            f"{status}: 官方期货日行情截至 {day}；来源日 {daily.get('passed', 0)}/{daily.get('attempts', 0)} 通过，"
+            f"官方品种结构 {passed}/{len(structures)} 项完整。"
+        )
+
+    def rebuild_futures_structures() -> str:
+        day = latest_completed_futures_day()
+        summaries = [
+            run_product_open_interest_structure_pipeline(data_root, start_day=day, end_day=day),
+            run_product_notional_structure_pipeline(data_root, start_day=day, end_day=day),
+            run_member_open_interest_structure_pipeline(data_root, start_day=day, end_day=day),
+        ]
+
+        def complete(item: dict[str, Any]) -> bool:
+            if item.get("status") == "PASS":
+                return True
+            directions = item.get("directions")
+            return isinstance(directions, dict) and bool(directions) and all(
+                isinstance(value, dict) and value.get("status") == "PASS"
+                for value in directions.values()
+            )
+
+        passed = sum(complete(item) for item in summaries)
+        status = "PASS" if passed == len(summaries) else "PARTIAL_FAILURE"
+        return f"{status}: 期货本地持仓、市值及席位结构已重建至 {day}，{passed}/{len(summaries)} 项完整。"
 
     return {
         OperationKind.MARKET_UPDATE: lambda: invoke(lambda: run_fetch_session(data_root)),
@@ -264,7 +460,99 @@ def _operation_handlers(data_root: Path) -> dict[OperationKind, object]:
             lambda: build_android_package(data_root, private_key, ecdsa_private_key=ecdsa_private_key)
         ),
         OperationKind.STATUS_REFRESH: lambda: "PASS: status refresh is served from current local snapshots",
+        OperationKind.TDX_COVERAGE_CHECK: check_tdx_coverage,
+        OperationKind.TDX_AFTERHOURS_DOWNLOAD: download_tdx_afterhours,
+        OperationKind.TDX_LOCAL_IMPORT: import_tdx_local_data,
+        OperationKind.FUTURES_HEAT_UPDATE: update_futures_heat,
+        OperationKind.FUTURES_OFFICIAL_DAILY_UPDATE: update_official_futures_daily,
+        OperationKind.FUTURES_STRUCTURE_UPDATE: rebuild_futures_structures,
     }
+
+
+def _tdx_coverage_payload(data_root: Path) -> dict[str, object]:
+    from .tdx_coverage import (
+        coverage_groups,
+        coverage_summary,
+        financial_extended_groups,
+        load_latest_tdx_coverage,
+    )
+
+    report = load_latest_tdx_coverage(data_root)
+    if not isinstance(report, dict):
+        return {"available": False}
+    raw_files = report.get("files")
+    native_files = (
+        isinstance(raw_files, list) and bool(raw_files)
+        and all(isinstance(item, dict) and "terminal" in item and "period" in item for item in raw_files)
+    )
+    raw_groups = coverage_groups(raw_files) if native_files else report.get("groups")
+    groups: list[dict[str, object]] = []
+    legacy_group_shape = not native_files and isinstance(raw_groups, list) and any(
+        isinstance(item, dict) and ("earliestAt" in item or "latestAt" in item)
+        for item in raw_groups
+    )
+    group_fields = (
+        (
+            "terminal", "period", "files", "readableFiles", "unreadableFiles", "writingFiles",
+            "earliestAt", "latestAt", "records", "continuousFiles", "gapFiles",
+            "unknownCalendarFiles", "gapCount", "sampleGaps",
+        )
+        if legacy_group_shape else (
+            "terminal", "period", "files", "readableFiles", "unreadableFiles", "writingFiles",
+            "commonStartDate", "commonStartFiles", "commonLatestDate", "commonLatestFiles",
+            "records", "continuousFiles", "gapFiles", "unknownCalendarFiles", "gapCount", "sampleGaps",
+        )
+    )
+    if isinstance(raw_groups, list):
+        for item in raw_groups:
+            if not isinstance(item, dict):
+                continue
+            groups.append(
+                {
+                    key: item.get(key)
+                    for key in group_fields
+                }
+            )
+    raw_summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+    summary = coverage_summary(raw_files) if native_files else dict(raw_summary)
+    for key in ("scannedFiles", "reusedFiles", "missingTerminals"):
+        if key in raw_summary:
+            summary[key] = raw_summary[key]
+    raw_extended = report.get("extendedGroups")
+    extended = raw_extended
+    if not isinstance(extended, list) or any(
+        isinstance(item, dict) and "commonStartDate" not in item for item in extended
+    ):
+        extended = financial_extended_groups(raw_files if native_files else [])
+    return {
+        "available": True,
+        "generatedAt": report.get("generatedAt"),
+        "status": report.get("status"),
+        "summary": summary,
+        "groups": groups,
+        "extendedGroups": [
+            {key: item.get(key) for key in (
+                "prefix", "period", "files", "withRecords", "commonStartDate", "commonStartFiles",
+                "commonLatestDate", "commonLatestFiles",
+            )}
+            for item in extended if isinstance(item, dict)
+        ],
+    }
+
+
+def _nonnegative_int(value: object) -> int:
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _read_json_object(path: Path) -> dict[str, object]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
 
 
 def _data_rows(root: Path, repository: CompanyRepository, view: str) -> list[dict[str, Any]]:
@@ -373,6 +661,7 @@ def serve_web_app(
     port: int = 8765,
     timeout_seconds: float | None = None,
     quiet: bool = False,
+    auto_update_on_startup: bool = True,
 ) -> tuple[str, int]:
     """Serve the FastAPI terminal, retaining deterministic timeout support for CLI tests."""
 
@@ -385,7 +674,7 @@ def serve_web_app(
     listener.listen(socket.SOMAXCONN)
     actual_port = int(listener.getsockname()[1])
     config = uvicorn.Config(
-        create_web_app(data_root),
+        create_web_app(data_root, auto_update_on_startup=auto_update_on_startup),
         host=host,
         port=actual_port,
         log_level="warning" if quiet else "info",

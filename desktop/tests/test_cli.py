@@ -116,9 +116,15 @@ def test_cli_redacts_registered_short_secret_when_it_appears_as_a_report_path_to
 
 
 def test_cli_serve_emits_machine_readable_result(monkeypatch, tmp_path, capsys) -> None:
+    received: dict[str, object] = {}
+
+    def fake_serve(*args, **kwargs):
+        received.update(kwargs)
+        return "127.0.0.1", 9876
+
     monkeypatch.setattr(
         "market_monitor.cli.serve_web_app",
-        lambda *args, **kwargs: ("127.0.0.1", 9876),
+        fake_serve,
     )
 
     assert main(
@@ -127,6 +133,21 @@ def test_cli_serve_emits_machine_readable_result(monkeypatch, tmp_path, capsys) 
     payload = json.loads(capsys.readouterr().out)
     assert payload["status"] == "SUCCESS"
     assert "http://127.0.0.1:9876/" in payload["message"]
+    assert received["auto_update_on_startup"] is True
+
+
+def test_cli_serve_can_disable_startup_data_updates(monkeypatch, tmp_path, capsys) -> None:
+    received: dict[str, object] = {}
+
+    def fake_serve(*args, **kwargs):
+        received.update(kwargs)
+        return "127.0.0.1", 9876
+
+    monkeypatch.setattr("market_monitor.cli.serve_web_app", fake_serve)
+
+    assert main(["serve", "--data-root", str(tmp_path), "--no-auto-update-on-startup"]) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "SUCCESS"
+    assert received["auto_update_on_startup"] is False
 
 
 def test_cli_serve_rejects_non_positive_timeout(capsys) -> None:

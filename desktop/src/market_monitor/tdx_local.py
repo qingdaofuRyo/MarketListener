@@ -75,6 +75,9 @@ def financial_ds_metadata(filename: str) -> dict[str, str] | None:
     if not isinstance(base, dict):
         return None
     code = match.group("code").upper()
+    # R4-T049: user retired foreign 00Y continuous contracts (00W stays).
+    if prefix in {"16", "17", "18"} and code.endswith("00Y"):
+        return None
     if prefix == "27" and code.startswith("HZ"):
         return None
     if prefix in {"31", "48", "49"} and not re.fullmatch(r"\d{5}", code):
@@ -92,8 +95,6 @@ def financial_ds_metadata(filename: str) -> dict[str, str] | None:
     if prefix in {"16", "17", "18"}:
         if code.endswith("00W"):
             metadata["series_kind"] = "MAIN"
-        elif code.endswith("00Y"):
-            metadata["series_kind"] = "CONTINUOUS"
     return metadata
 
 
@@ -122,7 +123,8 @@ def read_tdx_local_file(
     Hong Kong files.
     """
 
-    size_before = path.stat().st_size
+    stat_before = path.stat()
+    size_before = stat_before.st_size
     if size_before % 32:
         raise ValueError(f"文件长度不是 32 字节倍数: {path.name}")
     if start_offset < 0 or start_offset > size_before or start_offset % 32:
@@ -130,7 +132,8 @@ def read_tdx_local_file(
     with path.open("rb") as stream:
         stream.seek(start_offset)
         payload = stream.read()
-    if path.stat().st_size != size_before:
+    stat_after = path.stat()
+    if (stat_after.st_size, stat_after.st_mtime_ns) != (size_before, stat_before.st_mtime_ns):
         raise RuntimeError(f"通达信正在写入，稍后重试: {path.name}")
     is_daily = path.suffix.lower() == ".day"
     records: list[dict[str, Any]] = []

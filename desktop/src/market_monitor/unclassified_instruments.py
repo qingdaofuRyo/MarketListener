@@ -86,6 +86,8 @@ def _excluded_from_review(name: str, *, financial: bool) -> bool:
         return False
     if code.startswith("HZ"):
         return True
+    if prefix in {"16", "17", "18"} and code.endswith("00Y"):
+        return True
     if financial:
         return prefix in {"28", "29", "30", "42", "47", "49", "66", "68", "98"}
     return prefix not in {"28", "29", "30", "42", "47", "66", "68"}

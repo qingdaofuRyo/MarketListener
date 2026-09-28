@@ -3,21 +3,38 @@
 from __future__ import annotations
 
 import argparse
+from datetime import date
 import json
 import sys
 from pathlib import Path
 
 from market_monitor import __version__
-from market_monitor.collector import build_collection_tasks, run_fetch_session
+from market_monitor.collector import (
+    build_collection_tasks,
+    run_fetch_session,
+    run_official_member_rank_backfill,
+    run_official_member_rank_sync,
+)
 from market_monitor.full_market import run_full_etf_backfill, run_full_stock_backfill
 from market_monitor.futures_bulk import run_bulk_futures
 from market_monitor.futures_heat_pipeline import run_futures_heat_pipeline
+from market_monitor.futures_contract_heat_pipeline import run_futures_contract_heat_pipeline
 from market_monitor.futures_structure import (
+    run_product_official_notional_structure_pipeline,
     run_member_open_interest_structure_pipeline,
     run_product_notional_structure_pipeline,
     run_product_open_interest_structure_pipeline,
 )
 from market_monitor.futures_calendar import sync_futures_trading_calendar
+from market_monitor.futures_official_backfill import (
+    DEFAULT_DAILY_HOST_BUDGET,
+    DEFAULT_MIN_INTERVAL_SECONDS,
+    DEFAULT_EXCHANGES,
+    default_backfill_range,
+    run_official_futures_backfill,
+)
+from market_monitor.futures_official_structure import run_official_product_structure_pipeline
+from market_monitor.futures_exchange_daily import EXCHANGES, collect_exchange_daily_turnover
 from market_monitor.futures_rule_sync import sync_futures_rule_snapshots
 from market_monitor.external_market_sync import ExternalMarketSyncError, sync_cboe_vix_history
 from market_monitor.tdx_local import run_tdx_local_import
@@ -73,6 +90,10 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--port", type=int, default=8765, help="bind port (0 picks a free port)")
     serve.add_argument("--timeout-seconds", type=float, default=None, help="stop after N seconds (tests/CI)")
     serve.add_argument("--quiet", action="store_true", help="suppress per-request HTTP logs")
+    serve.add_argument(
+        "--no-auto-update-on-startup", action="store_true",
+        help="启动网页服务但不自动排队更新行情、通达信及期货数据（F10始终不纳入自动任务）",
+    )
     kline_cache = subcommands.add_parser("kline-cache", help="build or refresh the local low-latency K-line query cache")
     kline_cache.add_argument("--data-root", type=Path, default=Path("data_control"))
     prune_retired = subcommands.add_parser(
@@ -110,22 +131,36 @@ def build_parser() -> argparse.ArgumentParser:
     bulk_futures.add_argument("--global-only", action="store_true", help="仅导入国外重点期货与参考指数")
     bulk_futures.add_argument("--local-only", action="store_true", help="仅导入通达信期货通本地文件，不请求 AKShare")
     bulk_futures.add_argument("--full-rescan", action="store_true", help="忽略本地文件检查点并全量重扫")
+    bulk_futures.add_argument("--start-date", help="本地导入开始日期（含），YYYY-MM-DD")
+    bulk_futures.add_argument("--end-date", help="本地导入结束日期（含），YYYY-MM-DD")
     futures_heat = subcommands.add_parser("futures-heat", help="从 Silver 离线构建中国商品期货多空热度 Gold 数据")
     futures_heat.add_argument("--data-root", type=Path, default=Path("data_control"))
     futures_heat.add_argument("--start-day", default=None, help="仅写入该交易日（含）之后的 Gold，格式 YYYY-MM-DD")
     futures_heat.add_argument("--end-day", default=None, help="仅读取并写入该交易日（含）之前的数据，格式 YYYY-MM-DD")
-    futures_structure = subcommands.add_parser("futures-structure", help="从 Silver 离线构建商品期货固定结构 Gold 数据")
+    contract_heat = subcommands.add_parser(
+        "futures-contract-heat", help="从月份合约和交易所成交额构建新版合约多空热度"
+    )
+    contract_heat.add_argument("--data-root", type=Path, default=Path("data_control"))
+    futures_structure = subcommands.add_parser("futures-structure", help="从 Silver 离线构建含中金所的国内期货品种持仓 Gold 数据")
     futures_structure.add_argument("--data-root", type=Path, default=Path("data_control"))
     futures_structure.add_argument("--start-day", default=None, help="仅替换该交易日（含）之后的 Gold，格式 YYYY-MM-DD")
     futures_structure.add_argument("--end-day", default=None, help="仅读取并替换该交易日（含）之前的数据，格式 YYYY-MM-DD")
     futures_structure.add_argument("--rebuild-baseline", action="store_true", help="显式按最新完整交易日重建固定堆叠基准")
     futures_notional_structure = subcommands.add_parser(
-        "futures-notional-structure", help="从 Silver 和同交易日规则快照构建商品期货品种市值结构 Gold 数据"
+        "futures-notional-structure", help="从 Silver 和日期生效交易乘数构建含中金所的期货品种市值 Gold 数据"
     )
     futures_notional_structure.add_argument("--data-root", type=Path, default=Path("data_control"))
     futures_notional_structure.add_argument("--start-day", default=None, help="仅替换该交易日（含）之后的 Gold，格式 YYYY-MM-DD")
     futures_notional_structure.add_argument("--end-day", default=None, help="仅读取并替换该交易日（含）之前的数据，格式 YYYY-MM-DD")
     futures_notional_structure.add_argument("--rebuild-baseline", action="store_true", help="显式按最新完整交易日重建固定堆叠基准")
+    official_notional = subcommands.add_parser(
+        "futures-official-notional-structure",
+        help="以交易所官方生效期乘数构建独立版本的品种名义持仓规模",
+    )
+    official_notional.add_argument("--data-root", type=Path, default=Path("data_control"))
+    official_notional.add_argument("--start-day", default=None)
+    official_notional.add_argument("--end-day", default=None)
+    official_notional.add_argument("--rebuild-baseline", action="store_true")
     futures_member_structure = subcommands.add_parser(
         "futures-member-structure", help="从交易所公开会员排名离线构建席位持仓结构 Gold 数据"
     )
@@ -138,10 +173,76 @@ def build_parser() -> argparse.ArgumentParser:
     )
     futures_rules.add_argument("--data-root", type=Path, default=Path("data_control"))
     futures_rules.add_argument("--lookback-days", type=int, default=10, help="同步最近 N 个 Silver 有效交易日")
+    futures_rules.add_argument("--day", type=date.fromisoformat, help="只补指定 Silver 交易日规则，YYYY-MM-DD")
+    futures_turnover = subcommands.add_parser(
+        "futures-turnover-sync", help="只读采集交易所逐合约日行情并规范化成交额"
+    )
+    futures_turnover.add_argument("--data-root", type=Path, default=Path("data_control"))
+    futures_turnover.add_argument("--day", type=date.fromisoformat, required=True)
+    futures_turnover.add_argument("--exchange", action="append", choices=EXCHANGES)
+    member_ranks = subcommands.add_parser(
+        "futures-member-rank-sync", help="从商品交易所官网直连采集指定交易日席位排名"
+    )
+    member_ranks.add_argument("--data-root", type=Path, default=Path("data_control"))
+    member_ranks.add_argument("--day", type=date.fromisoformat, required=True)
+    member_ranks.add_argument(
+        "--min-interval-seconds", type=float, default=DEFAULT_MIN_INTERVAL_SECONDS,
+        help="全局最小请求间隔；小于0.2秒自动限为0.2秒（最多5次/秒）",
+    )
+    member_ranks.add_argument(
+        "--daily-request-budget", "--daily-host-budget", dest="daily_host_budget",
+        type=int, default=DEFAULT_DAILY_HOST_BUDGET,
+        help="所有官方主机共享的日请求上限（最多30000）",
+    )
+    member_rank_backfill = subcommands.add_parser(
+        "futures-member-rank-backfill", help="慢速、可恢复地回填交易所官网席位持仓及成交排名"
+    )
+    member_rank_backfill.add_argument("--data-root", type=Path, default=Path("data_control"))
+    member_rank_backfill.add_argument("--start-day", default=None)
+    member_rank_backfill.add_argument("--end-day", default=None)
+    member_rank_backfill.add_argument("--max-days", type=int, default=None)
+    member_rank_backfill.add_argument("--exchange", action="append", choices=["CFFEX", "DCE", "CZCE", "SHFE", "GFEX"])
+    member_rank_backfill.add_argument(
+        "--min-interval-seconds", type=float, default=DEFAULT_MIN_INTERVAL_SECONDS,
+        help="全局最小请求间隔；小于0.2秒自动限为0.2秒（最多5次/秒）",
+    )
+    member_rank_backfill.add_argument(
+        "--daily-request-budget", "--daily-host-budget", dest="daily_host_budget",
+        type=int, default=DEFAULT_DAILY_HOST_BUDGET,
+        help="所有官方主机共享的日请求上限（最多30000）",
+    )
+    member_rank_backfill.add_argument("--retry-failed", action="store_true", help="显式重试之前FAILED/PARTIAL的来源日")
     futures_calendar = subcommands.add_parser(
         "futures-calendar-sync", help="同步并持久化中国期货统一交易日历"
     )
     futures_calendar.add_argument("--data-root", type=Path, default=Path("data_control"))
+    official_backfill = subcommands.add_parser(
+        "futures-official-backfill", help="慢速、可恢复地回填国内六大期货交易所官方日行情"
+    )
+    official_backfill.add_argument("--data-root", type=Path, default=Path("data_control"))
+    official_backfill.add_argument("--start-day", default=None, help="起始日（含），默认最近完整交易日往前365天")
+    official_backfill.add_argument("--end-day", default=None, help="结束日（含），默认最近完整交易日")
+    official_backfill.add_argument("--exchange", action="append", choices=DEFAULT_EXCHANGES)
+    official_backfill.add_argument("--max-days", type=int, default=None, help="本次最多处理的交易日数，便于小批量续跑")
+    official_backfill.add_argument(
+        "--min-interval-seconds", type=float, default=DEFAULT_MIN_INTERVAL_SECONDS,
+        help="全局最小请求间隔；小于0.2秒自动限为0.2秒（最多5次/秒）",
+    )
+    official_backfill.add_argument(
+        "--daily-request-budget", "--daily-host-budget", dest="daily_host_budget",
+        type=int, default=DEFAULT_DAILY_HOST_BUDGET,
+        help="所有官方主机共享的日请求上限（最多30000）",
+    )
+    official_backfill.add_argument("--dry-run", action="store_true", help="只显示计划请求，不访问官网")
+    official_backfill.add_argument("--retry-failed", action="store_true", help="显式重试之前标记FAILED/NO_PUBLICATION的来源日")
+    official_structure = subcommands.add_parser(
+        "futures-official-structure", help="从六大交易所官方日行情构建独立持仓、市值和成交量结构"
+    )
+    official_structure.add_argument("--data-root", type=Path, default=Path("data_control"))
+    official_structure.add_argument("--metric", choices=["all", "open_interest", "notional", "volume"], default="all")
+    official_structure.add_argument("--start-day", default=None)
+    official_structure.add_argument("--end-day", default=None)
+    official_structure.add_argument("--rebuild-baseline", action="store_true")
     vix_sync = subcommands.add_parser(
         "vix-sync", help="从 CBOE 官方 CSV 校验并同步本地 VIX 标准序列"
     )
@@ -258,16 +359,30 @@ def main(argv: list[str] | None = None) -> int:
             return _bulk_futures(args)
         if args.command == "futures-heat":
             return _futures_heat(args)
+        if args.command == "futures-contract-heat":
+            return _futures_contract_heat(args)
         if args.command == "futures-structure":
             return _futures_structure(args)
         if args.command == "futures-notional-structure":
             return _futures_notional_structure(args)
+        if args.command == "futures-official-notional-structure":
+            return _futures_official_notional_structure(args)
         if args.command == "futures-member-structure":
             return _futures_member_structure(args)
         if args.command == "futures-rule-sync":
             return _futures_rule_sync(args)
+        if args.command == "futures-turnover-sync":
+            return _futures_turnover_sync(args)
+        if args.command == "futures-member-rank-sync":
+            return _futures_member_rank_sync(args)
+        if args.command == "futures-member-rank-backfill":
+            return _futures_member_rank_backfill(args)
         if args.command == "futures-calendar-sync":
             return _futures_calendar_sync(args)
+        if args.command == "futures-official-backfill":
+            return _futures_official_backfill(args)
+        if args.command == "futures-official-structure":
+            return _futures_official_structure(args)
         if args.command == "vix-sync":
             return _vix_sync(args)
         if args.command == "import-tdx-local":
@@ -321,6 +436,7 @@ def _serve(args: argparse.Namespace) -> int:
             port=args.port,
             timeout_seconds=args.timeout_seconds,
             quiet=args.quiet,
+            auto_update_on_startup=not args.no_auto_update_on_startup,
         )
     except KeyboardInterrupt:
         _emit("SUCCESS", EXIT_SUCCESS, message="control center stopped by user")
@@ -416,6 +532,8 @@ def _bulk_futures(args: argparse.Namespace) -> int:
         include_global=not args.domestic_only and not args.local_only,
         include_akshare=not args.local_only,
         full_rescan=args.full_rescan,
+        start_date=args.start_date,
+        end_date=args.end_date,
     )
     success = summary["状态"] == "完成"
     print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
@@ -451,7 +569,19 @@ def _futures_structure(args: argparse.Namespace) -> int:
     _emit(
         "SUCCESS" if success else "PARTIAL_FAILURE",
         EXIT_SUCCESS if success else EXIT_PARTIAL_FAILURE,
-        message=f"商品期货品种持仓结构 Gold 构建完成：写入 {summary['writtenRows']} 条成员日度记录",
+        message=f"国内期货品种持仓结构 Gold 构建完成：写入 {summary['writtenRows']} 条成员日度记录",
+    )
+    return EXIT_SUCCESS if success else EXIT_PARTIAL_FAILURE
+
+
+def _futures_contract_heat(args: argparse.Namespace) -> int:
+    summary = run_futures_contract_heat_pipeline(args.data_root)
+    print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
+    success = summary["status"] == "PASS"
+    _emit(
+        "SUCCESS" if success else "PARTIAL_FAILURE",
+        EXIT_SUCCESS if success else EXIT_PARTIAL_FAILURE,
+        message=f"月份合约多空热度构建完成：{summary['writtenDays']} 个交易日，成交额覆盖 {summary['latestTurnoverCoverage']}",
     )
     return EXIT_SUCCESS if success else EXIT_PARTIAL_FAILURE
 
@@ -468,7 +598,27 @@ def _futures_notional_structure(args: argparse.Namespace) -> int:
     _emit(
         "SUCCESS" if success else "PARTIAL_FAILURE",
         EXIT_SUCCESS if success else EXIT_PARTIAL_FAILURE,
-        message=f"商品期货品种市值结构 Gold 构建完成：写入 {summary['writtenRows']} 条成员日度记录",
+        message=f"国内期货品种市值结构 Gold 构建完成：写入 {summary['writtenRows']} 条成员日度记录",
+    )
+    return EXIT_SUCCESS if success else EXIT_PARTIAL_FAILURE
+
+
+def _futures_official_notional_structure(args: argparse.Namespace) -> int:
+    summary = run_product_official_notional_structure_pipeline(
+        args.data_root,
+        start_day=args.start_day,
+        end_day=args.end_day,
+        rebuild_baseline=args.rebuild_baseline,
+    )
+    success = summary["status"] == "PASS"
+    print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
+    _emit(
+        "SUCCESS" if success else "PARTIAL_FAILURE",
+        EXIT_SUCCESS if success else EXIT_PARTIAL_FAILURE,
+        message=(
+            f"官方乘数名义规模Gold写入 {summary['writtenRows']} 条；"
+            f"最近日缺失品种 {summary['missingProductsLatest']} 个"
+        ),
     )
     return EXIT_SUCCESS if success else EXIT_PARTIAL_FAILURE
 
@@ -497,6 +647,7 @@ def _futures_rule_sync(args: argparse.Namespace) -> int:
     summary = sync_futures_rule_snapshots(
         args.data_root,
         lookback_days=args.lookback_days,
+        target_days=[args.day.isoformat()] if args.day is not None else None,
     )
     success = summary["status"] in {"UPDATED", "UNCHANGED"}
     print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
@@ -511,6 +662,58 @@ def _futures_rule_sync(args: argparse.Namespace) -> int:
     return EXIT_SUCCESS if success else EXIT_PARTIAL_FAILURE
 
 
+def _futures_turnover_sync(args: argparse.Namespace) -> int:
+    summary = collect_exchange_daily_turnover(
+        args.data_root,
+        trading_day=args.day.isoformat(),
+        exchanges=tuple(args.exchange) if args.exchange else EXCHANGES,
+    )
+    print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
+    success = summary["status"] == "PASS"
+    _emit(
+        "SUCCESS" if success else "PARTIAL_FAILURE",
+        EXIT_SUCCESS if success else EXIT_PARTIAL_FAILURE,
+        message=f"交易所逐合约成交额同步结束：{sum(item['status'] == 'PASS' for item in summary['exchanges'])}/{len(summary['exchanges'])} 个交易所通过",
+    )
+    return EXIT_SUCCESS if success else EXIT_PARTIAL_FAILURE
+
+
+def _futures_member_rank_sync(args: argparse.Namespace) -> int:
+    summary = run_official_member_rank_sync(
+        args.data_root, trading_day=args.day.isoformat(),
+        min_interval_seconds=args.min_interval_seconds,
+        daily_host_budget=args.daily_host_budget,
+    )
+    print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
+    success = summary["status"] == "PASS"
+    _emit(
+        "SUCCESS" if success else "PARTIAL_FAILURE",
+        EXIT_SUCCESS if success else EXIT_PARTIAL_FAILURE,
+        message=f"官网席位排名同步结束：{summary['passed']}/{summary['task_count']} 个任务完整通过",
+    )
+    return EXIT_SUCCESS if success else EXIT_PARTIAL_FAILURE
+
+
+def _futures_member_rank_backfill(args: argparse.Namespace) -> int:
+    default_start, default_end = default_backfill_range(args.data_root)
+    summary = run_official_member_rank_backfill(
+        args.data_root, start_day=args.start_day or default_start,
+        end_day=args.end_day or default_end, max_days=args.max_days,
+        min_interval_seconds=args.min_interval_seconds,
+        daily_host_budget=args.daily_host_budget,
+        retry_failed=args.retry_failed,
+        exchanges=tuple(args.exchange) if args.exchange else ("CFFEX", "DCE", "CZCE", "SHFE", "GFEX"),
+    )
+    print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
+    success = summary["status"] == "PASS"
+    _emit(
+        "SUCCESS" if success else "PARTIAL_FAILURE",
+        EXIT_SUCCESS if success else EXIT_PARTIAL_FAILURE,
+        message=f"官网席位持仓/成交排名回填结束：处理 {summary['processedDays']}/{summary['calendarTradingDays']} 个交易日",
+    )
+    return EXIT_SUCCESS if success else EXIT_PARTIAL_FAILURE
+
+
 def _futures_calendar_sync(args: argparse.Namespace) -> int:
     summary = sync_futures_trading_calendar(args.data_root)
     print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
@@ -520,6 +723,49 @@ def _futures_calendar_sync(args: argparse.Namespace) -> int:
         message=f"中国期货交易日历同步结束：{summary['tradingDayCount']} 个有效交易日",
     )
     return EXIT_SUCCESS
+
+
+def _futures_official_backfill(args: argparse.Namespace) -> int:
+    default_start, default_end = default_backfill_range(args.data_root)
+    summary = run_official_futures_backfill(
+        args.data_root,
+        start_day=args.start_day or default_start,
+        end_day=args.end_day or default_end,
+        exchanges=tuple(args.exchange) if args.exchange else DEFAULT_EXCHANGES,
+        max_days=args.max_days,
+        min_interval_seconds=args.min_interval_seconds,
+        daily_host_budget=args.daily_host_budget,
+        dry_run=args.dry_run,
+        retry_failed=args.retry_failed,
+    )
+    print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
+    success = summary["status"] in {"PASS", "DRY_RUN"}
+    _emit(
+        "SUCCESS" if success else "PARTIAL_FAILURE",
+        EXIT_SUCCESS if success else EXIT_PARTIAL_FAILURE,
+        message=("官方期货日行情回填计划已生成" if args.dry_run else
+                 f"官方期货日行情回填结束：通过/缓存 {summary['passed']}/{summary['attempts']} 条来源日"),
+    )
+    return EXIT_SUCCESS if success else EXIT_PARTIAL_FAILURE
+
+
+def _futures_official_structure(args: argparse.Namespace) -> int:
+    metrics = ("open_interest", "notional", "volume") if args.metric == "all" else (args.metric,)
+    summaries = [
+        run_official_product_structure_pipeline(
+            args.data_root, metric=metric, start_day=args.start_day, end_day=args.end_day,
+            rebuild_baseline=args.rebuild_baseline,
+        )
+        for metric in metrics
+    ]
+    print(json.dumps({"status": "PASS" if all(item["status"] == "PASS" for item in summaries) else "PARTIAL", "structures": summaries}, ensure_ascii=False, sort_keys=True))
+    success = all(item["status"] == "PASS" for item in summaries)
+    _emit(
+        "SUCCESS" if success else "PARTIAL_FAILURE",
+        EXIT_SUCCESS if success else EXIT_PARTIAL_FAILURE,
+        message=f"官方期货品种结构构建结束：{sum(item['writtenRows'] for item in summaries)} 条成员日度记录",
+    )
+    return EXIT_SUCCESS if success else EXIT_PARTIAL_FAILURE
 
 
 def _vix_sync(args: argparse.Namespace) -> int:

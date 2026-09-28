@@ -31,9 +31,18 @@ from .futures_dashboard import (
     build_open_interest_leaderboard,
     compute_futures_breadth,
 )
+from .futures_calendar import load_futures_trading_calendar
 from .futures_member_positions import (
     MemberPositionRank,
     collect_exchange_member_position_ranks,
+)
+from .futures_member_trade_ranks import normalise_exchange_member_trade_ranks
+from .futures_official_member_sources import DirectOfficialRankApi
+from .futures_official_backfill import (
+    DEFAULT_DAILY_HOST_BUDGET,
+    DEFAULT_MIN_INTERVAL_SECONDS,
+    GovernedRequestsSession,
+    effective_request_policy,
 )
 from .macro_series import MacroPoint, derive_series, macro_series_index, normalise_macro_point
 from .storage import MarketStore, PartitionKey
@@ -76,6 +85,8 @@ class PersistPlan:
     gold_metrics: list[dict[str, Any]] = field(default_factory=list)
     member_position_ranks: list[dict[str, Any]] = field(default_factory=list)
     member_position_coverage: list[dict[str, Any]] = field(default_factory=list)
+    member_trade_ranks: list[dict[str, Any]] = field(default_factory=list)
+    member_position_raw_artifacts: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -195,7 +206,7 @@ def build_collection_tasks(*, limit_futures: int, limit_cn_stocks: int) -> list[
             lambda: _collect_futures_main(limit_futures),
         ),
         CollectionTask("FUTURE_INDEX_BAR", "国内商品指数K线", "akshare", _collect_futures_index),
-        CollectionTask("FUTURES_OI_LEADERBOARD", "期货持仓龙虎榜", "akshare", _collect_oi_leaderboard),
+        CollectionTask("FUTURES_OI_LEADERBOARD", "期货持仓龙虎榜", "official-exchanges", _collect_oi_leaderboard),
         CollectionTask("CN_MARGIN", "沪深京融资融券", "akshare", _collect_margin),
         CollectionTask("MACRO_SERIES", "宏观数据序列", "akshare", _collect_macro),
         CollectionTask("A_SHARE_BREADTH", "A股涨跌/市值快照", "akshare", _collect_a_share_breadth),
@@ -274,6 +285,8 @@ def _persist_results(data_root: Path, results: Sequence[CollectionTaskResult]) -
                 and not plan.gold_metrics
                 and not plan.member_position_ranks
                 and not plan.member_position_coverage
+                and not plan.member_trade_ranks
+                and not plan.member_position_raw_artifacts
             ):
                 continue
             run_id = store.begin_run(f"collector:{result.source}")
@@ -286,6 +299,10 @@ def _persist_results(data_root: Path, results: Sequence[CollectionTaskResult]) -
                     store.upsert_futures_member_position_ranks(plan.member_position_ranks)
                 if plan.member_position_coverage:
                     store.upsert_futures_member_position_coverage(plan.member_position_coverage)
+                if plan.member_trade_ranks:
+                    store.upsert_futures_member_trade_ranks(plan.member_trade_ranks)
+                for artifact in plan.member_position_raw_artifacts:
+                    store.write_bronze(run_id, artifact["provider"], artifact["response"])
                 if result.status == "PASS":
                     store.finish_run(run_id, "COMPLETE", result.detail)
                 else:
@@ -1143,9 +1160,209 @@ def _collect_futures_index() -> CollectionTaskResult:
     )
 
 
-def _collect_oi_leaderboard() -> CollectionTaskResult:
-    api = _ak()
-    day = _last_trading_day_compact()
+def run_official_member_rank_sync(
+    data_root: Path, *, trading_day: str,
+    min_interval_seconds: float = DEFAULT_MIN_INTERVAL_SECONDS,
+    daily_host_budget: int = DEFAULT_DAILY_HOST_BUDGET,
+    exchanges: Sequence[str] | None = None,
+) -> dict[str, Any]:
+    """Collect one exchange-published ranking day through direct adapters."""
+
+    min_interval_seconds, daily_host_budget = effective_request_policy(min_interval_seconds, daily_host_budget)
+    day = date.fromisoformat(trading_day)
+    if day.isoformat() != trading_day:
+        raise ValueError("trading_day must be YYYY-MM-DD")
+    compact = trading_day.replace("-", "")
+    governed_session = GovernedRequestsSession(
+        data_root, min_interval_seconds=min_interval_seconds,
+        daily_budget=daily_host_budget,
+    )
+    api = DirectOfficialRankApi(session=governed_session)
+    try:
+        return run_fetch_session(
+            data_root,
+            tasks=[CollectionTask(
+                "FUTURES_OI_LEADERBOARD", "期货持仓龙虎榜", "official-exchanges",
+                lambda: _collect_oi_leaderboard(api, day_compact=compact, exchanges=exchanges),
+            )],
+            max_workers=1,
+        )
+    finally:
+        governed_session.close()
+
+
+def run_official_member_rank_backfill(
+    data_root: Path,
+    *,
+    start_day: str,
+    end_day: str,
+    max_days: int | None = None,
+    min_interval_seconds: float = DEFAULT_MIN_INTERVAL_SECONDS,
+    daily_host_budget: int = DEFAULT_DAILY_HOST_BUDGET,
+    retry_failed: bool = False,
+    exchanges: Sequence[str] = ("CFFEX", "DCE", "CZCE", "SHFE", "GFEX"),
+) -> dict[str, Any]:
+    """Backfill official rankings over unattempted dates, with explicit failure retries."""
+
+    min_interval_seconds, daily_host_budget = effective_request_policy(min_interval_seconds, daily_host_budget)
+    start = date.fromisoformat(start_day)
+    end = date.fromisoformat(end_day)
+    if start > end:
+        raise ValueError("start_day must not be after end_day")
+    calendar = load_futures_trading_calendar(Path(data_root))
+    if calendar is None:
+        raise ValueError("缺少期货交易日历；请先运行 futures-calendar-sync")
+    calendar_days = calendar.between(start.isoformat(), end.isoformat())
+    if max_days is not None:
+        if max_days < 1:
+            raise ValueError("max_days must be positive")
+    selected = tuple(dict.fromkeys(str(item).upper() for item in exchanges))
+    valid_sources = {"CFFEX", "DCE", "CZCE", "SHFE", "GFEX"}
+    if not selected or any(item not in valid_sources for item in selected):
+        raise ValueError("exchanges must be a non-empty subset of CFFEX, DCE, CZCE, SHFE and GFEX")
+    paused_sources: set[str] = set()
+    paused_reasons: dict[str, str] = {}
+    outcomes: list[dict[str, Any]] = []
+    root = Path(data_root)
+    source_venues = {"CFFEX": ("CFFEX",), "DCE": ("DCE",), "CZCE": ("CZCE",), "SHFE": ("SHFE", "INE"), "GFEX": ("GFEX",)}
+    required_exchange_days = {venue for source in selected for venue in source_venues[source]}
+    store = MarketStore(root)
+    try:
+        persisted = [
+            row for row in store.list_futures_member_position_coverage(commodity_only=False)
+            if str(row.get("source") or "").startswith("official-")
+            and start.isoformat() <= str(row.get("trading_day") or "") <= end.isoformat()
+        ]
+    finally:
+        store.close()
+    coverage_by_day: dict[str, dict[str, Mapping[str, Any]]] = {}
+    for row in persisted:
+        coverage_by_day.setdefault(str(row["trading_day"]), {})[str(row["exchange"])] = row
+
+    def failure_is_blocked(message: str) -> bool:
+        text = message.lower()
+        return any(marker in text for marker in ("403", "412", "text/html", "not json", "校验", "验证页"))
+
+    def failure_should_pause_batch(message: str) -> bool:
+        text = message.lower()
+        return failure_is_blocked(message) or any(
+            marker in text for marker in ("429", "requestbudget", "retry-after")
+        )
+
+    if not retry_failed:
+        for row in persisted:
+            message = str(row.get("error") or "")
+            if not failure_is_blocked(message):
+                continue
+            source_name = str(row.get("source") or "")
+            source_code = source_name.removeprefix("official-").split("-", 1)[0].upper()
+            if source_code in valid_sources:
+                paused_sources.add(source_code)
+                paused_reasons[source_code] = message[:300]
+
+    def day_complete(day: str) -> bool:
+        current = coverage_by_day.get(day, {})
+        if not all(exchange in current for exchange in required_exchange_days):
+            return False
+        if retry_failed:
+            return all(str(current[exchange]["status"]) in {"PASS", "NO_PUBLICATION"} for exchange in required_exchange_days)
+        for exchange in required_exchange_days:
+            row = current[exchange]
+            status = str(row["status"])
+            error = str(row.get("error") or "")
+            if any(marker in error.lower() for marker in ("429", "requestbudget", "retry-after")):
+                return False
+            if status not in {"PASS", "NO_PUBLICATION", "FAILED", "PARTIAL", "UNSUPPORTED", "DEFERRED"}:
+                return False
+        return True
+
+    eligible_days = [day for day in calendar_days if not day_complete(day)]
+    days = eligible_days[:max_days] if max_days is not None else eligible_days
+    for day in days:
+        active_sources = tuple(exchange for exchange in selected if exchange not in paused_sources)
+        summary = run_official_member_rank_sync(
+            root, trading_day=day,
+            min_interval_seconds=min_interval_seconds, daily_host_budget=daily_host_budget,
+            exchanges=active_sources,
+        ) if active_sources else {"tasks": [{"status": "PARTIAL_FAILURE", "rows": 0}]}
+        store = MarketStore(root)
+        try:
+            coverage = [
+                row for row in store.list_futures_member_position_coverage(
+                    trading_day=day, commodity_only=False,
+                )
+                if str(row.get("source") or "").startswith("official-")
+            ]
+        finally:
+            store.close()
+        paused_today = []
+        for row in coverage:
+            message = str(row.get("error") or "")
+            if failure_should_pause_batch(message):
+                source_name = str(row.get("source") or "")
+                code = source_name.removeprefix("official-").split("-", 1)[0].upper()
+                if code in valid_sources and not retry_failed:
+                    paused_sources.add(code)
+                    paused_reasons[code] = message[:300]
+                    paused_today.append(code)
+        present_exchanges = {str(row["exchange"]) for row in coverage}
+        deferred_rows: list[dict[str, Any]] = []
+        for code in paused_sources:
+            for exchange in source_venues[code]:
+                if exchange in present_exchanges:
+                    continue
+                deferred_rows.append({
+                    "trading_day": day, "exchange": exchange, "status": "DEFERRED",
+                    "contract_count": 0, "record_count": 0,
+                    "source": f"official-{code.lower()}-member-ranking",
+                    "error": f"来源在本次回补中暂停：{paused_reasons.get(code, '等待显式重试')}",
+                    "collected_at": _now(), "publisher": exchange,
+                    "source_url": None, "adapter": f"official-{code.lower()}-rank-v1",
+                    "retrieved_at": _now(), "payload_sha256": None,
+                    "quality_status": "DEFERRED", "legacy_adapter": None,
+                })
+        if deferred_rows:
+            store = MarketStore(root)
+            try:
+                store.upsert_futures_member_position_coverage(deferred_rows)
+            finally:
+                store.close()
+            coverage.extend(deferred_rows)
+            for row in deferred_rows:
+                coverage_by_day.setdefault(day, {})[str(row["exchange"])] = row
+        task = summary.get("tasks", [{}])[0]
+        current_by_exchange = {str(row["exchange"]): str(row["status"]) for row in coverage}
+        fully_covered = all(
+            current_by_exchange.get(exchange) in {"PASS", "NO_PUBLICATION"}
+            for exchange in required_exchange_days
+        )
+        outcomes.append({
+            "tradingDay": day,
+            "status": "PASS" if task.get("status") == "PASS" and fully_covered else "PARTIAL",
+            "rows": task.get("rows", 0),
+            "pausedSources": sorted(set(paused_today)),
+        })
+    statuses = {str(item["status"]) for item in outcomes}
+    return {
+        "status": "PASS" if statuses <= {"PASS", "CACHED"} else "PARTIAL",
+        "startDay": start.isoformat(), "endDay": end.isoformat(),
+        "calendarTradingDays": len(calendar_days), "selectedTradingDays": len(days), "processedDays": len(outcomes),
+        "pausedSources": sorted(paused_sources), "outcomes": outcomes,
+        "rateLimit": {
+            "scope": "global",
+            "minIntervalSeconds": min_interval_seconds,
+            "maxRequestsPerSecond": round(1 / min_interval_seconds, 3) if min_interval_seconds > 0 else None,
+            "maxRequestsPerDay": daily_host_budget,
+        },
+    }
+
+
+def _collect_oi_leaderboard(
+    api: Any | None = None, *, day_compact: str | None = None,
+    exchanges: Sequence[str] | None = None,
+) -> CollectionTaskResult:
+    api = api or DirectOfficialRankApi()
+    day = day_compact or _last_trading_day_compact()
     trading_day = f"{day[:4]}-{day[4:6]}-{day[6:]}"
     collected_at = _now()
     ranks, coverage = collect_exchange_member_position_ranks(
@@ -1153,13 +1370,32 @@ def _collect_oi_leaderboard() -> CollectionTaskResult:
         day_compact=day,
         trading_day=trading_day,
         collected_at=collected_at,
+        source_prefix="official",
+        include_cffex=True,
+        exchanges=tuple(exchanges) if exchanges is not None else None,
     )
     rows = _leaderboard_rows_from_member_ranks(ranks)
+    trade_ranks = []
+    for source_exchange, frames in getattr(api, "trade_rank_frames", {}).items():
+        trade_ranks.extend(normalise_exchange_member_trade_ranks(
+            frames, exchange=source_exchange, trading_day=trading_day,
+            source=f"official-{source_exchange.lower()}-trade-ranking",
+            collected_at=collected_at,
+        ))
     plan = PersistPlan()
-    plan.member_position_ranks.extend(rank.to_dict() for rank in ranks)
+    for rank in ranks:
+        evidence = api.evidence_for(rank.exchange, rank.contract_code) \
+            if isinstance(api, DirectOfficialRankApi) else api.evidence_for(rank.exchange)
+        plan.member_position_ranks.append({**rank.to_dict(), **evidence})
+    for rank in trade_ranks:
+        evidence = api.evidence_for(rank.exchange, rank.contract_code) \
+            if isinstance(api, DirectOfficialRankApi) else api.evidence_for(rank.exchange)
+        plan.member_trade_ranks.append({**rank.to_dict(), **evidence})
     plan.member_position_coverage.extend(
-        item.to_dict(trading_day=trading_day, collected_at=collected_at) for item in coverage
+        {**item.to_dict(trading_day=trading_day, collected_at=collected_at), **api.evidence_for(item.exchange)}
+        for item in coverage
     )
+    plan.member_position_raw_artifacts.extend(api.raw_artifacts)
     if rows:
         leaderboard = build_open_interest_leaderboard(rows, trading_day=trading_day)
         for leader in leaderboard:
@@ -1187,11 +1423,11 @@ def _collect_oi_leaderboard() -> CollectionTaskResult:
     return _result(
         "FUTURES_OI_LEADERBOARD",
         "\u671f\u8d27\u6301\u4ed3\u9f99\u864e\u699c",
-        "akshare",
+        "official-exchanges",
         "PASS" if ranks and all(item.status == "PASS" for item in coverage)
         else "PARTIAL_FAILURE" if ranks else "FAILED",
         len(ranks),
-        f"\u4ea4\u6613\u65e5={trading_day}\uff1b\u516c\u5f00\u6392\u540d={len(ranks)}\uff1b"
+        f"\u4ea4\u6613\u65e5={trading_day}\uff1b\u591a\u7a7a\u6301\u4ed3\u6392\u540d={len(ranks)}\uff1b\u5e2d\u4f4d\u6210\u4ea4\u6392\u540d={len(trade_ranks)}\uff1b"
         + "; ".join(
             f"{item.exchange}={item.status}({item.contract_count}\u5408\u7ea6/{item.record_count}\u6392\u540d)"
             for item in coverage

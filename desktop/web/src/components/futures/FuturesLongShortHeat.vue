@@ -1,6 +1,10 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import { useLongShortHeatPreferences } from "../../composables/useLongShortHeatPreferences";
+import {
+  CONTRACT_TURNOVER_HEAT_WEIGHT_KEY,
+  LONG_SHORT_HEAT_WEIGHT_KEY,
+  useLongShortHeatPreferences,
+} from "../../composables/useLongShortHeatPreferences";
 import {
   combineHeatScores,
   finiteScore,
@@ -14,7 +18,19 @@ import HeatWeightControl from "./HeatWeightControl.vue";
 import LongShortHeatGauge from "./LongShortHeatGauge.vue";
 import LongShortHeatHistoryChart from "./LongShortHeatHistoryChart.vue";
 
-const props = defineProps<{ payload: LongShortHeatResponse }>();
+const props = withDefaults(defineProps<{
+  payload: LongShortHeatResponse;
+  metricMode?: "variety-deposit" | "contract-turnover";
+}>(), { metricMode: "variety-deposit" });
+const isContractTurnover = computed(() => props.metricMode === "contract-turnover");
+const heatTitle = computed(() => isContractTurnover.value ? "商品月份合约多空热度" : "多空热度");
+const heatDescription = computed(() => isContractTurnover.value
+  ? "商品月份合约按今收盘与上一有效交易日收盘比较（不含中金所金融期货）；成交额按官方公布值分入上涨/下跌合约，沉淀资金只显示整体估算。"
+  : "品种数量广度与沉淀资金方向的最近 10 个交易日指数衰减结果");
+const countGaugeTitle = computed(() => isContractTurnover.value ? "合约数量多空热度" : "品种多空热度");
+const amountGaugeTitle = computed(() => isContractTurnover.value ? "成交额多空热度" : "资金多空热度");
+const countHistoryLabel = computed(() => isContractTurnover.value ? "合约数量热度" : "品种多空热度");
+const amountHistoryLabel = computed(() => isContractTurnover.value ? "成交额热度" : "资金多空热度");
 
 const range = ref<HeatTimeRange>("1y");
 const defaultFundWeight = computed(() => {
@@ -25,6 +41,7 @@ const userWeight = computed(() => props.payload.config.userWeight);
 const { breadthWeight, fundWeight, setFundWeight, persist, reset } = useLongShortHeatPreferences(
   defaultFundWeight,
   userWeight,
+  isContractTurnover.value ? CONTRACT_TURNOVER_HEAT_WEIGHT_KEY : LONG_SHORT_HEAT_WEIGHT_KEY,
 );
 
 const scoreMin = computed(() => props.payload.config.score.min);
@@ -63,6 +80,8 @@ const visiblePoints = computed(() => {
   return cutoff ? allPoints.value.filter((point) => point.tradeDate >= cutoff) : allPoints.value;
 });
 const currentPoint = computed(() => allPoints.value.at(-1));
+const lastAmountPoint = computed(() => [...allPoints.value].reverse()
+  .find(point => finiteScore(point.fundScore10) !== null));
 const currentBreadth = computed(() => finiteScore(currentPoint.value?.breadthScore10));
 const currentFund = computed(() => finiteScore(currentPoint.value?.fundScore10));
 const currentTotal = computed(() => combineHeatScores(
@@ -80,9 +99,11 @@ const divergenceText = computed(() => {
   const value = currentPoint.value?.divergence;
   if (typeof value !== "number" || !Number.isFinite(value)) return "背离状态暂无数据";
   const threshold = props.payload.config.divergenceThreshold;
-  if (value >= threshold) return "品种强于资金";
-  if (value <= -threshold) return "资金强于品种";
-  return "品种与资金基本一致";
+  const countLabel = isContractTurnover.value ? "合约数量" : "品种";
+  const amountLabel = isContractTurnover.value ? "成交额" : "资金";
+  if (value >= threshold) return `${countLabel}强于${amountLabel}`;
+  if (value <= -threshold) return `${amountLabel}强于${countLabel}`;
+  return `${countLabel}与${amountLabel}基本一致`;
 });
 
 const coverageText = computed(() => {
@@ -95,8 +116,8 @@ const coverageText = computed(() => {
     const variety = typeof coverage.variety === "number" ? coverage.variety : undefined;
     const fund = typeof coverage.fund === "number" ? coverage.fund : undefined;
     const values = [
-      variety === undefined ? "" : `品种 ${(variety <= 1 ? variety * 100 : variety).toFixed(1)}%`,
-      fund === undefined ? "" : `资金 ${(fund <= 1 ? fund * 100 : fund).toFixed(1)}%`,
+      variety === undefined ? "" : `${isContractTurnover.value ? "方向" : "品种数"} ${(variety <= 1 ? variety * 100 : variety).toFixed(1)}%`,
+      fund === undefined ? "" : `${isContractTurnover.value ? "官方成交额" : "资金"} ${(fund <= 1 ? fund * 100 : fund).toFixed(1)}%`,
     ].filter(Boolean);
     if (values.length) return `数据覆盖率 ${values.join(" · ")}`;
   }
@@ -110,14 +131,35 @@ function qualityTagType(): "success" | "warning" | "danger" | "info" {
   if (status) return "warning";
   return "info";
 }
+
+function formatCnyYi(value: number | null | undefined): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "暂无数据";
+  return `${(value / 100_000_000).toLocaleString("zh-CN", { maximumFractionDigits: 2 })} 亿元`;
+}
+
+const depositSummary = computed(() => {
+  const point = currentPoint.value;
+  if (!isContractTurnover.value || !point) return "";
+  const deposit = formatCnyYi(point.totalDepositCny);
+  const coverage = typeof point.depositCoverage === "number"
+    ? ` · 规则覆盖 ${(point.depositCoverage * 100).toFixed(1)}%`
+    : "";
+  return `整体沉淀资金估算：${deposit}${coverage}`;
+});
+
+const turnoverSummary = computed(() => {
+  const point = currentPoint.value;
+  if (!isContractTurnover.value || !point) return "";
+  return `已核验样本成交额：上涨合约 ${formatCnyYi(point.upFund)} · 下跌合约 ${formatCnyYi(point.downFund)}`;
+});
 </script>
 
 <template>
   <section class="panel long-short-heat" data-test="futures-long-short-heat">
     <header class="heat-header">
       <div>
-        <h2>多空热度</h2>
-        <p>品种数量广度与沉淀资金方向的最近 10 个交易日指数衰减结果</p>
+        <h2>{{ heatTitle }}</h2>
+        <p>{{ heatDescription }}</p>
       </div>
       <div class="heat-meta">
         <el-tag v-if="currentPoint" size="small" effect="plain">{{ currentPoint.tradeDate }}</el-tag>
@@ -137,7 +179,7 @@ function qualityTagType(): "success" | "warning" | "danger" | "info" {
         data-test-kind="total"
       />
       <LongShortHeatGauge
-        title="品种多空热度"
+        :title="countGaugeTitle"
         :value="currentBreadth"
         :status="breadthState"
         :bands="stateBands"
@@ -146,7 +188,7 @@ function qualityTagType(): "success" | "warning" | "danger" | "info" {
         data-test-kind="breadth"
       />
       <LongShortHeatGauge
-        title="资金多空热度"
+        :title="amountGaugeTitle"
         :value="currentFund"
         :status="fundState"
         :bands="stateBands"
@@ -162,6 +204,9 @@ function qualityTagType(): "success" | "warning" | "danger" | "info" {
       :min="userWeight.min"
       :max="userWeight.max"
       :step="userWeight.step"
+      :count-weight-label="isContractTurnover ? '合约数量热度' : '品种热度'"
+      :amount-weight-label="isContractTurnover ? '成交额热度' : '资金热度'"
+      :slider-aria-label="isContractTurnover ? '成交额热度权重' : '资金热度权重'"
       @update:fund-weight="setFundWeight"
       @commit="persist"
       @reset="reset"
@@ -170,12 +215,22 @@ function qualityTagType(): "success" | "warning" | "danger" | "info" {
     <div class="heat-summary" aria-live="polite">
       <span>{{ divergenceText }}</span>
       <span>{{ coverageText }}</span>
-      <span v-if="currentPoint">有效样本：{{ currentPoint.upVarietyCount + currentPoint.downVarietyCount }} · 平盘：{{ currentPoint.flatVarietyCount }}</span>
+      <span v-if="currentPoint">{{ isContractTurnover ? '有效月份合约' : '有效品种' }}：{{ currentPoint.upVarietyCount + currentPoint.downVarietyCount }} · 平盘：{{ currentPoint.flatVarietyCount }}</span>
+      <span v-if="turnoverSummary">{{ turnoverSummary }}</span>
+      <span v-if="isContractTurnover && currentFund === null && lastAmountPoint">最近有已核验成交额：{{ lastAmountPoint.tradeDate }}（当前日不可用）</span>
+      <span v-if="depositSummary">{{ depositSummary }}</span>
     </div>
+    <el-alert
+      v-if="isContractTurnover && payload.limitations?.length"
+      :title="payload.limitations[0]"
+      type="warning"
+      :closable="false"
+      class="heat-limitation"
+    />
 
     <section class="history-section">
       <header class="history-header">
-        <div><h3>多空热度历史趋势</h3><p>各点均为截至该交易日的 10 日加权结果，0 轴表示多空均衡。</p></div>
+        <div><h3>{{ isContractTurnover ? '合约数量与成交额热度趋势' : '多空热度历史趋势' }}</h3><p>各点均为截至该交易日的 10 日加权结果，0 轴表示多空均衡。</p></div>
         <ChartRangeSelector v-model="range" />
       </header>
       <LongShortHeatHistoryChart
@@ -183,6 +238,13 @@ function qualityTagType(): "success" | "warning" | "danger" | "info" {
         :breadth-weight="breadthWeight"
         :fund-weight="fundWeight"
         :fund-unit="payload.config.fundUnit"
+        :count-label="countHistoryLabel"
+        :amount-label="amountHistoryLabel"
+        :up-amount-label="isContractTurnover ? '上涨合约成交额' : '上涨沉淀资金'"
+        :down-amount-label="isContractTurnover ? '下跌合约成交额' : '下跌沉淀资金'"
+        :count-unit-label="isContractTurnover ? '合约' : '品种'"
+        :count-coverage-label="isContractTurnover ? '方向' : '品种'"
+        :amount-coverage-label="isContractTurnover ? '官方成交额' : '资金'"
         :min="scoreMin"
         :max="scoreMax"
       />
@@ -216,6 +278,7 @@ function qualityTagType(): "success" | "warning" | "danger" | "info" {
 }
 .heat-summary span + span::before { content: "·"; margin-right: 14px; color: var(--ml-text-disabled); }
 .history-section { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--ml-divider); }
+.heat-limitation { margin-top: 12px; }
 .history-header { align-items: flex-start; margin-bottom: 4px; }
 @media (max-width: 1050px) {
   .gauge-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }

@@ -103,6 +103,17 @@ def _weekdays(start: date, count: int) -> list[str]:
     return result
 
 
+def test_cffex_official_contract_multipliers_have_effective_dates(tmp_path: Path) -> None:
+    book = load_rule_book(tmp_path)
+    assert book.resolve_multiplier("2026-08-20", "CFFEX", "IF") == 300
+    assert book.resolve_multiplier("2026-08-20", "CFFEX", "IM") == 200
+    assert book.resolve_multiplier("2026-08-20", "CFFEX", "TS") == 20_000
+    assert book.resolve_multiplier("2026-08-20", "CFFEX", "TF") == 10_000
+    assert book.resolve_multiplier("2022-07-21", "CFFEX", "IM") is None
+    assert book.resolve_multiplier("2023-04-20", "CFFEX", "TL") is None
+    assert book.resolve("2026-08-20", "CFFEX", "IF") is None
+
+
 def test_sync_uses_latest_ten_silver_trading_days_and_positional_rules(tmp_path: Path) -> None:
     trading_days = _weekdays(date(2026, 7, 27), 12)
     weekend = date(2026, 8, 1).isoformat()
@@ -225,6 +236,23 @@ def test_sync_is_idempotent_and_preserves_existing_day_snapshots(tmp_path: Path)
     assert repeated["status"] == "UNCHANGED"
     assert unexpected_calls == []
     assert path.read_bytes() == before_repeat
+
+
+def test_sync_can_repair_one_historical_silver_day_without_querying_later_days(tmp_path: Path) -> None:
+    _write_silver_partition(
+        tmp_path, "historical",
+        [(day, "SHFE", "CU") for day in ("2026-08-03", "2026-08-04", "2026-08-05")],
+    )
+    calls: list[str] = []
+    result = sync_futures_rule_snapshots(
+        tmp_path,
+        target_days=["2026-08-04"],
+        fetcher=lambda day: calls.append(day) or _provider_table(),
+    )
+    assert result["status"] == "UPDATED"
+    assert result["fetchedDays"] == ["2026-08-04"]
+    assert calls == ["20260804"]
+    assert list(json.loads((tmp_path / SNAPSHOT_RELATIVE_PATH).read_text(encoding="utf-8"))["days"]) == ["2026-08-04"]
 
 
 def test_sync_persists_successful_days_when_one_provider_day_fails(tmp_path: Path) -> None:

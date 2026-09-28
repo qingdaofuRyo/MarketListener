@@ -107,8 +107,7 @@ export function invalidateQuery(path: string, params?: QueryParams): void {
 }
 
 function fetchQuery<T>(url: URL, key: string, options: CacheOptions): Promise<T> {
-  let request: Promise<T>;
-  request = fetch(url.toString(), { signal: options.signal }).then(async response => {
+  const request: Promise<T> = fetch(url.toString(), { signal: options.signal }).then(async response => {
     if (!response.ok) throw new Error(await errorMessage(response));
     const value = await response.json() as T; const entry = { value, savedAt: Date.now() }; memoryCache.set(key, entry);
     if (options.persist) void writePersistent(key, entry);
@@ -262,6 +261,12 @@ const OPERATION_LABELS: Record<string, string> = {
   ATLAS_BUILD: "构建产业链图谱",
   ANDROID_PACKAGE_BUILD: "构建 Android 同步包",
   STATUS_REFRESH: "刷新状态",
+  TDX_COVERAGE_CHECK: "检查通达信盘后数据",
+  TDX_AFTERHOURS_DOWNLOAD: "下载通达信盘后数据",
+  TDX_LOCAL_IMPORT: "导入通达信并更新期货热度",
+  FUTURES_HEAT_UPDATE: "更新期货热度",
+  FUTURES_OFFICIAL_DAILY_UPDATE: "更新官方期货日行情",
+  FUTURES_STRUCTURE_UPDATE: "重建期货品种与席位结构",
 };
 
 export function formatStatus(value?: string | null): string {

@@ -194,7 +194,10 @@ def contract_delivery_month(
     keeps archived 505 data in 2015/2025 distinct from an active 2035 symbol.
     """
 
-    match = _MONTH_CONTRACT.fullmatch(str(symbol or "").strip().upper())
+    symbol_text = str(symbol or "").strip().upper()
+    if str(exchange or "").upper() == "DCE":
+        symbol_text = re.sub(r"-F(?=\d{3,4}$)", "", symbol_text)
+    match = _MONTH_CONTRACT.fullmatch(symbol_text)
     if not match:
         return None
     digits = match.group("delivery")

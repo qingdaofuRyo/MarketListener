@@ -1,0 +1,5 @@
+# Optional standalone Windows UI automation; does not change collector dependencies.
+pywinauto==0.6.9
+pywin32==312
+comtypes==1.4.16
+six==1.17.0

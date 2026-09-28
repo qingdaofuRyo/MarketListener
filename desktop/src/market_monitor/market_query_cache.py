@@ -603,11 +603,30 @@ class KLineQueryStore:
                 with self._connect() as connection:
                     connection.execute("BEGIN TRANSACTION")
                     try:
+                        # Older manifests may store paths relative to the
+                        # repository while callers now pass absolute paths.
+                        # Both spellings refer to the same Windows file and
+                        # must be replaced together to avoid duplicate bars.
+                        target_paths = {str(Path(value).resolve()).casefold() for value in source_files}
+                        target_names = {Path(value).name.casefold() for value in source_files}
+                        root = self.data_root.resolve()
+                        aliases = set(source_files)
+                        for (stored_text,) in connection.execute(
+                            "SELECT DISTINCT file_path FROM instrument_file"
+                        ).fetchall():
+                            stored = Path(str(stored_text))
+                            if stored.name.casefold() not in target_names:
+                                continue
+                            candidates = [stored] if stored.is_absolute() else [
+                                stored, root.parent / stored, root / stored,
+                            ]
+                            if any(str(candidate.resolve()).casefold() in target_paths for candidate in candidates):
+                                aliases.add(str(stored_text))
                         connection.execute(
                             "CREATE TEMP TABLE changed_files (file_path VARCHAR PRIMARY KEY)"
                         )
                         connection.executemany(
-                            "INSERT INTO changed_files VALUES (?)", [(value,) for value in source_files]
+                            "INSERT INTO changed_files VALUES (?)", [(value,) for value in sorted(aliases)]
                         )
                         connection.execute(
                             "CREATE TEMP TABLE affected (instrument_id VARCHAR PRIMARY KEY)"

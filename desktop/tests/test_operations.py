@@ -81,3 +81,34 @@ def test_market_operation_emits_provider_and_failure_exception_events(tmp_path: 
         threading.Event().wait(0.02)
 
     assert {"Market", "Provider", "Quality", "Exception"}.issubset({str(event.get("category")) for event in events})
+
+
+def test_tdx_operations_emit_download_market_and_coverage_quality_events(tmp_path: Path) -> None:
+    events: list[dict[str, object]] = []
+    manager = OperationManager(
+        tmp_path,
+        {
+            OperationKind.TDX_AFTERHOURS_DOWNLOAD: lambda: "PASS: synthetic download",
+            OperationKind.TDX_COVERAGE_CHECK: lambda: "PASS: synthetic coverage check",
+        },
+        event_sink=events.append,
+    )
+
+    download, _ = manager.submit(OperationKind.TDX_AFTERHOURS_DOWNLOAD)
+    coverage, _ = manager.submit(OperationKind.TDX_COVERAGE_CHECK)
+    for _ in range(30):
+        completed = {operation.operation_id: operation.status for operation in manager.list()}
+        if completed.get(download.operation_id) == OperationStatus.PASS and completed.get(coverage.operation_id) == OperationStatus.PASS:
+            break
+        threading.Event().wait(0.02)
+
+    assert {operation.operation_id: operation.status for operation in manager.list()} == {
+        coverage.operation_id: OperationStatus.PASS,
+        download.operation_id: OperationStatus.PASS,
+    }
+    categories = {
+        operation_id: {str(event.get("category")) for event in events if event.get("operationId") == operation_id}
+        for operation_id in (download.operation_id, coverage.operation_id)
+    }
+    assert categories[download.operation_id] == {"Operation", "Market"}
+    assert categories[coverage.operation_id] == {"Operation", "Quality"}

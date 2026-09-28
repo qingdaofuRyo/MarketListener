@@ -528,8 +528,8 @@ def test_futures_rule_sync_cli_dispatches_controlled_recent_window(
 ) -> None:
     captured: dict[str, object] = {}
 
-    def fake_sync(data_root: Path, *, lookback_days: int):
-        captured.update(data_root=data_root, lookback_days=lookback_days)
+    def fake_sync(data_root: Path, *, lookback_days: int, target_days: list[str] | None):
+        captured.update(data_root=data_root, lookback_days=lookback_days, target_days=target_days)
         return {
             "status": "UPDATED",
             "fetchedDayCount": 12,
@@ -548,6 +548,7 @@ def test_futures_rule_sync_cli_dispatches_controlled_recent_window(
         ]
     ) == 0
     assert captured["lookback_days"] == 12
+    assert captured["target_days"] is None
     assert '"fetchedDayCount": 12' in capsys.readouterr().out
 
 
