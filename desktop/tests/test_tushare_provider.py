@@ -68,7 +68,7 @@ def test_tushare_probe_reports_all_capabilities_with_fixed_responses() -> None:
     sdk = FakeTushareSdk()
     provider = TushareProvider(
         sdk=sdk,
-        token="local-token",
+        token="local-token",  # Synthetic test credential or marker.
         today=lambda: date(2026, 8, 3),
     )
 
@@ -113,7 +113,7 @@ def test_permission_and_points_errors_are_reported_per_interface_without_stoppin
                 financial_error=Exception("您的积分不足"),
             )
         ),
-        token="local-token",
+        token="local-token",  # Synthetic test credential or marker.
         today=lambda: date(2026, 8, 3),
     )
 

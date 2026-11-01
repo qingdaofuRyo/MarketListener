@@ -329,8 +329,8 @@ Provider Contract v2 的 JSON Schema 和公开字段未改变；`ConfigurationRe
 ### P2：普通 Windows 路径被误判为 malformed `\u` 转义并整段隐藏
 
 - 位置：`desktop/src/market_monitor/providers/runner.py:189-202`。
-- 问题：`_has_malformed_preflight_unicode_escape()` 将任何 `\u` 都按 Unicode 转义处理。正常日志 `C:\users\qingd\normal\app.log` 中的 `\u` 后接 `s`，会被判为 malformed 并返回 `[redacted sensitive text]`，即使没有敏感键或值。该行为会不必要地抹除典型 Windows 路径和普通反斜杠日志，削弱 CLI/报告可观测性。
-- 复现：`redact_secrets(r'log C:\users\qingd\normal\app.log plain \\server\\share')` 返回固定占位符；无凭据的 `r'normal \\u12ZZ no credentials'` 也同样整段隐藏。
+- 问题：`_has_malformed_preflight_unicode_escape()` 将任何 `\u` 都按 Unicode 转义处理。正常日志 `C:\users\<user>\normal\app.log` 中的 `\u` 后接 `s`，会被判为 malformed 并返回 `[redacted sensitive text]`，即使没有敏感键或值。该行为会不必要地抹除典型 Windows 路径和普通反斜杠日志，削弱 CLI/报告可观测性。
+- 复现：`redact_secrets(r'log C:\users\<user>\normal\app.log plain \\server\\share')` 返回固定占位符；无凭据的 `r'normal \\u12ZZ no credentials'` 也同样整段隐藏。
 - 修复要求：只将实际处于受支持转义 JSON 语境、且确实可能形成敏感赋值的 malformed Unicode escape 作为 fail-closed 条件，或采用能保留非敏感普通日志的等价策略；为 `C:\users`、UNC/普通反斜杠和无敏感 malformed `\u` 添加回归。若仍选择更保守的全段隐藏，须在用户可见 CLI/报告文档中明确其影响并证明不造成常规路径日志不可用。
 
 ### 本轮复核证据
@@ -348,7 +348,7 @@ Provider Contract v2 的 JSON Schema 和公开字段未改变；`ConfigurationRe
 
 - 正常检测预算仍是 4 个线性转义视图。完成预算后只生成一次额外 probe view，不做无限解码；若 probe 仍有受支持的转义变化，当前或 probe 视图中忽略反斜杠、单双引号和反引号包装后的敏感键候选、未安全残余赋值或已注册 secret 都会使原始输出固定为 `[redacted sensitive text]`。
 - 边界探测也对一次 ASCII Unicode 归一后的候选生效，因此 5、6、10 层受支持转义的敏感 JSON 不会因超过预算而原样泄露；没有候选的普通更深转义文本不会因此无限展开。
-- 不再将任何不完整或非十六进制 `\u` 视为全局 fail-closed 条件。只解码完整、可打印 ASCII `\uXXXX`；普通 `C:\users\qingd` 路径、UNC 路径、普通反斜杠日志及无敏感字段的 `\u12ZZ` 保留原文。畸形转义与显式敏感 key 赋值或经候选归一后形成敏感 key 共存时仍 fail-closed。
+- 不再将任何不完整或非十六进制 `\u` 视为全局 fail-closed 条件。只解码完整、可打印 ASCII `\uXXXX`；普通 `C:\users\<user>` 路径、UNC 路径、普通反斜杠日志及无敏感字段的 `\u12ZZ` 保留原文。畸形转义与显式敏感 key 赋值或经候选归一后形成敏感 key 共存时仍 fail-closed。
 - 新增 5/6/10 层、10 层 Provider→result→JSON/Markdown/CLI 四边界、普通路径/UNC/畸形 Unicode 保留及畸形转义与敏感赋值共存反例。
 
 | 修复验证项 | 实际命令 | 结果 |
@@ -376,7 +376,7 @@ Provider Contract v2 的 JSON Schema 和公开字段未改变；`ConfigurationRe
 ### 已复核的通过项与证据
 
 - 5/6/10/20 层纯转义 JSON、普通反斜杠、注册短值和 `***` 变体专项中，纯转义敏感 key 不泄露；实际 20 层输入约 4.19 MiB，在 1.09 秒内因 512 KiB 预算受控返回固定占位符。100 层逐次完整序列化需要指数级文本，无法作为可物化的输入；现有 512 KiB 边界对任何可接收的超长转义文本 fail-closed，但不能替代上述 6/10 层可物化绕过的修复。
-- 正常 `C:\users\qingd\normal\app.log`、UNC `\\server\share\logs`、普通反斜杠与无敏感 `\u12ZZ` 均保持原文；带敏感候选的 malformed Unicode、`accessToken=***evil` 和已注册 `xy` 均受控隐藏。ASCII Unicode value-only 变体因原生敏感 key 存在而隐藏。
+- 正常 `C:\users\<user>\normal\app.log`、UNC `\\server\share\logs`、普通反斜杠与无敏感 `\u12ZZ` 均保持原文；带敏感候选的 malformed Unicode、`accessToken=***evil` 和已注册 `xy` 均受控隐藏。ASCII Unicode value-only 变体因原生敏感 key 存在而隐藏。
 - 专项命令 `desktop\.venv\Scripts\python.exe -m pytest desktop\tests\test_configuration.py desktop\tests\test_provider_runner.py desktop\tests\test_cli.py desktop\tests\test_joinquant_provider.py -q` 通过（83 项），但未覆盖本 P1 的多层 Unicode-key 组合。
 - 完整命令 `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify.ps1` 通过：Python 3.11.0、50 个精确锁定依赖、Ruff、23 个 Schema fixture、159 个桌面测试和 Android `lintDebug`/JVM/Debug APK 均通过；仅有既有 ZIP 同名 `manifest.json` 警告。
 - `git diff --check` 通过；对非测试源码与普通文档的凭据特征扫描未发现实际凭据、私钥或 AWS 访问键。本文所有 `TERRA_*` 均为合成审查值。
@@ -416,7 +416,7 @@ Provider Contract v2 的 JSON Schema 和公开字段未改变；`ConfigurationRe
 | 输入 | 输出 |
 |---|---|
 | `normal \u12ZZ no credentials` | 原样保留 |
-| `ordinary \u12ZZ log`、`C:\users\qingd`、`\\server\share\logs`、`plain \\ backlog` | 原样保留 |
+| `ordinary \u12ZZ log`、`C:\users\<user>`、`\\server\share\logs`、`plain \\ backlog` | 原样保留 |
 | `access\u12ZZToken=REVIEW_MALFORMED_VALUE` | `[redacted sensitive text]` |
 | `gateway {\"access\u12ZZToken\":\"REVIEW_MALFORMED_KEY\"}` | `[redacted sensitive text]` |
 | 5 层 `_escape_quotes_once` 转义 + `{"access\u12ZZToken":"REVIEW_MALFORMED_LAYER5"}` | `[redacted sensitive text]` |
@@ -548,7 +548,7 @@ Provider Contract v2 的 JSON Schema 和公开字段未改变；`ConfigurationRe
 - 同形键映射扩充：希腊 `α→a`、`ε→e`、`τ→t`、`σ/ς→s` 与拉丁扩展 `ɑ→a` 加入 `_HOMOGLYPH_MAP`，`pαssword`、`pɑssword`、`tokεn`、`τoken` 均识别为敏感键。
 - 独立认证方案值（P2）：`_AUTH_SCHEME_TOKEN` 替换原 `_BEARER_TOKEN`，`Bearer`/`Basic`/`Digest` 前缀后的凭据值（含常见编码分隔符）统一替换为 `<scheme> ***`；无头上下文的独立 `Basic <base64>`、`Digest <value>` 不再泄露。
 
-修复后行为矩阵（逐条实跑通过）：第六轮 16 个反例全部不再出现 `REVIEW_*` 合成值；`normal \u12ZZ no credentials`、Windows/UNC 路径、`token_count=42`、`user_profile.name=alice`、`<name>alice</name>`、`https://example.com/a%3Db/page`、完全转义 `***` 哨兵、原文 `Bearer token goes here`（`Bearer *** goes here`）与 `https://user:pass@host/path`（`https://***:***@host/path`）保持既有行为；1–10/20/100 层转义、CRLF `:=`、malformed `\u`、全角/零宽分隔符、XML、组合编码、URL userinfo、复合认证头等历史反例仍按预期。
+修复后行为矩阵（逐条实跑通过）：第六轮 16 个反例全部不再出现 `REVIEW_*` 合成值；`normal \u12ZZ no credentials`、Windows/UNC 路径、`token_count=42`、`user_profile.name=alice`、`<name>alice</name>`、`https://example.com/a%3Db/page`、完全转义 `***` 哨兵、原文 `Bearer token goes here`（`Bearer *** goes here`）与 `https://user:pass@host/path`（`https://***:***@host/path`）保持既有行为；1–10/20/100 层转义、CRLF `:=`、malformed `\u`、全角/零宽分隔符、XML、组合编码、URL userinfo、复合认证头等历史反例仍按预期。 （本行中的凭据均为合成示例。）
 
 | 修复验证项 | 实际命令 | 结果 |
 |---|---|---|
@@ -564,11 +564,11 @@ Provider Contract v2 的 JSON Schema 和公开字段未改变；`ConfigurationRe
 第五轮独立复审（结论 CHANGES_REQUIRED）发现 3 个 P1 与 1 个 P2；本轮由 root 编排者承担实现角色，全部修复（仅改 `desktop/src/market_monitor/providers/runner.py`、`desktop/src/market_monitor/configuration.py` 与对应测试）：
 
 - 组合编码分隔符：preflight 改为迭代解码管线（每轮依次做反斜杠转义折叠 → `%HH`/`%uHHHH` 百分号解码 → 命名/数字 HTML 实体解码，最多 4 轮），并对每个不同于原文的中间视图执行残余赋值检测、注册值检测、认证方案检测与 URL userinfo 检测。`Bearer%5Cu0020…`、`Bearer&#92;u0020…`、`Bearer%5Cx20…`、`Bearer%u0020…`、`accessToken%5Cu0020=…`、`accessToken\U0020=…`（大写 4 位 `\U`）全部 fail-closed；`\U00110000` 越界码点不崩溃（敏感键场景仍 fail-closed）。
-- URL userinfo 编码分隔符：新增 `_has_unsafe_url_userinfo`，对解码视图匹配 `scheme://user:pass@`；`https://user%3Apass@host`、`https://user:pass%40host`、`https://user&#58;pass@host` 全部 fail-closed；未编码 URL 保持既有 `http://***:***@host` 替换行为，普通 URL 路径（含 `%3D`）不受影响。
+- URL userinfo 编码分隔符：新增 `_has_unsafe_url_userinfo`，对解码视图匹配 `scheme://user:pass@`；`https://user%3Apass@host`、`https://user:pass%40host`、`https://user&#58;pass@host` 全部 fail-closed；未编码 URL 保持既有 `http://***:***@host` 替换行为，普通 URL 路径（含 `%3D`）不受影响。 （本行中的凭据均为合成示例。）
 - 复合认证/Cookie 头：`_SENSITIVE_SUFFIXES` 新增 `authorization` 与 `cookie`，`Proxy-Authorization: Basic …`、`X-Authorization: Basic …`、`Set-Cookie: session=…` 全部 fail-closed；新增 `_has_unsafe_auth_scheme` 对解码视图识别 `Bearer`/`Basic`/`Digest` + token（仅视图与原文不同时生效，普通 `Bearer xyz` 保持既有替换语义）。
 - 配置注册集合不一致（P2）：`configuration.py` 的 `_is_sensitive_configuration_name` 与 runner 键集合对齐（新增 `passwd`/`pwd`/`secretkey`/`accesskey`/AWS 键/`bearer`/`cookie`/`passphrase`/`refreshtoken` 等与后缀集合、尾部数字剥离），`LocalConfiguration.secret_values` 会注册这些配置值以便孤立值在错误消息中同样被脱敏。
 
-修复后行为矩阵（逐条实跑通过）：第五轮 12 个反例全部不再出现 `REVIEW_*` 合成值；`Bearer token goes here`（原文）仍为 `Bearer *** goes here`、`https://user:pass@host/path` 仍为 `https://***:***@host/path`、`https://example.com/a%3Db/page` 与全部历史可用性用例保持原样；1–10/20/100 层转义、CRLF `:=`、malformed `\u`、全角/零宽分隔符、XML、`***` 哨兵等历史反例仍按预期。
+修复后行为矩阵（逐条实跑通过）：第五轮 12 个反例全部不再出现 `REVIEW_*` 合成值；`Bearer token goes here`（原文）仍为 `Bearer *** goes here`、`https://user:pass@host/path` 仍为 `https://***:***@host/path`、`https://example.com/a%3Db/page` 与全部历史可用性用例保持原样；1–10/20/100 层转义、CRLF `:=`、malformed `\u`、全角/零宽分隔符、XML、`***` 哨兵等历史反例仍按预期。 （本行中的凭据均为合成示例。）
 
 | 修复验证项 | 实际命令 | 结果 |
 |---|---|---|
@@ -723,7 +723,7 @@ Provider Contract v2 的 JSON Schema 和公开字段未改变；`ConfigurationRe
 ### P1：URL userinfo 的编码分隔符绕过 URL 凭据脱敏
 
 - 位置：`desktop/src/market_monitor/providers/runner.py:87`（`_URL_CREDENTIALS` 只匹配字面 `:` 与 `@`）。
-- 问题：`https://user%3Apass@host/path`、`https://user:pass%40host/path`、`https://user&#58;pass@host/path`、`https://user&colon;pass@host/path`、`https://user%3Apass%40host/path` 均原样保留；percent/entity 视图只用于检测，且 residual 不把 `user:pass@` 视为敏感赋值，四个输出边界均泄露。
+- 问题：`https://user%3Apass@host/path`、`https://user:pass%40host/path`、`https://user&#58;pass@host/path`、`https://user&colon;pass@host/path`、`https://user%3Apass%40host/path` 均原样保留；percent/entity 视图只用于检测，且 residual 不把 `user:pass@` 视为敏感赋值，四个输出边界均泄露。 （本行中的凭据均为合成示例。）
 - 修复要求：对解码视图执行 URL userinfo 替换，或扩展 URL 匹配以识别 `%3A`/`%40`/`&#58;`/`&colon;` 等编码分隔符并 fail-closed；添加四边界回归。
 
 ### P1：复合认证/Cookie 头键绕过认证头脱敏
@@ -797,7 +797,7 @@ Provider Contract v2 的 JSON Schema 和公开字段未改变；`ConfigurationRe
 - 桌面全量：`C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe -Command "& .\desktop\.venv\Scripts\python.exe -m pytest desktop\tests -q"` → PASS（203 项；仅有既有 ZIP 同名 `manifest.json` 警告）。
 - 静态检查：`desktop\.venv\Scripts\python.exe -m ruff check desktop\src desktop\tests` → PASS；`git diff --check` → PASS。
 - 统一验证：`powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify.ps1` → PASS（Python 3.11.0、JDK 21.0.11、50 个精确锁定依赖、Ruff、23 个共享 schema fixtures、桌面 203 项及 Android `lintDebug`/JVM/Debug APK）。
-- 对照组：`token_count=42`、`C:\users\qingd\normal\app.log`、`账户：普通文本`、`accessToken: ***`、`https://example.com/a%3Db/page`、`user_profile.name=alice`、`<name>alice</name>` 均保留；`Authorization: Basic dXNlcjpwYXNz` → `[redacted sensitive text]`、`Bearer xyz` → `Bearer ***` 等既有安全语义保持。
+- 对照组：`token_count=42`、`C:\users\<user>\normal\app.log`、`账户：普通文本`、`accessToken: ***`、`https://example.com/a%3Db/page`、`user_profile.name=alice`、`<name>alice</name>` 均保留；`Authorization: Basic dXNlcjpwYXNz` → `[redacted sensitive text]`、`Bearer xyz` → `Bearer ***` 等既有安全语义保持。
 
 本复审未修改实现、未验收且未启动后续任务。`FULL-101` 已更新为 `CHANGES_REQUIRED`；实现者只能修复以上 P1/P2 后重新进入独立审查。
 
@@ -809,7 +809,7 @@ Provider Contract v2 的 JSON Schema 和公开字段未改变；`ConfigurationRe
 
 - 位置：`desktop/src/market_monitor/providers/runner.py:428`（`_URL_USERINFO_VIEW` 只认 ASCII `:`）、`:444-447`（`_has_unsafe_url_userinfo`）。
 - 问题：`&ratio;`、`&#x2236;` 解码为 U+2236，字面 U+A789/U+02D0/U+1361 也仍是键值分隔符集合成员（见 `:634`），但 URL userinfo 检测视图只接受 ASCII 冒号，因此解码后 `https://user∶pass@…` 仍不被视为凭据 URL，原始文本原样返回。这正是第六轮复审 P1 “HTML 命名实体集合过小”中列出的反例 `https://user&ratio;pass@REVIEW_URL_RATIO/path`，修复声明“16 个反例全部不再出现”与实际不符。
-- 复现（合成值，四个边界均确认泄露）：`redact_secrets('https://user&ratio;pass@REVIEW_URL_RATIO/path')`、`https://user&#x2236;pass@REVIEW_URL_NUM2236/path`、`https://user꞉pass@REVIEW_URL_A789/path`（U+A789）、`https://userːpass@REVIEW_URL_02D0/path`（U+02D0）、`https://user፡pass@REVIEW_URL_1361/path`（U+1361）均原样返回；作为固定 Provider 的 `NETWORK` 错误后，内存 `ProviderRunResult`、`provider-capabilities.json`、`provider-capabilities.md` 与 CLI `_emit()` stdout 均含合成值。
+- 复现（合成值，四个边界均确认泄露）：`redact_secrets('https://user&ratio;pass@REVIEW_URL_RATIO/path')`、`https://user&#x2236;pass@REVIEW_URL_NUM2236/path`、`https://user꞉pass@REVIEW_URL_A789/path`（U+A789）、`https://userːpass@REVIEW_URL_02D0/path`（U+02D0）、`https://user፡pass@REVIEW_URL_1361/path`（U+1361）均原样返回；作为固定 Provider 的 `NETWORK` 错误后，内存 `ProviderRunResult`、`provider-capabilities.json`、`provider-capabilities.md` 与 CLI `_emit()` stdout 均含合成值。 （本行中的凭据均为合成示例。）
 - 修复要求：URL userinfo 检测视图（`_URL_USERINFO_VIEW`/`_URL_USERINFO_REMAINING`）与 `_URL_CREDENTIALS` 同源支持全部已登记冒号同形分隔符（至少 U+2236、U+A789、U+02D0、U+1361），或对解码视图仍含“userinfo + 同形冒号”的文本 fail-closed；为自由文本与完整 JSON 值、四边界添加回归，并保留 ASCII 冒号实体（`&colon;`/`&Colon;`/`&#58;`/`&#x3a;`）与 `%3A` 既有语义。
 
 ### P1-2：字面 Unicode 格式/不可见字符（Cf）插在敏感键与分隔符之间，或插入复合键内，绕过全部检测

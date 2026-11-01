@@ -361,14 +361,14 @@ private fun SyncDialog(
     onConfirm: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    var serverUrl by remember { mutableStateOf("http://192.168.1.88:8765") }
+    var serverUrl by remember { mutableStateOf("https://") }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("从电脑同步", style = MarketTheme.typography.titleMedium) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(MarketTheme.dimensions.spacingSmall)) {
                 Text(
-                    "电脑端运行 serve 后，手机与电脑连同一局域网，输入电脑 IP 即可。",
+                    "同步需要可验证证书的 HTTPS 地址；也可直接导入电脑生成的签名离线包。",
                     style = MarketTheme.typography.bodySmall,
                     color = MarketTheme.colorScheme.onSurfaceVariant,
                 )
@@ -378,7 +378,7 @@ private fun SyncDialog(
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                     label = { Text("电脑后端地址") },
-                    placeholder = { Text("http://<电脑IP>:8765") },
+                    placeholder = { Text("https://<电脑地址>") },
                 )
             }
         },

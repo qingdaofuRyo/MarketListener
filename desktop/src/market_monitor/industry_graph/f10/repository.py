@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from .models import CompanyDetail, CompanySummary, MoneySnapshot, RevenueSegment, _clean_text
+from .segments import revenue_classification
 
 
 _MAX_PAGE_SIZE = 500
@@ -125,7 +128,7 @@ def company_detail_from_record(record: Mapping[str, Any]) -> CompanyDetail | Non
     quote_source = _clean_text(record.get("quote_source")) or "tencent_quote"
     total_cap = _market_cap(record.get("total_market_cap"), currency, quote_as_of, quote_source)
     float_cap = _market_cap(record.get("float_market_cap"), currency, quote_as_of, quote_source)
-    revenue_segments = tuple(_revenue_segments(record.get("revenue_breakdown"), currency, updated_at, source))
+    revenue_segments = tuple(_revenue_segments(record.get("revenue_breakdown")))
     products = tuple(
         product
         for product in (_clean_text(item) for item in (record.get("products") or []))
@@ -226,7 +229,28 @@ def _market_cap(value: object, currency: str, as_of: str | None, source: str) ->
     return MoneySnapshot(value=yi * 100_000_000, currency=currency, as_of=as_of, source=source)
 
 
-def _revenue_segments(raw: object, currency: str, as_of: str | None, source: str) -> Iterable[RevenueSegment]:
+def _source_timestamp(value: object) -> str | None:
+    text = _clean_text(value)
+    if text is None:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return text if parsed.tzinfo is not None else None
+
+
+def _finite_number(value: object) -> float | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (ValueError, TypeError, OverflowError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _revenue_segments(raw: object) -> Iterable[RevenueSegment]:
     if not isinstance(raw, list):
         return ()
     rows: list[RevenueSegment] = []
@@ -236,48 +260,55 @@ def _revenue_segments(raw: object, currency: str, as_of: str | None, source: str
         name = _clean_text(item.get("item_name") or item.get("item") or item.get("name"))
         if not name:
             continue
-        try:
-            ratio = float(item["ratio"]) if item.get("ratio") is not None else None
-        except (TypeError, ValueError):
-            ratio = None
-        try:
-            share_pct = float(item["revenue_share_pct"]) if item.get("revenue_share_pct") is not None else None
-        except (TypeError, ValueError):
-            share_pct = None
+        raw_currency = _clean_text(item.get("currency"))
+        currency = raw_currency.upper() if raw_currency and len(raw_currency) == 3 and raw_currency.isascii() and raw_currency.isalpha() else "UNKNOWN"
+        source = _clean_text(item.get("source")) or "unknown"
+        resolved = revenue_classification(item)
+        ratio = _finite_number(item.get("ratio"))
+        share_pct = _finite_number(item.get("revenue_share_pct"))
+        revenue_value = item.get("revenue", item.get("income", item.get("amount")))
+        fetched_at = _source_timestamp(item.get("fetched_at"))
+        source_as_of = fetched_at or _source_timestamp(item.get("as_of"))
         amount = _revenue_amount(
-            item.get("revenue", item.get("income", item.get("amount"))),
+            revenue_value,
             currency,
-            item.get("as_of") or as_of,
-            item.get("source") or source,
+            source_as_of,
+            source,
         )
+        amount_without_timestamp = None
+        if amount is None and source_as_of is None:
+            try:
+                raw_value = float(revenue_value) if not isinstance(revenue_value, bool) else float("nan")
+                if math.isfinite(raw_value):
+                    amount_without_timestamp = {"value": raw_value, "currency": currency}
+            except (TypeError, ValueError):
+                pass
         cost = _revenue_amount(
             item.get("cost"),
             currency,
-            item.get("as_of") or as_of,
-            item.get("source") or source,
+            source_as_of,
+            source,
         )
         gross_profit = _revenue_amount(
             item.get("gross_profit"),
             currency,
-            item.get("as_of") or as_of,
-            item.get("source") or source,
+            source_as_of,
+            source,
         )
-        try:
-            gross_margin_pct = float(item["gross_margin_pct"]) if item.get("gross_margin_pct") is not None else None
-        except (TypeError, ValueError):
-            gross_margin_pct = None
+        gross_margin_pct = _finite_number(item.get("gross_margin_pct"))
         rows.append(
             RevenueSegment(
                 name=name,
                 amount=amount,
+                amount_without_timestamp=amount_without_timestamp,
                 ratio=ratio if ratio is not None and ratio >= 0 else None,
                 segment_type=_clean_text(item.get("type")),
                 revenue_share_pct=share_pct,
-                classification=_clean_text(item.get("classification")),
-                classification_label=_clean_text(item.get("classification_label")),
+                classification=resolved[0] if resolved else None,
+                classification_label=resolved[1] if resolved else None,
                 period=_clean_text(item.get("period")),
                 source=_clean_text(item.get("source")),
-                fetched_at=_clean_text(item.get("fetched_at")),
+                fetched_at=fetched_at,
                 cost=cost,
                 gross_profit=gross_profit,
                 gross_margin_pct=gross_margin_pct,
@@ -287,42 +318,54 @@ def _revenue_segments(raw: object, currency: str, as_of: str | None, source: str
 
 
 def _revenue_amount(value: object, currency: str, as_of: str | None, source: str) -> MoneySnapshot | None:
+    if isinstance(value, bool):
+        return None
     try:
         amount = float(value)
     except (TypeError, ValueError):
         return None
-    if amount <= 0 or not as_of:
+    if not math.isfinite(amount) or not as_of:
         return None
     return MoneySnapshot(value=amount, currency=currency, as_of=as_of, source=source)
 
 
 def _top_revenue_segment(segments: Iterable[RevenueSegment]) -> RevenueSegment | None:
-    rows = list(segments)
-    if not rows:
-        return None
-    valid = [
-        item
-        for item in rows
-        if item.period and item.amount is not None and item.amount.value > 0
-    ]
+    valid: list[tuple[date, RevenueSegment]] = []
+    for item in segments:
+        if not item.period or _segment_amount(item) <= 0 or item.classification == "region":
+            continue
+        try:
+            period = date.fromisoformat(item.period[:10])
+        except ValueError:
+            continue
+        valid.append((period, item))
     if not valid:
-        fallback = max(rows, key=lambda item: ((item.amount.value if item.amount else -1.0), (item.ratio or -1.0)))
-        return fallback if (fallback.amount is not None or fallback.ratio is not None) else None
-    latest_period = max(item.period[:10] for item in valid)
-    same_period = [item for item in valid if (item.period or "")[:10] == latest_period]
+        return None
+    latest_period = max(period for period, _ in valid)
+    same_period = [item for period, item in valid if period == latest_period]
     preference = ("product", "business", "industry", "project", "other")
-    classified = {
-        (item.classification or "").strip().lower(): item
-        for item in same_period
-        if (item.classification or "").strip()
-    }
     for classification in preference:
-        if classification in classified:
-            return classified[classification]
+        group = [item for item in same_period if (item.classification or "").strip().lower() == classification]
+        if group:
+            return _max_comparable_segment(group)
     untyped = [item for item in same_period if not (item.classification or "").strip()]
     if untyped:
-        return max(untyped, key=lambda item: item.amount.value if item.amount else -1.0)
-    return max(same_period, key=lambda item: item.amount.value if item.amount else -1.0)
+        return _max_comparable_segment(untyped)
+    return None
+
+
+def _segment_amount(item: RevenueSegment) -> float:
+    if item.amount is not None:
+        return item.amount.value
+    return float(item.amount_without_timestamp["value"]) if item.amount_without_timestamp else -1.0
+
+
+def _max_comparable_segment(items: list[RevenueSegment]) -> RevenueSegment | None:
+    currencies = {item.amount.currency if item.amount is not None else item.amount_without_timestamp["currency"]
+                  for item in items if item.amount is not None or item.amount_without_timestamp}
+    if len(currencies) != 1 or "UNKNOWN" in currencies:
+        return None
+    return max(items, key=_segment_amount)
 
 
 def _sort_value(item: CompanySummary, sort: str) -> tuple[object, ...]:

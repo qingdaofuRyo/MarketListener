@@ -217,7 +217,7 @@ def test_persistent_rate_limit_stops_at_the_retry_bound_and_uses_injected_clock(
 
 def test_secret_redaction_covers_common_error_shapes() -> None:
     assert redact_secrets("account=alice token=abc Bearer xyz") == "[redacted sensitive text]"
-    assert redact_secrets("https://alice:pw@example.test/?api_key=x") == "[redacted sensitive text]"
+    assert redact_secrets("https://alice:pw@example.test/?api_key=x") == "[redacted sensitive text]"  # Synthetic test credential or marker.
     assert redact_secrets({"headers": {"Authorization": "Bearer short"}, "nested": ["password: pw"]}, secret_values=("pw",)) == {
         "headers": {"Authorization": "***"},
         "nested": ["[redacted sensitive text]"],
@@ -240,7 +240,7 @@ def test_secret_redaction_normalizes_camel_snake_and_kebab_sensitive_names_witho
     assert redact_secrets('{"xy":"value","id":"xy","note":"proxy"}', secret_values=("xy",)) == '{"xy":"value","id":"***","note":"proxy"}'
     text = "accessToken=LEAK_ACCESS client-secret=LEAK_SECRET private_key=LEAK_PRIVATE apiKey=LEAK_API\nX-Client-Secret: LEAK_HEADER"
     assert "LEAK" not in redact_secrets(text)
-    assert redact_secrets("https://user:pass@example.test/?accessToken=LEAK_QUERY&apiKey=LEAK_API") == "[redacted sensitive text]"
+    assert redact_secrets("https://user:pass@example.test/?accessToken=LEAK_QUERY&apiKey=LEAK_API") == "[redacted sensitive text]"  # Synthetic test credential or marker.
 
 
 def test_secret_redaction_parses_complete_nested_json_and_preserves_valid_json() -> None:
@@ -573,7 +573,7 @@ def test_escape_budget_boundary_probe_protects_provider_result_reports_and_cli(t
 
 def test_malformed_unicode_and_normal_backslash_text_stay_verbatim_without_sensitive_assignment() -> None:
     for text in (
-        r"C:\users\qingd",
+        r"C:\users\synthetic-user",
         r"ordinary \u12ZZ log",
         r"normal \u12ZZ no credentials",
         r"\\server\share\logs",
@@ -720,7 +720,7 @@ def test_non_sensitive_shaped_text_stays_usable() -> None:
         "token_count=42",
         "user_profile.name=alice",
         "<name>alice</name>",
-        r"log C:\users\qingd\normal\app.log plain \\server\share",
+        r"log C:\users\synthetic-user\normal\app.log plain \\server\share",
     ):
         assert redact_secrets(text) == text
 
@@ -964,7 +964,7 @@ def test_run_result_matches_the_shared_contract() -> None:
 @pytest.mark.parametrize(
     "text",
     [
-        "https://user:pass@REVIEW_URL_ASCII/path",
+        "https://user:pass@REVIEW_URL_ASCII/path",  # Synthetic test credential or marker.
         "https://user&ratio;pass@REVIEW_URL_RATIO/path",
         "https://user&#x2236;pass@REVIEW_URL_NUM2236/path",
         "https://user\uA789pass@REVIEW_URL_A789/path",

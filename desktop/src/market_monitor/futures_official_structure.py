@@ -21,11 +21,12 @@ from .futures_structure import (
     _build_baseline,
 )
 from .storage import MarketStore
+from .futures_official_daily_quality import validated_daily_inputs
 
 
-OFFICIAL_PRODUCT_OI_FORMULA_VERSION = "futures-structure-oi-official-v1"
-OFFICIAL_PRODUCT_NOTIONAL_FORMULA_VERSION = "futures-structure-notional-official-v5"
-OFFICIAL_PRODUCT_VOLUME_FORMULA_VERSION = "futures-structure-volume-official-v1"
+OFFICIAL_PRODUCT_OI_FORMULA_VERSION = "futures-structure-oi-official-v2"
+OFFICIAL_PRODUCT_NOTIONAL_FORMULA_VERSION = "futures-structure-notional-official-v6"
+OFFICIAL_PRODUCT_VOLUME_FORMULA_VERSION = "futures-structure-volume-official-v2"
 OFFICIAL_PRODUCT_SOURCE = "SIX_DOMESTIC_EXCHANGES_OFFICIAL_DAILY"
 _EXCHANGES = ("SHFE", "INE", "DCE", "CZCE", "GFEX", "CFFEX")
 
@@ -53,20 +54,16 @@ def run_official_product_structure_pipeline(
     store = MarketStore(root)
     try:
         store.register_default_datasets()
-        facts = [
-            row for row in store.list_futures_official_daily(
+        facts, all_coverage = validated_daily_inputs(
+            store.list_futures_official_daily(
                 start_day=start.isoformat() if start else None,
                 end_day=end.isoformat() if end else None,
-            )
-            if str(row.get("parser_version") or "").startswith("official-")
-        ]
-        all_coverage = [
-            row for row in store.list_futures_official_daily_coverage(
+            ),
+            store.list_futures_official_daily_coverage(
                 start_day=start.isoformat() if start else None,
                 end_day=end.isoformat() if end else None,
-            )
-            if str(row.get("adapter") or "").endswith("-daily-v2")
-        ]
+            ),
+        )
     finally:
         store.close()
     if not facts and not all_coverage:
@@ -127,26 +124,30 @@ def run_official_product_structure_pipeline(
                     value = volume
             else:
                 oi = _finite_nonnegative(row.get("open_interest"))
-                settlement = _finite_positive(row.get("settlement"))
-                if oi is None or row.get("open_interest_sidedness") != "ONE_SIDED":
-                    details["missing_open_interest"] += 1
-                    if oi is not None:
-                        details["unverified_open_interest"] += 1
-                if settlement is None:
-                    details["missing_settlement"] += 1
-                multiplier = None
-                official = registry.resolve(day, exchange, product) if registry else None
-                multiplier = official.contract_multiplier if official else None
-                if exchange == "CFFEX" and multiplier is None and rule_book is not None:
-                    # CFFEX daily official contract specifications are retained in RuleBook.
-                    multiplier = rule_book.resolve_multiplier(date.fromisoformat(day), exchange, product)
-                if multiplier is None:
-                    details["missing_multiplier"] += 1
-                if (
-                    oi is not None and settlement is not None and multiplier is not None
-                    and row.get("open_interest_sidedness") == "ONE_SIDED"
-                ):
-                    value = oi * settlement * multiplier
+                if oi == 0 and row.get("open_interest_sidedness") == "ONE_SIDED":
+                    # A verified zero position has zero notional value even
+                    # when this inactive contract lacks a multiplier or price.
+                    value = 0.0
+                else:
+                    settlement = _finite_positive(row.get("settlement"))
+                    if oi is None or row.get("open_interest_sidedness") != "ONE_SIDED":
+                        details["missing_open_interest"] += 1
+                        if oi is not None:
+                            details["unverified_open_interest"] += 1
+                    if settlement is None:
+                        details["missing_settlement"] += 1
+                    official = registry.resolve(day, exchange, product) if registry else None
+                    multiplier = official.contract_multiplier if official else None
+                    if exchange == "CFFEX" and multiplier is None and rule_book is not None:
+                        # CFFEX daily official contract specifications are retained in RuleBook.
+                        multiplier = rule_book.resolve_multiplier(date.fromisoformat(day), exchange, product)
+                    if multiplier is None:
+                        details["missing_multiplier"] += 1
+                    if (
+                        oi is not None and settlement is not None and multiplier is not None
+                        and row.get("open_interest_sidedness") == "ONE_SIDED"
+                    ):
+                        value = oi * settlement * multiplier
             if value is None:
                 missing_metric += 1
                 details["products"].add(key)
@@ -241,12 +242,16 @@ def run_official_product_structure_pipeline(
         )
         store.replace_futures_structure_input_coverage(
             coverage_rows, chart_id=chart_id, formula_version=formula_version,
+            start_day=start.isoformat() if start else None,
+            end_day=end.isoformat() if end else None,
         )
     finally:
         store.close()
     latest_quality = quality_by_day.get(max(quality_by_day), {})
     return {
-        "status": "PASS" if latest_complete is not None and baseline is not None else "PARTIAL",
+        "status": "PASS" if baseline is not None and all(
+            item["quality"] == "PASS" for item in quality_by_day.values()
+        ) else "PARTIAL",
         "chartId": chart_id, "formulaVersion": formula_version,
         "sourceRows": len(facts), "writtenRows": written,
         "coverageDays": len(coverage_rows),

@@ -12,14 +12,20 @@ const props = defineProps<{
   floatMarketCap?: number;
   swapColors?: boolean;
   inline?: boolean;
+  futureUnits?: boolean;
+  period?: string;
 }>();
 
 function number(value: unknown, unit = false, percent = false): string {
-  return isFiniteQuote(value) ? (percent ? formatPercent(value) : formatQuote(value, 2, unit)) : "--";
+  return isFiniteQuote(value) ? (percent ? formatPercent(value) : formatQuote(value, 2, unit)) : "—";
 }
 
 const activeBar = computed(() => props.bar || props.latestBar);
 const direction = computed(() => changeTone(activeBar.value?.pctChange ?? activeBar.value?.change));
+const dailyFinance = computed(() => !props.futureUnits || ["1d", "1w", "1mo", "1q", "3mo", "6mo", "1y"].includes(props.period || "1d"));
+const fieldGroups = computed(() => props.futureUnits
+  ? [...quoteFieldGroups.slice(0, -1), ...(activeBar.value?.mappingStatus
+    ? [["市值", "映射合约"] as const] : [["市值"] as const])] : quoteFieldGroups);
 
 const fields = computed<Record<string, string>>(() => {
   const bar = activeBar.value;
@@ -33,9 +39,11 @@ const fields = computed<Record<string, string>>(() => {
     ["涨幅", number(bar?.pctChange, false, true)],
     ["涨跌", number(bar?.change)],
     ["量", number(bar?.volume, true)],
-    ["额", number(bar?.amount, true)],
+    ["额", number(dailyFinance.value ? bar?.amount : undefined, true)],
     ["持仓量", number(bar?.openInterest, true)],
-    ["沉淀资金", number(props.latestBar?.capitalDeposit, true)],
+    ["沉淀资金", number(dailyFinance.value ? bar?.capitalDeposit : undefined, true)],
+    ["市值", number(dailyFinance.value ? bar?.notionalValue : undefined, true)],
+    ["映射合约", bar?.underlyingContractCode || "—"],
     ["总市值", number(props.totalMarketCap, true)],
     ["流通市值", number(props.floatMarketCap, true)],
   ]);
@@ -61,13 +69,13 @@ function color(name: string): string {
 }
 
 const colors = computed<Record<string, string>>(() =>
-  Object.fromEntries(quoteFieldGroups.flatMap((group) => group.map((name) => [name, color(name)]))),
+  Object.fromEntries(fieldGroups.value.flatMap((group) => group.map((name) => [name, color(name)]))),
 );
 </script>
 
 <template>
   <MetricGrid
-    :groups="quoteFieldGroups"
+    :groups="fieldGroups"
     :values="fields"
     :colors="colors"
     :inline="inline"

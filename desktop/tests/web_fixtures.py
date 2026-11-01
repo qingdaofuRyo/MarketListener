@@ -3,15 +3,21 @@
 from __future__ import annotations
 
 import json
+import hashlib
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 import duckdb
 
+from market_monitor.market_data_version import advance_market_data_version
+
 
 def write_silver(data_root: Path, rows: Iterable[Mapping[str, Any]]) -> Path:
-    """Write a small local silver parquet partition with the production schema."""
+    """Write a small Silver partition and matching synthetic Catalog evidence."""
     path = Path(data_root) / "silver" / "fixture.parquet"
+    previous_version_file = Path(data_root) / "state" / "market_data_version.json"
+    had_version = previous_version_file.is_file()
     path.parent.mkdir(parents=True, exist_ok=True)
     connection = duckdb.connect(":memory:")
     try:
@@ -35,8 +41,30 @@ def write_silver(data_root: Path, rows: Iterable[Mapping[str, Any]]) -> Path:
             )
         quoted = str(path).replace("'", "''")
         connection.execute(f"COPY bars TO '{quoted}' (FORMAT PARQUET)")
+        row_count, data_cutoff = connection.execute(
+            "SELECT count(*), max(bar_open_time) FROM bars"
+        ).fetchone()
     finally:
         connection.close()
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    catalog = Path(data_root) / "catalog.duckdb"
+    with duckdb.connect(str(catalog)) as metadata:
+        metadata.execute(
+            "CREATE TABLE IF NOT EXISTS partitions ("
+            "partition_id VARCHAR PRIMARY KEY, file_path VARCHAR NOT NULL, row_count BIGINT NOT NULL, "
+            "data_cutoff VARCHAR NOT NULL, sha256 VARCHAR NOT NULL, source_run_id VARCHAR NOT NULL, "
+            "status VARCHAR NOT NULL, updated_at VARCHAR NOT NULL)"
+        )
+        metadata.execute(
+            "INSERT INTO partitions VALUES (?, ?, ?, ?, ?, ?, 'COMPLETE', ?) "
+            "ON CONFLICT(partition_id) DO UPDATE SET row_count=excluded.row_count, "
+            "data_cutoff=excluded.data_cutoff, sha256=excluded.sha256, updated_at=excluded.updated_at",
+            ["synthetic-fixture", "silver/fixture.parquet", int(row_count),
+             str(data_cutoff or ""), digest, "synthetic-fixture",
+             datetime.now(timezone.utc).isoformat()],
+        )
+    if had_version:
+        advance_market_data_version(data_root, changed_file=path, sha256=digest)
     return path
 
 

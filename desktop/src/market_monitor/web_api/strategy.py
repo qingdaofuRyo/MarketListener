@@ -18,11 +18,13 @@ import csv
 import base64
 import hashlib
 import io
+import inspect
 from copy import deepcopy
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
+from functools import wraps
 from pathlib import Path
-from typing import Any, Literal, Mapping
+from typing import Any, Callable, Literal, Mapping, ParamSpec, TypeVar
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
@@ -72,6 +74,7 @@ from market_monitor.web_api.common import (
     read_bars,
 )
 from market_monitor.market_data_version import market_data_version
+from market_monitor.profile_gate import ProfileGateBusy, profile_read_gate, profile_write_gate
 from market_monitor.market_classification import (
     UNCLASSIFIED_CATEGORY,
     classify_market,
@@ -115,6 +118,30 @@ def _data_root(request: Request) -> Path:
     if configured:
         return Path(configured)
     return _DEFAULT_DATA_ROOT
+
+
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+
+
+def _profile_mutation(function: Callable[_P, _R]) -> Callable[_P, _R]:
+    """Cover a whole strategy mutation, including preflight and every file move.
+
+    The wrapper retains the endpoint's signature for FastAPI.  It is applied
+    beneath the route decorator, before FastAPI registers the endpoint.
+    """
+    signature = inspect.signature(function)
+
+    @wraps(function)
+    def wrapped(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+        request = signature.bind(*args, **kwargs).arguments["request"]
+        try:
+            with profile_write_gate(_data_root(request)):
+                return function(*args, **kwargs)
+        except ProfileGateBusy as error:
+            raise HTTPException(status_code=503, detail=str(error), headers={"Retry-After": "2"}) from error
+
+    return wrapped
 
 
 def _definitions_dir(data_root: Path) -> Path:
@@ -347,6 +374,22 @@ class StrategyRunRequest(BaseModel):
     maxOps: int = Field(default=500_000, ge=1000, le=5_000_000)
 
 
+class StockScreenRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    source: str = Field(min_length=1, max_length=10000)
+    minMarketCapYi: float = Field(default=200, ge=0, allow_inf_nan=False)
+    offset: int = Field(default=0, ge=0, le=100_000)
+    limit: int = Field(default=50, ge=1, le=100)
+    instrumentIds: list[str] | None = Field(default=None, min_length=1, max_length=100)
+
+
+class StockScreenScriptRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=64)
+    source: str = Field(min_length=1, max_length=10000)
+    expectedVersion: int | None = Field(default=None, ge=1, le=1000)
+
+
 class StrategyMutationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     displayName: str = Field(min_length=1, max_length=64)
@@ -436,7 +479,8 @@ class StrategyBacktestRequest(BaseModel):
 
 
 _BUILDER_CALLS: dict[str, tuple[str, ...]] = {
-    "period_return": ("close",), "no_limit_up": ("limit_up",), "no_limit_down": ("limit_down",),
+    "period_return": ("close",), "up_days": ("close",), "sum_daily_returns": ("close",),
+    "no_limit_up": ("limit_up",), "no_limit_down": ("limit_down",),
     "limit_up_count": ("limit_up",), "limit_down_count": ("limit_down",),
     "close_new_high": ("close", "high"), "close_new_low": ("close", "low"),
     "up_count": ("open", "close"), "down_count": ("open", "close"),
@@ -733,6 +777,7 @@ def strategy_indicator_detail(
 
 
 @router.post("/indicators/{indicator_id}/copy", status_code=201)
+@_profile_mutation
 def strategy_indicator_copy(
     indicator_id: str,
     request: Request,
@@ -762,6 +807,7 @@ def strategy_indicator_copy(
 
 
 @router.post("/indicator-resources", status_code=201)
+@_profile_mutation
 def strategy_indicator_resource_create(request: Request, document: dict[str, Any]) -> dict[str, Any]:
     """Persist a validated custom Indicator version; formulas remain template-bound."""
 
@@ -784,6 +830,7 @@ def strategy_indicator_resource_create(request: Request, document: dict[str, Any
 
 
 @router.put("/indicator-resources/{indicator_id}")
+@_profile_mutation
 def strategy_indicator_resource_update(
     indicator_id: str,
     request: Request,
@@ -812,6 +859,7 @@ def strategy_indicator_resource_update(
 
 
 @router.delete("/indicator-resources/{indicator_id}")
+@_profile_mutation
 def strategy_indicator_resource_delete(indicator_id: str, request: Request) -> Response:
     """Remove all local versions of one custom Indicator, never built-ins."""
 
@@ -970,6 +1018,7 @@ def strategy_execution_capabilities(request: Request) -> dict[str, Any]:
 
 
 @router.post("/order-intents")
+@_profile_mutation
 def strategy_order_intent_dispatch(request: Request, body: StrategyOrderIntentRequest) -> dict[str, Any]:
     """Risk-check and submit one intent to an isolated non-Live adapter.
 
@@ -1045,7 +1094,11 @@ def strategy_backtest_run(request: Request, body: StrategyBacktestRequest) -> di
             status_code=500,
             detail={"code": "INVALID_STRATEGY_REPORT", "message": str(error)},
         ) from error
-    _atomic_json(_backtests_dir(data_root) / f"{result['run_id']}.json", result)
+    try:
+        with profile_write_gate(data_root):
+            _atomic_json(_backtests_dir(data_root) / f"{result['run_id']}.json", result)
+    except ProfileGateBusy as error:
+        raise HTTPException(status_code=503, detail=str(error), headers={"Retry-After": "2"}) from error
     return clean(_camel_keys(result))
 
 
@@ -1233,6 +1286,7 @@ def strategy_definition_resources(
 
 
 @router.post("/definition-resources/migrations/legacy", status_code=201)
+@_profile_mutation
 def strategy_definition_resource_migrate_legacy(request: Request) -> dict[str, Any]:
     """Move pre-versioned local AST files into immutable resource files.
 
@@ -1310,6 +1364,7 @@ def strategy_definition_resource_migrate_legacy(request: Request) -> dict[str, A
 
 
 @router.post("/definition-resources/migrations/{migration_id}/rollback")
+@_profile_mutation
 def strategy_definition_resource_rollback_migration(request: Request, migration_id: str) -> dict[str, Any]:
     data_root = _data_root(request)
     if not re.fullmatch(r"migration_[0-9a-f]{16}", migration_id):
@@ -1367,6 +1422,7 @@ def strategy_definition_resource_rollback_migration(request: Request, migration_
 
 
 @router.post("/definition-resources", status_code=201)
+@_profile_mutation
 def strategy_definition_resource_create(request: Request, document: dict[str, Any]) -> dict[str, Any]:
     try:
         evidence = validate_strategy_definition(document)
@@ -1448,6 +1504,7 @@ def strategy_templates() -> dict[str, Any]:
 
 
 @router.post("/templates/{template_id}/create", status_code=201)
+@_profile_mutation
 def strategy_template_create(
     request: Request,
     template_id: str,
@@ -1488,6 +1545,7 @@ def strategy_package_preview(request: Request, body: StrategyPackageImportReques
 
 
 @router.post("/packages/import", status_code=201)
+@_profile_mutation
 def strategy_package_import(request: Request, body: StrategyPackageImportRequest) -> dict[str, Any]:
     """Import only a fully validated desktop Rule-AST package.
 
@@ -1565,6 +1623,7 @@ def strategy_package_import(request: Request, body: StrategyPackageImportRequest
 
 
 @router.post("/definition-resources/{strategy_id}/copy", status_code=201)
+@_profile_mutation
 def strategy_definition_resource_copy(
     request: Request,
     strategy_id: str,
@@ -1597,6 +1656,7 @@ def strategy_definition_resource_copy(
 
 
 @router.patch("/definition-resources/{strategy_id}/status", status_code=201)
+@_profile_mutation
 def strategy_definition_resource_status(
     request: Request,
     strategy_id: str,
@@ -1617,6 +1677,7 @@ def strategy_definition_resource_status(
 
 
 @router.delete("/definition-resources/{strategy_id}")
+@_profile_mutation
 def strategy_definition_resource_delete(
     request: Request,
     strategy_id: str,
@@ -1710,6 +1771,7 @@ def strategy_definition(request: Request, strategy_id: str) -> dict[str, Any]:
 
 
 @router.post("/definitions", status_code=201)
+@_profile_mutation
 def strategy_create(request: Request, body: StrategyMutationRequest) -> dict[str, Any]:
     """Persist a validated DSL with a stable ASCII ID and separate UI metadata."""
     data_root = _data_root(request)
@@ -1738,6 +1800,7 @@ def strategy_create(request: Request, body: StrategyMutationRequest) -> dict[str
 
 
 @router.put("/definitions/{strategy_id}")
+@_profile_mutation
 def strategy_update(request: Request, strategy_id: str, body: StrategyMutationRequest) -> dict[str, Any]:
     data_root = _data_root(request)
     _load_definition(data_root, strategy_id)
@@ -1760,6 +1823,7 @@ def strategy_update(request: Request, strategy_id: str, body: StrategyMutationRe
 
 
 @router.patch("/definitions/{strategy_id}/mark")
+@_profile_mutation
 def strategy_mark(request: Request, strategy_id: str, body: StrategyMarkRequest) -> dict[str, Any]:
     data_root = _data_root(request)
     _load_definition(data_root, strategy_id)
@@ -1775,6 +1839,7 @@ def strategy_mark(request: Request, strategy_id: str, body: StrategyMarkRequest)
 
 
 @router.patch("/definitions/{strategy_id}/status")
+@_profile_mutation
 def strategy_status(request: Request, strategy_id: str, body: StrategyStatusRequest) -> dict[str, Any]:
     data_root = _data_root(request)
     _load_definition(data_root, strategy_id)
@@ -1788,6 +1853,7 @@ def strategy_status(request: Request, strategy_id: str, body: StrategyStatusRequ
 
 
 @router.post("/definitions/{strategy_id}/copy", status_code=201)
+@_profile_mutation
 def strategy_copy(request: Request, strategy_id: str, body: StrategyCopyRequest) -> dict[str, Any]:
     data_root = _data_root(request)
     source = dict(_load_definition(data_root, strategy_id))
@@ -1816,6 +1882,7 @@ def strategy_copy(request: Request, strategy_id: str, body: StrategyCopyRequest)
 
 
 @router.delete("/definitions/{strategy_id}")
+@_profile_mutation
 def strategy_delete(request: Request, strategy_id: str, body: StrategyDeleteRequest) -> dict[str, Any]:
     data_root = _data_root(request)
     _load_definition(data_root, strategy_id)
@@ -1925,6 +1992,162 @@ def strategy_validate(request: Request, document: dict[str, Any]) -> dict[str, A
     )
 
 
+def _screen_script_directory(data_root: Path) -> Path:
+    directory = data_root / "strategies" / "stock-screen-scripts"
+    if directory.is_symlink():
+        raise HTTPException(409, "选股脚本目录无效")
+    return directory
+
+
+def _read_screen_script(path: Path) -> dict[str, Any]:
+    if path.is_symlink() or not path.is_file() or path.stat().st_size > 1_000_000:
+        raise HTTPException(409, "选股脚本文件不可读取")
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+        versions = record["versions"]
+        if (not isinstance(record, dict) or record.get("schemaVersion") != 1 or record.get("id") != path.stem
+                or not isinstance(versions, list) or not 1 <= len(versions) <= 50
+                or any(not isinstance(v, dict) or v.get("version") != index + 1
+                       or not isinstance(v.get("name"), str) or not isinstance(v.get("source"), str)
+                       or not isinstance(v.get("savedAt"), str) for index, v in enumerate(versions))):
+            raise ValueError("invalid script record")
+    except (OSError, UnicodeError, ValueError, KeyError, TypeError) as error:
+        raise HTTPException(409, "选股脚本文件损坏，请先恢复备份") from error
+    return record
+
+
+def _public_screen_script(record: dict[str, Any]) -> dict[str, Any]:
+    current = record["versions"][-1]
+    return {"id": record["id"], **current, "versionCount": len(record["versions"])}
+
+
+@router.get("/stock-screen/scripts")
+def list_stock_screen_scripts(request: Request) -> dict[str, Any]:
+    data_root = _data_root(request)
+    try:
+        with profile_read_gate(data_root):
+            directory = _screen_script_directory(data_root)
+            files = sorted(path for path in directory.glob("*.json") if re.fullmatch(r"[0-9a-f]{32}", path.stem))
+            if len(files) > 50:
+                raise HTTPException(409, "选股脚本数量超过上限，请检查本机资料")
+            items = [_public_screen_script(_read_screen_script(path)) for path in files]
+    except ProfileGateBusy as error:
+        raise HTTPException(503, detail=str(error), headers={"Retry-After": "2"}) from error
+    return {"items": sorted(items, key=lambda item: (item["name"], item["id"]))}
+
+
+@router.post("/stock-screen/scripts", status_code=201)
+def create_stock_screen_script(request: Request, body: StockScreenScriptRequest) -> dict[str, Any]:
+    return _save_screen_script(request, body, None)
+
+
+@router.put("/stock-screen/scripts/{script_id}")
+def update_stock_screen_script(request: Request, script_id: str, body: StockScreenScriptRequest) -> dict[str, Any]:
+    if re.fullmatch(r"[0-9a-f]{32}", script_id) is None:
+        raise HTTPException(400, "选股脚本标识无效")
+    return _save_screen_script(request, body, script_id)
+
+
+@router.get("/stock-screen/scripts/{script_id}/versions")
+def stock_screen_script_versions(request: Request, script_id: str) -> dict[str, Any]:
+    if re.fullmatch(r"[0-9a-f]{32}", script_id) is None:
+        raise HTTPException(400, "选股脚本标识无效")
+    data_root = _data_root(request)
+    try:
+        with profile_read_gate(data_root):
+            path = _screen_script_directory(data_root) / f"{script_id}.json"
+            if not path.exists():
+                raise HTTPException(404, "选股脚本不存在")
+            return {"id": script_id, "items": list(reversed(_read_screen_script(path)["versions"]))}
+    except ProfileGateBusy as error:
+        raise HTTPException(503, detail=str(error), headers={"Retry-After": "2"}) from error
+
+
+def _save_screen_script(request: Request, body: StockScreenScriptRequest, script_id: str | None) -> dict[str, Any]:
+    from market_monitor.strategy_screener import validate_screen_source
+
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(400, "请填写选股脚本名称")
+    try:
+        validate_screen_source(body.source)
+    except FormulaError as error:
+        raise HTTPException(400, detail=error.to_dict()) from error
+    data_root = _data_root(request)
+    try:
+        with profile_write_gate(data_root):
+            directory = _screen_script_directory(data_root)
+            if script_id is None:
+                if body.expectedVersion is not None:
+                    raise HTTPException(400, "新脚本不能指定旧版本")
+                if sum(1 for path in directory.glob("*.json") if re.fullmatch(r"[0-9a-f]{32}", path.stem)) >= 50:
+                    raise HTTPException(409, "本机最多保存 50 个选股脚本")
+                script_id = uuid.uuid4().hex
+                record = {"schemaVersion": 1, "id": script_id, "versions": []}
+            else:
+                path = directory / f"{script_id}.json"
+                if not path.exists():
+                    raise HTTPException(404, "选股脚本不存在")
+                record = _read_screen_script(path)
+                if body.expectedVersion != len(record["versions"]):
+                    raise HTTPException(409, "脚本已在其他页面修改，请重新载入")
+                if len(record["versions"]) >= 50:
+                    raise HTTPException(409, "脚本版本已达上限，请另存为新脚本")
+            version = len(record["versions"]) + 1
+            record["versions"].append({"version": version, "name": name, "source": body.source,
+                                       "savedAt": datetime.now(timezone.utc).isoformat(timespec="seconds")})
+            _atomic_json(directory / f"{script_id}.json", record)
+            return _public_screen_script(record)
+    except ProfileGateBusy as error:
+        raise HTTPException(503, detail=str(error), headers={"Retry-After": "2"}) from error
+
+
+@router.get("/stock-screen/delisted-sources")
+def stock_screen_delisted_sources(request: Request) -> dict[str, Any]:
+    from market_monitor.exchange_delisted import DelistedSourceError, load_exchange
+
+    sources = []
+    for exchange in ("SSE", "SZSE"):
+        try:
+            _rows, status = load_exchange(_data_root(request), exchange)
+            sources.append(status)
+        except DelistedSourceError:
+            sources.append({"exchange": exchange, "status": "INVALID", "count": 0})
+    return {"items": sources, "limitation": "沪深为交易所公开终止上市名单；北交所仅有个别公告。"}
+
+
+@router.post("/stock-screen/delisted-sources/refresh")
+def refresh_stock_screen_delisted_sources(request: Request) -> dict[str, Any]:
+    import requests
+
+    from market_monitor.exchange_delisted import DelistedSourceError, refresh_exchange
+
+    results = []
+    for exchange in ("SSE", "SZSE"):
+        try:
+            results.append(refresh_exchange(_data_root(request), exchange))
+        except (requests.RequestException, DelistedSourceError, OSError, UnicodeError):
+            results.append({"exchange": exchange, "status": "FAILED", "reason": "来源不可用或分页核验失败，保留上次快照"})
+    return {"items": results}
+
+
+@router.post("/stock-screen")
+def stock_screen(request: Request, body: StockScreenRequest) -> dict[str, Any]:
+    """Screen one bounded page of local A shares with dated public-source evidence."""
+    import requests
+
+    from market_monitor.strategy_screener import screen_batch
+
+    try:
+        arguments = {"instrument_ids": body.instrumentIds} if body.instrumentIds is not None else {}
+        return clean(screen_batch(_data_root(request), body.source, body.minMarketCapYi, body.offset, body.limit, **arguments))
+    except FormulaError as error:
+        raise HTTPException(status_code=400, detail=error.to_dict()) from error
+    except (requests.RequestException, ValueError, KeyError) as error:
+        raise HTTPException(status_code=503, detail={"code": "SCREEN_SOURCE_UNAVAILABLE",
+                                                    "message": "行情来源暂不可用，请稍后重试"}) from error
+
+
 @router.post("/run")
 def strategy_run(request: Request, body: StrategyRunRequest) -> dict[str, Any]:
     """Scan local silver bars with a persisted strategy definition and write a run record."""
@@ -1945,7 +2168,11 @@ def strategy_run(request: Request, body: StrategyRunRequest) -> dict[str, Any]:
             )
         except FormulaError as error:
             raise HTTPException(status_code=400, detail=error.to_dict()) from error
-        _atomic_json(_runs_dir(data_root) / f"{result['report']['runId']}.json", result["report"])
+        try:
+            with profile_write_gate(data_root):
+                _atomic_json(_runs_dir(data_root) / f"{result['report']['runId']}.json", result["report"])
+        except ProfileGateBusy as error:
+            raise HTTPException(status_code=503, detail=str(error), headers={"Retry-After": "2"}) from error
         return clean(result)
     try:
         validated = validate_dsl(document)
@@ -1974,7 +2201,11 @@ def strategy_run(request: Request, body: StrategyRunRequest) -> dict[str, Any]:
         timeout_seconds=body.timeoutSeconds,
         max_ops=body.maxOps,
     )
-    write_run_record(_runs_dir(data_root) / f"{report.run_id}.json", report)
+    try:
+        with profile_write_gate(data_root):
+            write_run_record(_runs_dir(data_root) / f"{report.run_id}.json", report)
+    except ProfileGateBusy as error:
+        raise HTTPException(status_code=503, detail=str(error), headers={"Retry-After": "2"}) from error
     signals = [
         {
             "instrumentId": scan.instrument_id,

@@ -33,6 +33,11 @@
 - [ADR-0008：Android 使用声明式策略 DSL](adr/0008-android-declarative-strategy-dsl.md)
 - [ADR-0009：Canonical 周期与本地派生 K 线](adr/0009-canonical-timeframe-and-derived-bars.md)
 - [ADR-0010：策略计算、可视化与交易权限分层](adr/0010-strategy-calculation-visualization-execution-boundaries.md)
+- [ADR-0011：客户产品与内部管理台的网页及服务权限边界](adr/0011-customer-and-internal-web-boundaries.md)
+- [ADR-0012：全部行情期货合约日数据与期货统计分工](adr/0012-futures-tdx-official-source-policy.md)
+- [ADR-0013：本机受控会话与已发布行情名单](adr/0013-local-sessions-and-published-market-lists.md)
+- [ADR-0014：Silver Catalog 证据门与查询索引差集恢复](adr/0014-silver-catalog-index-publication.md)
+- [ADR-0015：研报证据与客户知识投影分离](adr/0015-private-research-evidence-and-customer-projections.md)
 
 ## 三、Agent 修改权限
 

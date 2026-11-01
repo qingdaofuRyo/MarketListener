@@ -12,6 +12,7 @@ from __future__ import annotations
 import csv
 import io
 import math
+from functools import wraps
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
@@ -21,13 +22,13 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from market_monitor.account_analysis import (
+    AccountBusyError,
     AccountError,
     analyze_account,
     create_account,
     delete_record,
     list_accounts,
     list_records,
-    purge_deleted,
     restore_account,
     soft_delete_account,
     update_account,
@@ -44,6 +45,7 @@ from market_monitor.strategy_performance import (
     set_strategy_capital,
     upsert_strategy_trade,
 )
+from market_monitor.profile_gate import ProfileGateBusy, profile_write_gate
 from market_monitor.web_api.common import (
     append_jsonl,
     bars_by_instrument,
@@ -66,7 +68,9 @@ _MILLIS_PER_DAY = 86_400_000
 
 
 def _account_error(error: AccountError) -> HTTPException:
-    return HTTPException(status_code=400, detail=str(error))
+    return HTTPException(status_code=503 if isinstance(error, AccountBusyError) else 400,
+                         detail=str(error),
+                         headers={"Retry-After": "2"} if isinstance(error, AccountBusyError) else None)
 
 
 def _data_root(request: Request) -> Path:
@@ -74,6 +78,22 @@ def _data_root(request: Request) -> Path:
     if configured:
         return Path(configured)
     return _DEFAULT_DATA_ROOT
+
+
+def _profile_write_route(function):
+    """Keep an entire multi-record import behind one profile mutation gate."""
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        request = kwargs.get("request") or next((item for item in args if isinstance(item, Request)), None)
+        if request is None:
+            raise RuntimeError("个人资料写入缺少请求上下文")
+        try:
+            with profile_write_gate(_data_root(request)):
+                return function(*args, **kwargs)
+        except ProfileGateBusy as error:
+            raise HTTPException(status_code=503, detail=str(error), headers={"Retry-After": "2"}) from error
+
+    return wrapped
 
 
 class AccountCreateRequest(BaseModel):
@@ -148,8 +168,8 @@ class AccountCsvImportRequest(BaseModel):
 @router.get("/accounts")
 def accounts(request: Request) -> dict[str, Any]:
     data_root = _data_root(request)
-    purge_deleted(data_root)
-    return clean({"items": list_accounts(data_root), "total": len(list_accounts(data_root))})
+    items = list_accounts(data_root)
+    return clean({"items": items, "total": len(items)})
 
 
 @router.get("/accounts/trash")
@@ -171,6 +191,8 @@ def account_get(request: Request, account_id: str) -> dict[str, Any]:
     try:
         from market_monitor.account_analysis import get_account
         return get_account(_data_root(request), account_id)
+    except AccountBusyError as error:
+        raise _account_error(error) from error
     except AccountError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
 
@@ -187,6 +209,8 @@ def account_update(request: Request, account_id: str, body: AccountUpdateRequest
 def account_delete(request: Request, account_id: str) -> dict[str, Any]:
     try:
         soft_delete_account(_data_root(request), account_id)
+    except AccountBusyError as error:
+        raise _account_error(error) from error
     except AccountError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
     return {"deleted": True, "accountId": account_id, "recoverableDays": 30}
@@ -273,6 +297,7 @@ def account_record_delete(request: Request, account_id: str, kind: str, record_i
 
 
 @router.post("/accounts/{account_id}/csv-import")
+@_profile_write_route
 def account_csv_import(request: Request, account_id: str, body: AccountCsvImportRequest) -> dict[str, Any]:
     """Import one account record kind from a UTF-8 CSV header row atomically per row."""
     kind_map = {"snapshots": "snapshots", "cashflows": "cashflows", "fills": "fills", "strategyUses": "strategy-uses"}
@@ -716,6 +741,7 @@ def stats_strategy_ledger(request: Request) -> dict[str, Any]:
 
 
 @router.put("/strategy-capital/{strategy_id}")
+@_profile_write_route
 def stats_strategy_capital(request: Request, strategy_id: str, body: StrategyCapitalRequest) -> dict[str, Any]:
     try:
         store = set_strategy_capital(_data_root(request), strategy_id, body.initialCapital)
@@ -732,11 +758,13 @@ def _trade_record(body: StrategyTradeRequest) -> dict[str, Any]:
 
 
 @router.post("/strategy-trades", status_code=201)
+@_profile_write_route
 def stats_strategy_trade_create(request: Request, body: StrategyTradeRequest) -> dict[str, Any]:
     return clean(upsert_strategy_trade(_data_root(request), _trade_record(body)))
 
 
 @router.put("/strategy-trades/{trade_id}")
+@_profile_write_route
 def stats_strategy_trade_update(request: Request, trade_id: str, body: StrategyTradeRequest) -> dict[str, Any]:
     try:
         return clean(upsert_strategy_trade(_data_root(request), _trade_record(body), trade_id))
@@ -745,6 +773,7 @@ def stats_strategy_trade_update(request: Request, trade_id: str, body: StrategyT
 
 
 @router.delete("/strategy-trades/{trade_id}")
+@_profile_write_route
 def stats_strategy_trade_delete(request: Request, trade_id: str) -> dict[str, Any]:
     try:
         delete_strategy_trade(_data_root(request), trade_id)
@@ -839,6 +868,7 @@ def _valid_import_line(line: dict[str, Any]) -> bool:
 
 
 @router.post("/import")
+@_profile_write_route
 def stats_import(request: Request, body: StatsImportRequest) -> dict[str, Any]:
     """Append validated ledger lines; invalid rows are skipped and counted."""
     data_root = _data_root(request)

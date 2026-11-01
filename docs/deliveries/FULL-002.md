@@ -110,9 +110,9 @@ Android首次从中文物理路径执行时，APK组装成功但测试worker的5
 | Git 差异与恢复性 | `git diff --check b270463..7f7b963`、`git fsck --no-dangling`、`git rev-list --max-parents=0 HEAD`、`git merge-base --is-ancestor b270463 HEAD` | PASS；工作树干净，根提交仍为 `b270463...`，FULL-002 提交可从该基线恢复。 |
 | Python 运行时、健康与测试 | `desktop\\.venv\\Scripts\\python.exe --version`、`-m pip check`、`-m pytest .\\desktop\\tests -q` | PASS；Python 3.11.0，依赖健康，49 passed（仅有既有 ZIP 重名测试警告）。 |
 | Python 锁解析 | `-m pip install --dry-run --ignore-installed --isolated --index-url https://pypi.org/simple -c .\\desktop\\requirements.lock -e '.\\desktop[dev]'` | PASS；经 PyPI HTTPS 解析的 49 个候选包均与 `requirements.lock` 的精确版本一致。 |
-| JDK/Gradle 门禁 | 以 `C:\\Users\\qingd\\.jdks\\jbr-21.0.11` 设置 `JAVA_HOME` 后执行 `gradlew --version` 与 `help`；另以当前 Android Studio JBR 25.0.2 运行 | PASS；JDK 21 下为 Gradle 8.5 / JVM 21.0.11 且配置成功；非 JDK 21 的 JBR 25.0.2 不能进入构建。 |
+| JDK/Gradle 门禁 | 以 `C:\\Users\\<user>\\.jdks\\jbr-21.0.11` 设置 `JAVA_HOME` 后执行 `gradlew --version` 与 `help`；另以当前 Android Studio JBR 25.0.2 运行 | PASS；JDK 21 下为 Gradle 8.5 / JVM 21.0.11 且配置成功；非 JDK 21 的 JBR 25.0.2 不能进入构建。 |
 | SDK 与 Android 依赖锁 | 读取 SDK Platform 34 / Build Tools 34.0.0 的 `source.properties`；解析 `android/app/gradle.lockfile`；`:app:dependencies --configuration debugRuntimeClasspath --no-daemon` | PASS；Platform revision 3、API 34、Build Tools 34.0.0；锁文件含 151 个模块坐标和一个 Gradle `empty` 哨兵，无动态版本或重复坐标。 |
 | Android 实际构建 | 临时 `subst M: <repo>`，JDK 21 下运行 `clean testDebugUnitTest assembleDebug --no-daemon`，随后解析 JUnit XML | PASS；5 个测试套件共 6 tests、0 failures、0 errors；Debug APK 为 45,041,639 bytes；盘符已释放。 |
 | 安全与体积 | `git ls-tree -r -l HEAD`、受控私钥/Token 形式扫描、`git check-ignore -v` | PASS；无 ≥5 MB 已跟踪对象、无命中凭据/私钥形式；`.env`、`local.properties`、`.pem`、`.pfx`、`.keystore` 等均被忽略，`android/local.properties` 未跟踪。 |
 
-审查过程中注意到 Android Studio 自带 JBR 当前已是 25.0.2，不能替代锁定的 JDK 21；仓库说明的“任一受信任 JDK 21”与实际可用的 `C:\Users\qingd\.jdks\jbr-21.0.11` 一致，因此不是缺陷。验收应再次使用 JDK 21 与英文临时盘符进行真实复跑。
+审查过程中注意到 Android Studio 自带 JBR 当前已是 25.0.2，不能替代锁定的 JDK 21；仓库说明的“任一受信任 JDK 21”与实际可用的 `C:\Users\<user>\.jdks\jbr-21.0.11` 一致，因此不是缺陷。验收应再次使用 JDK 21 与英文临时盘符进行真实复跑。

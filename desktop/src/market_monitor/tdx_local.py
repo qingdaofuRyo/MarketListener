@@ -11,20 +11,23 @@ format.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import shutil
 import struct
 from collections import Counter
 from hashlib import sha256
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 from uuid import uuid4
 
 import duckdb
 
-from .market_data_version import advance_market_data_version
+from .market_data_version import (
+    advance_market_data_version, market_data_version, settle_market_data_version,
+)
 from .market_classification import market_classification_spec
 from .market_query_cache import rebuild_kline_query_cache, refresh_kline_cache_partitions
 from .storage import MarketStore, PartitionKey
@@ -185,6 +188,7 @@ def run_tdx_local_import(
     replace_source: bool = False,
     resume_staging: Path | None = None,
     ds_prefixes: Iterable[str] | None = None,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Audit or import TDX bars under the ``tdx-cn-v2`` quality policy."""
 
@@ -229,6 +233,7 @@ def run_tdx_local_import(
         end_date=end_date,
         audit_only=audit_only,
         ds_prefixes=selected_ds_prefixes,
+        progress_callback=progress_callback,
     )
 
 
@@ -243,6 +248,7 @@ def _run_tdx_local_import(
     end_date: str | None,
     audit_only: bool,
     ds_prefixes: set[str] | None = None,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Import local A-share, ETF/index, and HK stock daily/5-minute bars.
 
@@ -266,7 +272,10 @@ def _run_tdx_local_import(
         combined.update(code_names)
         names[market] = combined
     store = None if audit_only else MarketStore(data_root)
+    cache_base_revision = market_data_version(data_root) if store is not None else None
     run_id = "audit-only" if store is None else store.begin_run("import-tdx-local:通达信金融终端:tdx-cn-v2")
+    if store is not None and progress_callback is not None:
+        progress_callback({"runId": run_id})
     errors: list[str] = []
     audit_files: list[dict[str, Any]] = []
     asset_counts: Counter[str] = Counter()
@@ -282,6 +291,7 @@ def _run_tdx_local_import(
     quarantined_files = 0
     quarantined_rows = 0
     rejected_files = 0
+    prior_hk_proofs_by_day: dict[str, dict[str, dict[str, Any]]] = {}
 
     def flush() -> None:
         nonlocal buffered, staged_files, written, imported_files, batch_number
@@ -294,6 +304,10 @@ def _run_tdx_local_import(
         next_files.update(staged_files)
         imported_files += len(staged_files)
         _save_json(state_path, {"files": next_files})
+        if progress_callback:
+            progress_callback({"rows": written, "importedFiles": imported_files,
+                               "scannedFiles": scanned_files, "skippedFiles": skipped_files,
+                               "quarantinedFiles": quarantined_files, "rejectedFiles": rejected_files})
         buffered = []
         staged_files = {}
 
@@ -325,7 +339,20 @@ def _run_tdx_local_import(
                         if (start_date is None or str(record["day"]) >= start_date)
                         and (end_date is None or str(record["day"]) <= end_date)
                     ]
-                rows, file_audit = _normalized_rows(records, metadata, names)
+                prior_evidence = None
+                if _single_zero_hk_stock_day(records, metadata):
+                    target_day = str(records[0]["day"])
+                    if target_day not in prior_hk_proofs_by_day:
+                        prior_hk_proofs_by_day[target_day] = _recent_hk_direct_volume_proofs(
+                            data_root, target_day,
+                            connection=store.connection if store is not None else None,
+                        )
+                    physical_id = (f"HK.{metadata['exchange']}.STOCK."
+                                   f"{metadata['symbol']}.TDX_LOCAL")
+                    prior_evidence = prior_hk_proofs_by_day[target_day].get(physical_id)
+                rows, file_audit = _normalized_rows(
+                    records, metadata, names, prior_volume_evidence=prior_evidence,
+                )
             except Exception as error:
                 if len(errors) < 200:
                     errors.append(f"{relative}:{type(error).__name__}:{error}"[:500])
@@ -374,10 +401,20 @@ def _run_tdx_local_import(
     cache: dict[str, Any] | None = None
     if written and rebuild_cache and not audit_only:
         partition_files = _partition_files_for_run(data_root, run_id)
-        if partition_files and refresh_kline_cache_partitions(data_root, partition_files):
+        target_revision = market_data_version(data_root)
+        if partition_files and refresh_kline_cache_partitions(
+            data_root, partition_files,
+            expected_base_revision=cache_base_revision,
+            target_revision=target_revision,
+        ):
             cache = {"mode": "incremental", "partitionFiles": len(partition_files)}
         else:
-            cache = rebuild_kline_query_cache(data_root)
+            # A large after-hours import can touch more partitions than the
+            # bounded revision journal retains.  The publication watcher
+            # reconciles the indexed Catalog manifest after source tasks are
+            # idle; a synchronous 4.8e8-bar rebuild here would hold the source
+            # operation for many minutes and may be invalidated again.
+            cache = {"mode": "deferred", "status": "STALE", "partitionFiles": len(partition_files)}
     if not audit_only:
         _save_json(state_path, {"normalization_version": _NORMALIZATION_VERSION, "files": next_files})
     summary = {
@@ -426,7 +463,7 @@ def _partition_files_for_run(data_root: Path, run_id: str) -> list[Path]:
     catalog = data_root / "catalog.duckdb"
     if not catalog.is_file():
         return []
-    with duckdb.connect(str(catalog), read_only=True) as connection:
+    with duckdb.connect(str(catalog)) as connection:
         rows = connection.execute(
             "SELECT file_path FROM partitions WHERE source_run_id=? AND status='COMPLETE'",
             [run_id],
@@ -545,6 +582,9 @@ def _promote_tdx_staging(
     active_files = sorted((data_root / "silver").rglob("TDX-LOCAL-*.parquet")) if (data_root / "silver").is_dir() else []
     moved_old: list[tuple[Path, Path]] = []
     moved_new: list[tuple[Path, Path]] = []
+    # Invalidate the mutable-path query index before the first move.  A crash
+    # during promotion leaves an explicit pending revision, never CURRENT.
+    _previous_revision, migration_revision = advance_market_data_version(data_root, pending=True)
     try:
         for source in active_files:
             target = backup_root / source.relative_to(data_root)
@@ -557,7 +597,6 @@ def _promote_tdx_staging(
             shutil.move(str(source), str(target))
             moved_new.append((source, target))
         _replace_catalog_partitions(active_catalog, staging_catalog, staged_partitions)
-        advance_market_data_version(data_root)
         target_root = resolve_tdx_root(tdx_root)
         source_state = _state_path(staging_root, target_root, start_date=None, end_date=None) if target_root else None
         if target_root is not None and source_state is not None and source_state.is_file():
@@ -569,6 +608,7 @@ def _promote_tdx_staging(
             report_target = _audit_report_path(data_root)
             report_target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(report_source, report_target)
+        settle_market_data_version(data_root, migration_revision)
     except Exception:
         for source, target in reversed(moved_new):
             if target.exists():
@@ -580,6 +620,7 @@ def _promote_tdx_staging(
                 shutil.move(str(target), str(source))
         if catalog_backup.is_file():
             shutil.copy2(catalog_backup, active_catalog)
+        settle_market_data_version(data_root, migration_revision)
         raise
 
     cache = rebuild_kline_query_cache(data_root) if rebuild_cache else None
@@ -598,7 +639,7 @@ def _promote_tdx_staging(
 
 
 def _tdx_partition_rows(catalog_path: Path) -> list[tuple[Any, ...]]:
-    connection = duckdb.connect(str(catalog_path), read_only=True)
+    connection = duckdb.connect(str(catalog_path))
     try:
         return connection.execute(
             "SELECT partition_id, file_path, row_count, data_cutoff, sha256, source_run_id, status, updated_at "
@@ -782,6 +823,86 @@ def _volume_unit(metadata: Mapping[str, str]) -> str:
     return "SHARE"
 
 
+def _single_zero_hk_stock_day(records: list[Mapping[str, Any]],
+                              metadata: Mapping[str, str]) -> bool:
+    """A prior multiplier can only annotate one true zero-trade stock bar."""
+
+    return (metadata["market"] == "HK" and metadata["asset_type"] == "STOCK"
+            and metadata["period"] == "1d" and len(records) == 1
+            and _number(records[0].get("raw_volume")) == 0.0
+            and _number(records[0].get("raw_amount")) == 0.0)
+
+
+def _recent_hk_direct_volume_proofs(
+    data_root: Path, target_day: str,
+    *, connection: duckdb.DuckDBPyConnection | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Read prior PASS traded bars from this physical TDX source only."""
+
+    try:
+        target = date.fromisoformat(target_day)
+    except ValueError:
+        return {}
+    floor = target - timedelta(days=7)
+    silver = Path(data_root) / "silver" / "market=HK" / "asset_type=STOCK" / "period=1d"
+    files = sorted(str(path) for year in {target.year, floor.year}
+                   for path in silver.glob(f"year={year}/*.parquet"))
+    if not files:
+        return {}
+    owned_connection = connection is None
+    if connection is None:
+        connection = duckdb.connect(database=":memory:")
+    try:
+        rows = connection.execute(
+            """SELECT instrument_id, substr(CAST(bar_open_time AS VARCHAR), 1, 10), bar_json
+               FROM read_parquet(?, union_by_name=true, hive_partitioning=true)
+               WHERE market='HK' AND asset_type='STOCK' AND period='1d'
+                 AND substr(CAST(bar_open_time AS VARCHAR), 1, 10) >= ?
+                 AND substr(CAST(bar_open_time AS VARCHAR), 1, 10) < ?""",
+            [files, floor.isoformat(), target.isoformat()],
+        ).fetchall()
+    except duckdb.Error as error:
+        # An unreadable proof catalog is not evidence that no proof exists.
+        # Keep affected files uncommitted so the next import can retry.
+        raise RuntimeError("HK_PRIOR_SILVER_PROOF_UNAVAILABLE") from error
+    finally:
+        if owned_connection:
+            connection.close()
+    candidates: dict[str, list[dict[str, Any]]] = {}
+    for instrument_id, day, raw_json in rows:
+        if not isinstance(instrument_id, str) or not isinstance(raw_json, str):
+            continue
+        try:
+            bar = json.loads(raw_json)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(bar, dict):
+            continue
+        multiplier = _number(bar.get("volume_multiplier"))
+        raw_volume = _number(bar.get("raw_volume"))
+        raw_amount = _number(bar.get("raw_amount"))
+        if (multiplier not in _VOLUME_MULTIPLIERS or raw_volume is None or raw_volume <= 0
+                or raw_amount is None or raw_amount <= 0
+                or not all(math.isfinite(value) for value in (multiplier, raw_volume, raw_amount))
+                or bar.get("quality_status") != "PASS"
+                or bar.get("normalization_status") != "PASS"
+                or bar.get("normalization_version") != _NORMALIZATION_VERSION
+                or bar.get("normalization_method") != "row-vwap-within-ohlc"
+                or bar.get("volume_unit") != "SHARE"
+                or _number(bar.get("price_scale")) != 1.0
+                or bar.get("instrument_id") != instrument_id):
+            continue
+        candidates.setdefault(instrument_id, []).append({
+            "instrument_id": instrument_id, "day": str(day), "multiplier": multiplier,
+            "bar_sha256": sha256(raw_json.encode("utf-8")).hexdigest(),
+            "volume_unit": "SHARE",
+        })
+    # A recent unit transition is ambiguous for a zero-trade snapshot.
+    return {instrument_id: max(proofs, key=lambda item: (item["day"], item["bar_sha256"]))
+            for instrument_id, proofs in candidates.items()
+            if len({item["multiplier"] for item in proofs}) == 1}
+
+
 def _volume_profile(
     records: Iterable[Mapping[str, Any]], metadata: Mapping[str, str]
 ) -> tuple[list[float | None], str, Counter[float], list[str]]:
@@ -853,6 +974,7 @@ def _volume_profile(
 
 def _normalized_rows(
     records: Iterable[Mapping[str, Any]], metadata: Mapping[str, str], names: Mapping[str, Mapping[str, str]],
+    *, prior_volume_evidence: Mapping[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     records = list(records)
     market = metadata["market"]
@@ -867,6 +989,30 @@ def _normalized_rows(
         or _fallback_name(market, asset_type, code)
     )
     volume_multipliers, method, multiplier_counts, volume_reasons = _volume_profile(records, metadata)
+    carried_evidence: dict[str, Any] | None = None
+    if prior_volume_evidence is not None and _single_zero_hk_stock_day(records, metadata):
+        evidence_day = str(prior_volume_evidence.get("day") or "")
+        multiplier = _number(prior_volume_evidence.get("multiplier"))
+        try:
+            distance = (date.fromisoformat(str(records[0]["day"]))
+                        - date.fromisoformat(evidence_day)).days
+        except ValueError:
+            distance = 0
+        if (volume_multipliers == [None] and 0 < distance <= 7
+                and multiplier in _VOLUME_MULTIPLIERS
+                and prior_volume_evidence.get("instrument_id") == physical
+                and prior_volume_evidence.get("volume_unit") == "SHARE"
+                and re.fullmatch(r"[0-9a-f]{64}",
+                                 str(prior_volume_evidence.get("bar_sha256") or ""))):
+            volume_multipliers = [multiplier]
+            multiplier_counts = Counter({multiplier: 1})
+            method = "prior-silver-direct-vwap"
+            carried_evidence = {
+                "source": "PRIOR_SILVER_DIRECT_TRADE",
+                "tradingDay": evidence_day,
+                "instrumentId": physical,
+                "barSha256": prior_volume_evidence["bar_sha256"],
+            }
     unique_multipliers = sorted(multiplier_counts)
     invalid_volume_rows = sum(value is None for value in volume_multipliers)
     audit: dict[str, Any] = {
@@ -887,6 +1033,8 @@ def _normalized_rows(
         "quarantinedRows": invalid_volume_rows,
         "normalizationVersion": _NORMALIZATION_VERSION,
     }
+    if carried_evidence is not None:
+        audit["normalizationEvidence"] = carried_evidence
     output: list[dict[str, Any]] = []
     invalid_price_rows = 0
     for record, volume_multiplier in zip(records, volume_multipliers, strict=True):
@@ -953,6 +1101,10 @@ def _normalized_rows(
             "normalization_method": method,
             "normalization_status": "PASS",
             "normalization_version": _NORMALIZATION_VERSION,
+            **({"normalization_evidence_source": carried_evidence["source"],
+                "normalization_evidence_day": carried_evidence["tradingDay"],
+                "normalization_evidence_bar_sha256": carried_evidence["barSha256"]}
+               if carried_evidence is not None else {}),
         })
     audit["normalizedRows"] = len(output)
     audit["quarantinedRows"] = int(audit["quarantinedRows"]) + invalid_price_rows
@@ -1044,7 +1196,7 @@ def _load_tdx_names(tdx_root: Path) -> dict[str, dict[str, str]]:
     hq_cache = tdx_root / "T0002" / "hq_cache"
     if not hq_cache.is_dir():
         return output
-    for filename in ("shs.tnf", "szs.tnf", "bjs.tnf"):
+    for filename, exchange in (("shs.tnf", "SSE"), ("szs.tnf", "SZSE"), ("bjs.tnf", "BSE")):
         path = hq_cache / filename
         try:
             raw = path.read_bytes()
@@ -1067,7 +1219,9 @@ def _load_tdx_names(tdx_root: Path) -> dict[str, dict[str, str]]:
                 continue
             name = raw[name_start:name_end].decode("gbk", errors="replace").strip()
             if name:
-                output["CN"][code] = name
+                # The same six digits can identify distinct securities on
+                # different exchanges (e.g. SSE index vs SZSE stock).
+                output.setdefault(f"CN.{exchange}", {})[code] = name
     ds_stock = hq_cache / "ds_stk.dat"
     try:
         raw = ds_stock.read_bytes()

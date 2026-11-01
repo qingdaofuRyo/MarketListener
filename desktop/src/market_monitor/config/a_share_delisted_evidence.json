@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "coverage": "仅已核验的个别事件，不代表全部退市公司",
+  "items": [
+    {"instrumentId": "CN.BSE.STOCK.920305", "name": "南京云创大数据科技股份有限公司", "delistedAt": "2026-07-30", "announcedAt": "2026-07-29", "sourceUrl": "https://www.bse.cn/disclosure/2026/2026-07-29/8a64d7d9ca1641609307b4f2aa5fecaf.pdf"},
+    {"instrumentId": "CN.BSE.STOCK.920680", "name": "深圳市广道数字技术股份有限公司", "delistedAt": "2026-01-05", "announcedAt": "2025-12-31", "sourceUrl": "https://www.bse.cn/disclosure/2025/2025-12-31/8690dbac1d5c42db98e9c7388e562129.pdf"},
+    {"instrumentId": "CN.SZSE.STOCK.000004", "name": "深圳国华网安科技股份有限公司", "delistedAt": "2026-07-14", "announcedAt": "2026-07-14", "sourceUrl": "https://disc.static.szse.cn/disc/disk03/finalpage/2026-07-14/7ac00e87-c015-4085-b165-23f2a5a1ca42.PDF"},
+    {"instrumentId": "CN.SZSE.STOCK.000851", "name": "大唐高鸿网络股份有限公司", "delistedAt": "2025-11-11", "announcedAt": "2025-11-20", "sourceUrl": "https://www.nesc.cn/plat_files/upload/png_upload/20251120/202511201763603832115.pdf"},
+    {"instrumentId": "CN.SSE.STOCK.601059", "name": "信达证券", "delistedAt": "2026-10-19", "announcedAt": "2026-10-12", "sourceUrl": "https://www.sse.com.cn/disclosure/announcement/listing/stock/c/c_20261012_10834561.shtml"},
+    {"instrumentId": "CN.SSE.STOCK.601198", "name": "东兴证券", "delistedAt": "2026-10-19", "announcedAt": "2026-10-12", "sourceUrl": "https://big5.sse.com.cn/site/cht/www.sse.com.cn/disclosure/announcement/listing/stock/c/c_20261012_10834560.shtml"},
+    {"instrumentId": "CN.SSE.STOCK.601989", "name": "中国重工", "delistedAt": "2025-09-05", "announcedAt": "2025-08-29", "sourceUrl": "https://www.sse.com.cn/disclosure/announcement/listing/stock/c/c_20250829_10790128.shtml"}
+  ]
+}

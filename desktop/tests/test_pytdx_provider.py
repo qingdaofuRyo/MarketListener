@@ -54,6 +54,9 @@ class FakeTdxApi:
     def get_security_bars(self, category: int, market: int, code: str, start: int, count: int) -> object:
         return self.bars
 
+    def get_index_bars(self, category: int, market: int, code: str, start: int, count: int) -> object:
+        return self.bars
+
     def get_security_quotes(self, pairs: object) -> object:
         return self.quotes
 
@@ -125,6 +128,41 @@ def test_empty_bars_raise_no_coverage() -> None:
         provider.fetch_bars()
 
     assert exc_info.value.category is ErrorCategory.NO_COVERAGE
+
+
+def test_fetch_bars_retries_next_server_after_connected_server_returns_empty() -> None:
+    instances = []
+    def factory():
+        api = FakeTdxApi(bars=[] if not instances else None)
+        instances.append(api)
+        return api
+    provider = TdxProvider(api_factory=factory, servers=[("first", 1), ("second", 2)])
+    assert provider.fetch_bars().records[0]["code"] == "600519"
+    assert len(instances) == 2 and all(item.disconnected for item in instances)
+
+
+def test_index_probe_uses_index_protocol_not_security_protocol() -> None:
+    calls = []
+    class Api(FakeTdxApi):
+        def get_index_bars(self, category, market, code, start, count):
+            calls.append(code)
+            return super().get_index_bars(category, market, code, start, count)
+    capabilities = TdxProvider(api_factory=Api).probe_capabilities()
+    assert calls == ["000001"] and capabilities[5].status is CapabilityStatus.PASS
+
+
+def test_provider_classifies_invalid_binary_response_without_private_data() -> None:
+    import struct
+    class Api(FakeTdxApi):
+        def get_security_bars(self, *_args):
+            error = RuntimeError("synthetic private data")
+            error.original_exception = struct.error("synthetic private bytes")
+            raise error
+    provider = TdxProvider(api_factory=Api, servers=[("first", 1)])
+    with pytest.raises(ProviderError) as exc:
+        provider.fetch_bars()
+    assert exc.value.category is ErrorCategory.FIELD_CHANGE
+    assert "TDX_INVALID_BINARY_RESPONSE" in str(exc.value) and "private" not in str(exc.value)
 
 
 def test_missing_security_list_is_a_failure_not_crash() -> None:

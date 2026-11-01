@@ -13,59 +13,1604 @@
       "retrievedAt": "2026-09-26T18:03:25+00:00",
       "payloadSha256": "b5e337cab13494b125554f430982a8fc9121d24d176954778f9e73e7762a8a9e",
       "qualityStatus": "PASS"
+    },
+    "DCE_CONTRACT_INFO_20261003": {
+      "sourceUrl": "http://www.dce.com.cn/dcereport/publicweb/tradepara/contractInfo",
+      "retrievedAt": "2026-10-03T05:18:12+00:00",
+      "payloadSha256": "45a85f5edebb6e8b3e1309eea05cdc1073ec0cd0fa9594a104a1a408a4a40430",
+      "qualityStatus": "PASS",
+      "historicalCrossCheck": "217 local rule-snapshot days through 2026-09-30; no differing units"
+    },
+    "GFEX_CONTRACT_INFO_20261003": {
+      "sourceUrl": "http://www.gfex.com.cn/u/interfacesWebTtQueryContractInfo/loadList?variety=&trade_type=0",
+      "retrievedAt": "2026-10-03T05:18:12+00:00",
+      "payloadSha256": "ef9e331f8b4ffc9f56455cfba5b0ee69cc800253fa5e9a3b02866ac84645b98e",
+      "qualityStatus": "PASS",
+      "historicalCrossCheck": "217 local rule-snapshot days through 2026-09-30; no differing units"
+    },
+    "SHFE_BR_OFFICIAL_SPEC": {
+      "sourceUrl": "https://www.shfe.com.cn/products/futures/energyandchemical/br_f/",
+      "retrievedAt": "2026-10-03T09:27:13.890508+00:00",
+      "payloadSha256": "c49d900251f42f98866c22377689789d218f92eef022303cc4400fb4b9c656c7",
+      "qualityStatus": "PASS",
+      "effectiveDateEvidence": "官网合约文本 data_standard；仅覆盖明确发布日及其后，不倒填更早历史"
+    },
+    "SHFE_BU_OFFICIAL_SPEC": {
+      "sourceUrl": "https://www.shfe.com.cn/products/futures/energyandchemical/bu_f/",
+      "retrievedAt": "2026-10-03T09:27:13.904988+00:00",
+      "payloadSha256": "93e65835370115caf07ebc169bb84ee87f4e0d435757417744206b2722737951",
+      "qualityStatus": "PASS",
+      "effectiveDateEvidence": "官网合约文本 data_standard；仅覆盖明确发布日及其后，不倒填更早历史"
+    },
+    "SHFE_FU_OFFICIAL_SPEC": {
+      "sourceUrl": "https://www.shfe.com.cn/products/futures/energyandchemical/fu_f/",
+      "retrievedAt": "2026-10-03T09:27:13.882855+00:00",
+      "payloadSha256": "9285059b2384c7229d4474684ef0ae3de095a2430552df2aab3d016413e96081",
+      "qualityStatus": "PASS",
+      "effectiveDateEvidence": "官网合约文本 data_standard；仅覆盖明确发布日及其后，不倒填更早历史"
+    },
+    "INE_LU_OFFICIAL_SPEC": {
+      "sourceUrl": "https://www.shfe.com.cn/products/futures/energyandchemical/lu_f/",
+      "retrievedAt": "2026-10-03T09:27:13.908356+00:00",
+      "payloadSha256": "e224bec8e5a88393355a6499a1d100feefbf563835c7ead01cb5274d574d3c02",
+      "qualityStatus": "PASS",
+      "effectiveDateEvidence": "官网合约文本 data_standard；仅覆盖明确发布日及其后，不倒填更早历史"
+    },
+    "INE_NR_OFFICIAL_SPEC": {
+      "sourceUrl": "https://www.shfe.com.cn/products/futures/energyandchemical/nr_f/",
+      "retrievedAt": "2026-10-03T09:27:14.002314+00:00",
+      "payloadSha256": "98e5b6c4f7d6f57fe110865e088cf96646428a5e30ca0ba406f9d7c21195e51d",
+      "qualityStatus": "PASS",
+      "effectiveDateEvidence": "官网合约文本 data_standard；仅覆盖明确发布日及其后，不倒填更早历史"
+    },
+    "SHFE_OP_OFFICIAL_SPEC": {
+      "sourceUrl": "https://www.shfe.com.cn/products/futures/energyandchemical/op_f/",
+      "retrievedAt": "2026-10-03T09:27:14.007150+00:00",
+      "payloadSha256": "fe96fbe533a43b230ecaee7a6634f53252a43e8d7a38661a1d8c811a9b417623",
+      "qualityStatus": "PASS",
+      "effectiveDateEvidence": "官网合约文本 data_standard；仅覆盖明确发布日及其后，不倒填更早历史"
+    },
+    "SHFE_RU_OFFICIAL_SPEC": {
+      "sourceUrl": "https://www.shfe.com.cn/products/futures/energyandchemical/ru_f/",
+      "retrievedAt": "2026-10-03T09:27:14.018169+00:00",
+      "payloadSha256": "6e9b8efcf3ac7a7c86a032ea9898e97dbeaa2a2111b0ed6e3fb43ef3757580c0",
+      "qualityStatus": "PASS",
+      "effectiveDateEvidence": "官网合约文本 data_standard；仅覆盖明确发布日及其后，不倒填更早历史"
+    },
+    "SHFE_SP_OFFICIAL_SPEC": {
+      "sourceUrl": "https://www.shfe.com.cn/products/futures/energyandchemical/sp_f/",
+      "retrievedAt": "2026-10-03T09:27:14.134336+00:00",
+      "payloadSha256": "dfe244141a0820bd1e0aadeb586afa49327f93c4b8e821ff924a56c26cb9c2bd",
+      "qualityStatus": "PASS",
+      "effectiveDateEvidence": "官网合约文本 data_standard；仅覆盖明确发布日及其后，不倒填更早历史"
+    },
+    "INE_EC_OFFICIAL_SPEC": {
+      "sourceUrl": "https://www.shfe.com.cn/products/futures/index_f/ec_f/",
+      "retrievedAt": "2026-10-03T09:27:14.152963+00:00",
+      "payloadSha256": "3ba4a95de04fbcbbc139a6c96a44873c06f94ae43961febbce3c4fa575277e5f",
+      "qualityStatus": "PASS",
+      "effectiveDateEvidence": "官网合约文本 data_standard；仅覆盖明确发布日及其后，不倒填更早历史"
+    },
+    "SHFE_AG_OFFICIAL_SPEC": {
+      "sourceUrl": "https://www.shfe.com.cn/products/futures/metal/ferrousandpreciousmetal/ag_f/",
+      "retrievedAt": "2026-10-03T09:27:14.134336+00:00",
+      "payloadSha256": "917a6137af22b4b5253054a3f6f9b28639b0d234e22c838531bc61017928dc71",
+      "qualityStatus": "PASS",
+      "effectiveDateEvidence": "官网合约文本 data_standard；仅覆盖明确发布日及其后，不倒填更早历史"
+    },
+    "SHFE_AU_OFFICIAL_SPEC": {
+      "sourceUrl": "https://www.shfe.com.cn/products/futures/metal/ferrousandpreciousmetal/au_f/",
+      "retrievedAt": "2026-10-03T09:27:14.200911+00:00",
+      "payloadSha256": "b1f0637bdf8e0bb92cd6cd87776f2eb74735f5764ec6057cc666d2a59950422a",
+      "qualityStatus": "PASS",
+      "effectiveDateEvidence": "官网合约文本 data_standard；仅覆盖明确发布日及其后，不倒填更早历史"
+    },
+    "SHFE_HC_OFFICIAL_SPEC": {
+      "sourceUrl": "https://www.shfe.com.cn/products/futures/metal/ferrousandpreciousmetal/hc_f/",
+      "retrievedAt": "2026-10-03T09:27:14.272301+00:00",
+      "payloadSha256": "ccb09042c8dad3546aeab517bd19898a46703bea86142c3963a0ede641c9838c",
+      "qualityStatus": "PASS",
+      "effectiveDateEvidence": "官网合约文本 data_standard；仅覆盖明确发布日及其后，不倒填更早历史"
+    },
+    "SHFE_RB_OFFICIAL_SPEC": {
+      "sourceUrl": "https://www.shfe.com.cn/products/futures/metal/ferrousandpreciousmetal/rb_f/",
+      "retrievedAt": "2026-10-03T09:27:14.258948+00:00",
+      "payloadSha256": "928e17898727a21468abc6d7d612aa64a9e6b2e1ff97effab90d09c59d984337",
+      "qualityStatus": "PASS",
+      "effectiveDateEvidence": "官网合约文本 data_standard；仅覆盖明确发布日及其后，不倒填更早历史"
+    },
+    "SHFE_SS_OFFICIAL_SPEC": {
+      "sourceUrl": "https://www.shfe.com.cn/products/futures/metal/ferrousandpreciousmetal/ss_f/",
+      "retrievedAt": "2026-10-03T09:27:14.267858+00:00",
+      "payloadSha256": "f43c23f147b41d7ab6592c7fe5679d2a5c730972530dcae7c3231967bcd2a250",
+      "qualityStatus": "PASS",
+      "effectiveDateEvidence": "官网合约文本 data_standard；仅覆盖明确发布日及其后，不倒填更早历史"
+    },
+    "SHFE_WR_OFFICIAL_SPEC": {
+      "sourceUrl": "https://www.shfe.com.cn/products/futures/metal/ferrousandpreciousmetal/wr_f/",
+      "retrievedAt": "2026-10-03T09:27:14.333393+00:00",
+      "payloadSha256": "ef0674f12732b6fb7390e4db7660fe68be6f80519214907571d5bac0a0831f0d",
+      "qualityStatus": "PASS",
+      "effectiveDateEvidence": "官网合约文本 data_standard；仅覆盖明确发布日及其后，不倒填更早历史"
+    },
+    "SHFE_AD_OFFICIAL_SPEC": {
+      "sourceUrl": "https://www.shfe.com.cn/products/futures/metal/nonferrousmetal/ad_f/",
+      "retrievedAt": "2026-10-03T09:27:14.396275+00:00",
+      "payloadSha256": "024a6c9667aa7d6724aae5feb28179b15c92d66c8062c631db910d945e7d6458",
+      "qualityStatus": "PASS",
+      "effectiveDateEvidence": "官网合约文本 data_standard；仅覆盖明确发布日及其后，不倒填更早历史"
+    },
+    "SHFE_AL_OFFICIAL_SPEC": {
+      "sourceUrl": "https://www.shfe.com.cn/products/futures/metal/nonferrousmetal/al_f/",
+      "retrievedAt": "2026-10-03T09:27:14.381775+00:00",
+      "payloadSha256": "f00d4ac046bd773e2f28b489b3214c41d4d7fd612fe3f8dfbc30f6257754342b",
+      "qualityStatus": "PASS",
+      "effectiveDateEvidence": "官网合约文本 data_standard；仅覆盖明确发布日及其后，不倒填更早历史"
+    },
+    "SHFE_AO_OFFICIAL_SPEC": {
+      "sourceUrl": "https://www.shfe.com.cn/products/futures/metal/nonferrousmetal/ao_f/",
+      "retrievedAt": "2026-10-03T09:27:14.391988+00:00",
+      "payloadSha256": "ed4f8970e7fbce5e08c8815dd0d7fa9212c0caf752dc47836c4b289f989a97d0",
+      "qualityStatus": "PASS",
+      "effectiveDateEvidence": "官网合约文本 data_standard；仅覆盖明确发布日及其后，不倒填更早历史"
+    },
+    "INE_BC_OFFICIAL_SPEC": {
+      "sourceUrl": "https://www.shfe.com.cn/products/futures/metal/nonferrousmetal/bc_f/",
+      "retrievedAt": "2026-10-03T09:27:14.448211+00:00",
+      "payloadSha256": "7f8299163dc7de1a3a2f70962c718bad5ea0a4e2add48f2e2a42efb792e9f899",
+      "qualityStatus": "PASS",
+      "effectiveDateEvidence": "官网合约文本 data_standard；仅覆盖明确发布日及其后，不倒填更早历史"
+    },
+    "SHFE_CU_OFFICIAL_SPEC": {
+      "sourceUrl": "https://www.shfe.com.cn/products/futures/metal/nonferrousmetal/cu_f/",
+      "retrievedAt": "2026-10-03T09:27:14.497608+00:00",
+      "payloadSha256": "9d9578fcac7a794f4ef59afdf6560be407049967803817ee9c65f604af721572",
+      "qualityStatus": "PASS",
+      "effectiveDateEvidence": "官网合约文本 data_standard；仅覆盖明确发布日及其后，不倒填更早历史"
+    },
+    "SHFE_NI_OFFICIAL_SPEC": {
+      "sourceUrl": "https://www.shfe.com.cn/products/futures/metal/nonferrousmetal/ni_f/",
+      "retrievedAt": "2026-10-03T09:27:14.505123+00:00",
+      "payloadSha256": "bedb5bbd16639c4589400c3592e6c4c25fcefa91782a731681a6fc4a10f0b338",
+      "qualityStatus": "PASS",
+      "effectiveDateEvidence": "官网合约文本 data_standard；仅覆盖明确发布日及其后，不倒填更早历史"
+    },
+    "SHFE_PB_OFFICIAL_SPEC": {
+      "sourceUrl": "https://www.shfe.com.cn/products/futures/metal/nonferrousmetal/pb_f/",
+      "retrievedAt": "2026-10-03T09:27:14.527969+00:00",
+      "payloadSha256": "fc2f90d088aed91cea7f5b62d56d6a11e16e05e781c025a039bf1c0701d0f8b1",
+      "qualityStatus": "PASS",
+      "effectiveDateEvidence": "官网合约文本 data_standard；仅覆盖明确发布日及其后，不倒填更早历史"
+    },
+    "SHFE_SN_OFFICIAL_SPEC": {
+      "sourceUrl": "https://www.shfe.com.cn/products/futures/metal/nonferrousmetal/sn_f/",
+      "retrievedAt": "2026-10-03T09:27:14.579189+00:00",
+      "payloadSha256": "1bb98260a7eb86b24a4296a05d0e02cedf44e6c0dc9d11226e698da65915f563",
+      "qualityStatus": "PASS",
+      "effectiveDateEvidence": "官网合约文本 data_standard；仅覆盖明确发布日及其后，不倒填更早历史"
+    },
+    "SHFE_ZN_OFFICIAL_SPEC": {
+      "sourceUrl": "https://www.shfe.com.cn/products/futures/metal/nonferrousmetal/zn_f/",
+      "retrievedAt": "2026-10-03T09:27:14.612205+00:00",
+      "payloadSha256": "c8081e45d5da750b21e49eefdedf5522af5c37345b79c94a725a9951bc9b3a86",
+      "qualityStatus": "PASS",
+      "effectiveDateEvidence": "官网合约文本 data_standard；仅覆盖明确发布日及其后，不倒填更早历史"
+    },
+    "DCE_L_F_SPEC_202507": {
+      "sourceUrl": "http://www.dce.com.cn/dce/content/clientDf.do?id=8000552",
+      "retrievedAt": "2026-10-03T09:46:19.353449+00:00",
+      "payloadSha256": "3288e614e8be41e38c8a0c389d99566ce2ba3f50daf239cd3ae866f9321425e4",
+      "qualityStatus": "PASS",
+      "publishedOn": "2025-07-25",
+      "effectiveEvidence": "Official July contract specifications and official notice No.367: first night session 2025-10-28 belongs to 2025-10-29 trading day."
+    },
+    "DCE_V_F_SPEC_202507": {
+      "sourceUrl": "http://www.dce.com.cn/dce/content/clientDf.do?id=8000554",
+      "retrievedAt": "2026-10-03T09:46:19.466126+00:00",
+      "payloadSha256": "59225a91d78d8decbdf41ed638b4abc6ebf3f66525efab2a84e36ba52094f96d",
+      "qualityStatus": "PASS",
+      "publishedOn": "2025-07-25",
+      "effectiveEvidence": "Official July contract specifications and official notice No.367: first night session 2025-10-28 belongs to 2025-10-29 trading day."
+    },
+    "DCE_PP_F_SPEC_202507": {
+      "sourceUrl": "http://www.dce.com.cn/dce/content/clientDf.do?id=8000553",
+      "retrievedAt": "2026-10-03T09:46:19.618348+00:00",
+      "payloadSha256": "75c5f742cc5470b6ab63bec7301f8b1116ca810516dd4ce576e88c0b2dd1a635",
+      "qualityStatus": "PASS",
+      "publishedOn": "2025-07-25",
+      "effectiveEvidence": "Official July contract specifications and official notice No.367: first night session 2025-10-28 belongs to 2025-10-29 trading day."
+    },
+    "DCE_MONTH_AVERAGE_LISTING_20251020": {
+      "sourceUrl": "http://www.dce.com.cn/dce/content/2025/ywggytz/18623631.html",
+      "retrievedAt": "2026-10-03T09:43:34.272460+00:00",
+      "payloadSha256": "dce9c287ad8360aaecb408dc28f63ce6301ab17ee93a61167dc3afcf558d923e",
+      "qualityStatus": "PASS",
+      "publishedOn": "2025-10-20"
+    },
+    "GFEX_SI_HISTORICAL_SPEC": {
+      "sourceUrl": "http://www.gfex.com.cn/gfex/tzts/202212/d24b8c94d69b4f40b4a1c347778cb4b3/files/%E5%B9%BF%E5%B7%9E%E6%9C%9F%E8%B4%A7%E4%BA%A4%E6%98%93%E6%89%80%E5%B7%A5%E4%B8%9A%E7%A1%85%E6%9C%9F%E8%B4%A7%E5%90%88%E7%BA%A6.doc",
+      "retrievedAt": "2026-10-03T09:48:19.059366+00:00",
+      "payloadSha256": "4822979a4bac246633ca99687ff28edf253b8f3442265cd5428c914aa4759f36",
+      "qualityStatus": "PASS",
+      "historicalCrossCheck": "Official dated original contract text; current contractInfo unit agrees."
+    },
+    "GFEX_LC_HISTORICAL_SPEC": {
+      "sourceUrl": "http://www.gfex.com.cn/gfex/sytslqhhy/202307/9ad927b8ec4c458594e172fd1ada2a9b.shtml",
+      "retrievedAt": "2026-10-03T09:47:39.296456+00:00",
+      "payloadSha256": "18954c80518fd74486adb679da885f1a099331f26c36d046306b308a27aae7bb",
+      "qualityStatus": "PASS",
+      "historicalCrossCheck": "Official dated original contract text; current contractInfo unit agrees."
+    },
+    "GFEX_PS_SPEC_20241213": {
+      "sourceUrl": "http://www.gfex.com.cn/gfex/tzts/202412/300e60ec93de4aa1a3bb992a471f5bf0/files/1.%E5%B9%BF%E5%B7%9E%E6%9C%9F%E8%B4%A7%E4%BA%A4%E6%98%93%E6%89%80%E5%A4%9A%E6%99%B6%E7%A1%85%E6%9C%9F%E8%B4%A7%E5%90%88%E7%BA%A6-20241213191818710.docx",
+      "retrievedAt": "2026-10-03T09:51:17.018490+00:00",
+      "payloadSha256": "c36a502e46694d49886e98d352e18b2e480e48b495c9921b575d368d783aa0c7",
+      "qualityStatus": "PASS"
+    },
+    "SHFE_DATED_REPORT_UNIT_20230619": {
+      "sourceUrl": "https://www.shfe.com.cn/data/config/report_config_cn.dat",
+      "retrievedAt": "2026-10-03T09:58:45.731480+00:00",
+      "payloadSha256": "92d3c4527c37a250a11d0773e7ae1fc06305e833799b586b53505625c134f49c",
+      "qualityStatus": "PASS",
+      "effectiveEvidence": "report_1_note_total seqno10215, begineffectivedate20230619, endeffectivedate20230728; dated later memo intervals corroborate unchanged units. New AD/OP excluded from this historical mapping."
+    },
+    "CZCE_202212_HISTORICAL_UNITS": {
+      "sourceUrl": "https://www.czce.com.cn/cn/rootfiles/2023/02/13/1655835892573322-1655835892612145.pdf",
+      "retrievedAt": "2026-10-03T10:00:37.050496+00:00",
+      "payloadSha256": "a4e2edc79b7ad5c51a5d79740ca0717e8e5c084b0d4a8585a16005a8246f2a2c",
+      "qualityStatus": "PASS",
+      "reportPeriod": "2022-12",
+      "historicalCrossCheck": "PDF pages 19,21,22 (printed 18,20,21): monthly futures volume, open-interest and delivery notes explicitly list contract sizes; report period 2022-12. Current CZCE_202512 units agree."
+    },
+    "CZCE_202309_NEW_PRODUCT_UNITS": {
+      "sourceUrl": "https://www.czce.com.cn/cn/rootfiles/2023/10/18/1697226838884489-1697226838904727.pdf",
+      "retrievedAt": "2026-10-03T10:02:05.072355+00:00",
+      "payloadSha256": "a2f9302b1cb84bd63248c68d4ea4daf8cb7b91e05992eea7a6975d0243d56f0a",
+      "qualityStatus": "PASS",
+      "reportPeriod": "2023-09",
+      "historicalCrossCheck": "PDF pages 20,22,23 list PX=5 tonnes/lot and SH=30 tonnes/lot. PDF pages 45,48 reproduce official notices 85/86/88/89: futures contracts effective and listed 2023-09-15."
+    },
+    "CZCE_202408_PR_UNITS": {
+      "sourceUrl": "https://www.czce.com.cn/cn/rootfiles/2024/09/14/1726389999932285-1726389999951648.pdf",
+      "retrievedAt": "2026-10-03T10:03:37.992613+00:00",
+      "payloadSha256": "ebeb18038fa6bdb2e007be73853a93e5c8757a9b7ddfec1eee5e2647dc66d354",
+      "qualityStatus": "PASS",
+      "reportPeriod": "2024-08",
+      "historicalCrossCheck": "PDF pages 20,22,23 list PR=15 tonnes/lot. PDF page49 reproduces official notices105/106: effective and listed 2024-08-30."
+    },
+    "CZCE_202507_PL_UNITS": {
+      "sourceUrl": "https://www.czce.com.cn/cn/rootfiles/2025/08/07/1750862830930040-1750862830943566.pdf",
+      "retrievedAt": "2026-10-03T10:01:58.381397+00:00",
+      "payloadSha256": "2e5f819b037a31d0a0992cde227dede903376d4361cb640f5e381824c3c241a4",
+      "qualityStatus": "PASS",
+      "reportPeriod": "2025-07",
+      "historicalCrossCheck": "PDF pages3,4,5 list PL=20 tonnes/lot. Official 2025 service report PDF page5 confirms listing on 2025-07-22; see CZCE_2025_SERVICE_PL_LISTING."
+    },
+    "CZCE_2025_SERVICE_PL_LISTING": {
+      "sourceUrl": "https://www.czce.com.cn/cn/content_file/gyjys/qhscyjcs/cgxc/2026/4/077939e9d8fc4ad088cd76a52ed8d3a0.pdf",
+      "retrievedAt": "2026-10-03T10:03:33.360795+00:00",
+      "payloadSha256": "724ad477c9e81a9afc28432e2bc89dec6d1b78a412a82f856418676357f6d8ef",
+      "qualityStatus": "PASS",
+      "reportPeriod": "2025",
+      "historicalCrossCheck": "Official 2025 service-for-real-economy report PDF page5 explicitly states PL futures/options listed 2025-07-22."
+    },
+    "SHFE_HISTORICAL_NONFERROUS_2019": {
+      "sourceUrl": "https://www.shfe.com.cn/products/futures/metal/nonferrousmetal/cu_f/manual/201812/P020240320681343651143.pdf",
+      "retrievedAt": "2026-10-03T10:08:21.729182+00:00",
+      "payloadSha256": "f6118cffcb14b05bd909dde0462c0fcf492c44f65e5bb9c4c56f4dbd79ae04b8",
+      "qualityStatus": "PASS",
+      "pageCount": 76,
+      "verifiedPdfPages": {
+        "SHFE.CU": 29,
+        "SHFE.AL": 30,
+        "SHFE.ZN": 31,
+        "SHFE.PB": 32,
+        "SHFE.SN": 33,
+        "SHFE.NI": 34
+      },
+      "historicalScope": "Official pre-2023 handbook standard contract text, agreeing with date-effective official 2023 daily notes; registry coverage starts 2023-01-01 for this task."
+    },
+    "SHFE_HISTORICAL_PRECIOUS_2018": {
+      "sourceUrl": "https://www.shfe.com.cn/products/futures/metal/ferrousandpreciousmetal/ag_f/manual/201807/P020240320678993906997.pdf",
+      "retrievedAt": "2026-10-03T10:08:18.933353+00:00",
+      "payloadSha256": "37459f2a3516e2cf576a727d4d3fa90d54fe4e917b322c3c9fc054679ebf1543",
+      "qualityStatus": "PASS",
+      "pageCount": 80,
+      "verifiedPdfPages": {
+        "SHFE.AG": 45
+      },
+      "historicalScope": "Official pre-2023 handbook standard contract text, agreeing with date-effective official 2023 daily notes; registry coverage starts 2023-01-01 for this task."
+    },
+    "SHFE_HISTORICAL_ENERGY_2016": {
+      "sourceUrl": "https://www.shfe.com.cn/products/futures/energyandchemical/bu_f/manual/201612/P020240320671515046775.pdf",
+      "retrievedAt": "2026-10-03T10:08:12.457330+00:00",
+      "payloadSha256": "2ef7d4ce005498e9b5f6609413d74a7d09c325c5cd2ce155964771cf790d215a",
+      "qualityStatus": "PASS",
+      "pageCount": 32,
+      "verifiedPdfPages": {
+        "SHFE.BU": 8
+      },
+      "historicalScope": "Official pre-2023 handbook standard contract text, agreeing with date-effective official 2023 daily notes; registry coverage starts 2023-01-01 for this task."
+    },
+    "SHFE_HISTORICAL_FU_2018": {
+      "sourceUrl": "https://www.shfe.com.cn/products/futures/energyandchemical/fu_f/manual/202206/P020240320705452680030.pdf",
+      "retrievedAt": "2026-10-03T10:08:16.097433+00:00",
+      "payloadSha256": "d9d8ecc6413748d488a7b2c61aca5b51897c8db28fb3a641d1c211daa00e6459",
+      "qualityStatus": "PASS",
+      "pageCount": 60,
+      "verifiedPdfPages": {
+        "SHFE.FU": 27
+      },
+      "historicalScope": "Official pre-2023 handbook standard contract text, agreeing with date-effective official 2023 daily notes; registry coverage starts 2023-01-01 for this task."
+    },
+    "SHFE_HISTORICAL_STEEL_2018": {
+      "sourceUrl": "https://www.shfe.com.cn/products/futures/metal/ferrousandpreciousmetal/rb_f/manual/201612/P020240320671556848025.pdf",
+      "retrievedAt": "2026-10-03T10:08:22.971090+00:00",
+      "payloadSha256": "75ae0352f333af1331be5ddb47ca3331a1957a7006798ad18c7c59dacbd05314",
+      "qualityStatus": "PASS",
+      "pageCount": 68,
+      "verifiedPdfPages": {
+        "SHFE.RB": 25,
+        "SHFE.WR": 26,
+        "SHFE.HC": 28
+      },
+      "historicalScope": "Official pre-2023 handbook standard contract text, agreeing with date-effective official 2023 daily notes; registry coverage starts 2023-01-01 for this task."
+    },
+    "SHFE_HISTORICAL_SP_2018": {
+      "sourceUrl": "https://www.shfe.com.cn/products/futures/energyandchemical/sp_f/manual/201811/P020240320680677010005.pdf",
+      "retrievedAt": "2026-10-03T10:08:23.998424+00:00",
+      "payloadSha256": "802ee146013ddb44345aae9ec2b64b7665f1e2ed473bf70dc52f4c8ba1f140df",
+      "qualityStatus": "PASS",
+      "pageCount": 44,
+      "verifiedPdfPages": {
+        "SHFE.SP": 15
+      },
+      "historicalScope": "Official pre-2023 handbook standard contract text, agreeing with date-effective official 2023 daily notes; registry coverage starts 2023-01-01 for this task."
+    },
+    "SHFE_HISTORICAL_SS_2019": {
+      "sourceUrl": "https://www.shfe.com.cn/products/futures/metal/ferrousandpreciousmetal/ss_f/manual/201909/P020240320684500937834.pdf",
+      "retrievedAt": "2026-10-03T10:08:28.676163+00:00",
+      "payloadSha256": "407372dddc3b959286961ce998cd06c0b8e423e29814c333b04f882f0ef8354a",
+      "qualityStatus": "PASS",
+      "pageCount": 44,
+      "verifiedPdfPages": {
+        "SHFE.SS": 18
+      },
+      "historicalScope": "Official pre-2023 handbook standard contract text, agreeing with date-effective official 2023 daily notes; registry coverage starts 2023-01-01 for this task."
+    },
+    "SHFE_HISTORICAL_SC_2022": {
+      "sourceUrl": "https://www.shfe.com.cn/upload/20220830/1661841151270.pdf",
+      "retrievedAt": "2026-10-03T10:08:30.509202+00:00",
+      "payloadSha256": "5678be465315cd9155c50aa9b8e8e4c28c85591d38392c4b709080bd58d76c5a",
+      "qualityStatus": "PASS",
+      "pageCount": 78,
+      "verifiedPdfPages": {
+        "INE.SC": 69
+      },
+      "historicalScope": "Official pre-2023 handbook standard contract text, agreeing with date-effective official 2023 daily notes; registry coverage starts 2023-01-01 for this task."
+    },
+    "SHFE_HISTORICAL_RU_2020": {
+      "sourceUrl": "https://www.shfe.com.cn/upload/20201023/1603414826433.pdf",
+      "retrievedAt": "2026-10-03T10:09:20.197035+00:00",
+      "payloadSha256": "88b401f71914fdb155c75558d6906549081949645780429a3ddb8b14495f129a",
+      "qualityStatus": "PASS",
+      "verifiedPdfPages": {
+        "SHFE.RU": 7
+      },
+      "historicalScope": "Official pre-2023 handbook standard contract text, agreeing with date-effective official 2023 daily notes; registry coverage starts 2023-01-01 for this task."
+    },
+    "DCE_MULTIPLIER_TABLE_201611": {
+      "publisher": "DCE",
+      "sourceUrl": "http://www.dce.com.cn/dalianshangpin/resource/cms/2016/11/玉米淀粉期货合约设计说明.pdf",
+      "retrievedAt": "2026-10-03T10:05:49.349122+00:00",
+      "payloadSha256": "4242efd59e987ee35f2b3a4295e73c8a057fa20e35a7d2fa5db984ddd4c9bc74",
+      "qualityStatus": "PASS",
+      "file": "data_control/bronze/official_multiplier_history_dce/dce_cs_design_201611-4242efd59e98.pdf",
+      "publishedPeriod": "2016-11",
+      "rawPath": "bronze/official_multiplier_history_dce/dce_cs_design_201611-4242efd59e98.pdf",
+      "effectiveEvidence": "PDF page 44 / printed page 41, Table 7 lists physical units for 15 products. Old FB 500-sheet unit is excluded from 2023+; JD physical 5 tons is divided by its 500-kg quote unit to obtain multiplier 10."
+    },
+    "DCE_QUOTE_UNITS_202206": {
+      "publisher": "DCE",
+      "sourceUrl": "http://www.dce.com.cn/dalianshangpin/resource/cms/article/489932/8507992/2022080208291768754.pdf",
+      "retrievedAt": "2026-10-03T10:05:54.379926+00:00",
+      "payloadSha256": "c4f81f5e3e831deba6cfe9be93c2338325234c0135af459c05072c6524ca5dbe",
+      "qualityStatus": "PASS",
+      "file": "data_control/bronze/official_multiplier_history_dce/dce_monthly_202206-c4f81f5e3e83.pdf",
+      "publishedPeriod": "2022-06",
+      "rawPath": "bronze/official_multiplier_history_dce/dce_monthly_202206-c4f81f5e3e83.pdf",
+      "effectiveEvidence": "Monthly futures quotation footnote: CNY/ton except JD CNY/500kg, FB CNY/cubic-metre, BB CNY/sheet; physical quantities from historical contract evidence are converted to these quotation denominators."
+    },
+    "DCE_EB_UNIT_202201": {
+      "publisher": "DCE",
+      "sourceUrl": "http://www.dce.com.cn/dalianshangpin/resource/cms/article/489932/6304853/2022072517435882380.pdf",
+      "retrievedAt": "2026-10-03T10:05:52.382875+00:00",
+      "payloadSha256": "116012f2fa3641319ebd89f2f0b9c6bbd0b52abb7ef3de29815a660eee13cf84",
+      "qualityStatus": "PASS",
+      "file": "data_control/bronze/official_multiplier_history_dce/dce_monthly_202201-116012f2fa36.pdf",
+      "publishedPeriod": "2022-01",
+      "rawPath": "bronze/official_multiplier_history_dce/dce_monthly_202201-116012f2fa36.pdf",
+      "effectiveEvidence": "Printed page 68 identifies EB code, listing on 2019-09-26, and 5 tons/lot; quotation denomination is CNY/ton in monthly futures table notes."
+    },
+    "DCE_RR_RULES_20190813": {
+      "publisher": "DCE",
+      "sourceUrl": "http://www.dce.com.cn/dce/content/2019/pzxz/6177471.html",
+      "retrievedAt": "2026-10-03T10:23:41.640082+00:00",
+      "payloadSha256": "bd059e7ff2f18f111d883a7ef05414cf8cabad7b0af242f7a83c759f2665f217",
+      "publishedOn": "2019-08-13",
+      "qualityStatus": "PASS",
+      "rawPath": "bronze/official_multiplier_history_dce/dce_rr_rules_20190813-bd059e7ff2f1.html",
+      "effectiveEvidence": "Official rice business rules articles 8 and 9: 10 tons/lot and CNY/ton."
+    },
+    "DCE_EG_FINAL_20181205": {
+      "publisher": "DCE",
+      "sourceUrl": "http://www.dce.com.cn/dce/content/2018/wm/6138640.html",
+      "retrievedAt": "2026-10-03T10:23:41.864434+00:00",
+      "payloadSha256": "f90152fcc3fdb3d6a4581e2963e652c894258385339858a4b99d587c0efa92c7",
+      "publishedOn": "2018-12-05",
+      "qualityStatus": "PASS",
+      "rawPath": "bronze/official_multiplier_history_dce/dce_eg_final_20181205-f90152fcc3fd.html",
+      "effectiveEvidence": "Official announcement describing the final published EG contract: 10 tons/lot and CNY/ton."
+    },
+    "DCE_FB_AMEND_20191014": {
+      "publisher": "DCE",
+      "sourceUrl": "http://www.dce.com.cn/dce/content/2019/wm/6192365.html",
+      "retrievedAt": "2026-10-03T10:23:42.038497+00:00",
+      "payloadSha256": "39340b6757d8a9aa2f7c2849c82bb2170b1542d09b3f105a7357c70753f0225e",
+      "publishedOn": "2019-10-14",
+      "qualityStatus": "PASS",
+      "rawPath": "bronze/official_multiplier_history_dce/dce_fb_amend_20191014-39340b6757d8.html",
+      "effectiveEvidence": "Official exchange report states replacement of 500-sheet trade unit by 10 cubic-metres/lot and quotation CNY/cubic-metre; 2022 monthly note dates the quotation switch to 2019-12-02."
+    },
+    "DCE_B_UNDERLYING_UNIT_20220805": {
+      "publisher": "DCE",
+      "sourceUrl": "http://www.dce.com.cn/dce/content/2022/hygz/8509657.html",
+      "retrievedAt": "2026-10-03T10:23:42.595718+00:00",
+      "payloadSha256": "9798a83618f50c100b11fd9e3c4032d71927d001cd4e77b66d7f74aa89fe6b11",
+      "publishedOn": "2022-08-05",
+      "qualityStatus": "PASS",
+      "rawPath": "bronze/official_multiplier_history_dce/dce_b_option_20220805-9798a83618f5.html",
+      "effectiveEvidence": "Official B option contract explicitly defines one underlying B futures contract as 10 tons; quote denomination CNY/ton. Only the underlying futures multiplier is used, no option rows added."
+    },
+    "DCE_LH_SPEC_20201231": {
+      "publisher": "DCE",
+      "sourceUrl": "http://www.dce.com.cn/dce/his/eportal/fileDir/dalianshangpin/resource/cms/2020/12/2020123116522353950.doc",
+      "retrievedAt": "2026-10-03T10:24:32.711750+00:00",
+      "payloadSha256": "eab8bd2529b99a4c591247c954ce92af3601ee6598d4912363a49990f2f668bd",
+      "qualityStatus": "PASS",
+      "file": "data_control/bronze/official_multiplier_history_dce/dce_lh_spec_20201231-eab8bd2529b9.doc",
+      "publishedOn": "2020-12-31",
+      "rawPath": "bronze/official_multiplier_history_dce/dce_lh_spec_20201231-eab8bd2529b9.doc",
+      "effectiveEvidence": "Attachment 1 to official notice 6262747: physical unit 16 tons/lot, quotation CNY/ton."
+    },
+    "DCE_PG_SPEC_20200320": {
+      "publisher": "DCE",
+      "sourceUrl": "http://www.dce.com.cn/dce/his/eportal/fileDir/dalianshangpin/resource/cms/2020/03/2020032019593940757.docx",
+      "retrievedAt": "2026-10-03T10:25:38.392165+00:00",
+      "payloadSha256": "206b12c6419487582027a7f9bacada36074c443d0c9384d8753f0c3f7999c1ca",
+      "qualityStatus": "PASS",
+      "file": "data_control/bronze/official_multiplier_history_dce/dce_pg_spec_20200320-206b12c64194.docx",
+      "publishedOn": "2020-03-20",
+      "rawPath": "bronze/official_multiplier_history_dce/dce_pg_spec_20200320-206b12c64194.docx",
+      "effectiveEvidence": "Attachment 1 to official notice 6209953: physical unit 20 tons/lot, quotation CNY/ton."
+    },
+    "DCE_LG_SPEC_20241025": {
+      "publisher": "DCE",
+      "sourceUrl": "http://www.dce.com.cn/dce/his/eportal/fileDir/dalianshangpin/resource/cms/article/486013/8617136/附件1：大连商品交易所原木期货合约.doc",
+      "retrievedAt": "2026-10-03T10:24:32.779315+00:00",
+      "payloadSha256": "dfe2647f6ef3aac59e41406a828a7aac27b1cc211f826e7a6ccc9bf09343b275",
+      "qualityStatus": "PASS",
+      "file": "data_control/bronze/official_multiplier_history_dce/dce_lg_spec_20241025-dfe2647f6ef3.doc",
+      "publishedOn": "2024-10-25",
+      "rawPath": "bronze/official_multiplier_history_dce/dce_lg_spec_20241025-dfe2647f6ef3.doc",
+      "effectiveEvidence": "Original official LG contract attachment: 90 cubic-metres/lot and quotation CNY/cubic-metre. Applied only from verified listing date 2024-11-18."
+    },
+    "DCE_LG_LISTING_20241028": {
+      "publisher": "DCE",
+      "sourceUrl": "http://www.dce.com.cn/dce/content/2024/ywggytz/8620259.html",
+      "retrievedAt": "2026-10-03T10:26:34.630104+00:00",
+      "payloadSha256": "d06600c52fffe8f5a596b503cca5cc8845e11b18b0b924bfe8e49a2f23db0216",
+      "publishedOn": "2024-10-28",
+      "qualityStatus": "PASS",
+      "rawPath": "bronze/official_multiplier_history_dce/dce_lg_listing_20241028-d06600c52fff.html",
+      "effectiveEvidence": "Official notice No.458 states LG futures start trading 2024-11-18."
+    },
+    "DCE_BZ_SPEC_20250627": {
+      "publisher": "DCE",
+      "sourceUrl": "http://www.dce.com.cn/dce/his/eportal/fileDir/dalianshangpin/resource/cms/article/486013/8637672/附件1：大连商品交易所纯苯期货合约.doc",
+      "retrievedAt": "2026-10-03T10:24:32.408773+00:00",
+      "payloadSha256": "29c1a0df321bfd7d1ee24afd642e326a1f654716fe76f0389b55a02cca90884f",
+      "qualityStatus": "PASS",
+      "file": "data_control/bronze/official_multiplier_history_dce/dce_bz_spec_20250627-29c1a0df321b.doc",
+      "publishedOn": "2025-06-27",
+      "rawPath": "bronze/official_multiplier_history_dce/dce_bz_spec_20250627-29c1a0df321b.doc",
+      "effectiveEvidence": "Original official BZ contract attachment: physical unit 30 tons/lot and quotation CNY/ton. Applied only from verified listing date 2025-07-08."
+    },
+    "DCE_BZ_LISTING_20250627": {
+      "publisher": "DCE",
+      "sourceUrl": "http://www.dce.com.cn/dce/content/2025/wm/8637873.html",
+      "retrievedAt": "2026-10-03T10:25:38.565965+00:00",
+      "payloadSha256": "b8494883f320b62b0c040f88db6cbfea52af6f3a6a83b292546232578c1a8498",
+      "publishedOn": "2025-06-27",
+      "qualityStatus": "PASS",
+      "rawPath": "bronze/official_multiplier_history_dce/dce_bz_launch_20250627-b8494883f320.html",
+      "effectiveEvidence": "Official exchange news states BZ futures start trading at 09:00 on 2025-07-08, independently confirmed contract multiplier 30."
+    },
+    "DCE_DAILY_UNIT_NOTE_20261003": {
+      "publisher": "DCE",
+      "sourceUrl": "http://www.dce.com.cn/dce/channel/list/168.html",
+      "retrievedAt": "2026-10-03T10:13:33.914630+00:00",
+      "payloadSha256": "3ca7515cc0a9cbcff734d8fe093423bddde309453dc0002649f056e6c0bb3c23",
+      "qualityStatus": "PASS",
+      "rawPath": "bronze/official_multiplier_history_dce/page-168.html-3ca7515cc0a9.html",
+      "effectiveEvidence": "The exact daily menu node data-clzid=168 states daily amount CNY ten-thousand, volume and OI lots, all single-sided; close-minus-previous-settlement and settlement-minus-previous-settlement definitions. Current page evidence, not a dated historical unit-change notice."
+    },
+    "DCE_SINGLE_SIDED_NOTICE_20191029": {
+      "publisher": "DCE",
+      "sourceUrl": "http://www.dce.com.cn/dce/content/2019/wm/6193854.html",
+      "retrievedAt": "2026-10-03T10:34:15.425840+00:00",
+      "payloadSha256": "64ae4d109ad053093faa4c5a4761f8e1e841c7924f5c1443fd5a0bc448b43978",
+      "publishedOn": "2019-10-29",
+      "qualityStatus": "PASS",
+      "rawPath": "bronze/official_multiplier_history_dce/dce_single_sided_20191029-64ae4d109ad0.html",
+      "effectiveEvidence": "Official exchange notice report: volume and open-interest definitions change from bilateral to unilateral effective 2020-01-01. This document does not state an amount-unit change."
     }
   },
   "exchangeCoverage": {
-    "SHFE": "PASS", "INE": "PASS", "CZCE": "PASS",
-    "DCE": "UNAVAILABLE", "GFEX": "UNAVAILABLE", "CFFEX": "LEGACY_OFFICIAL_SPEC"
+    "SHFE": "PASS",
+    "INE": "PASS",
+    "CZCE": "PASS",
+    "DCE": "PASS",
+    "GFEX": "PASS",
+    "CFFEX": "LEGACY_OFFICIAL_SPEC"
   },
   "products": {
-    "SHFE.CU": {"effectiveFrom": "2026-01-29", "effectiveTo": null, "contractMultiplier": 5, "quoteUnit": "CNY/ton", "evidenceId": "SHFE_20260129"},
-    "SHFE.AL": {"effectiveFrom": "2026-01-29", "effectiveTo": null, "contractMultiplier": 5, "quoteUnit": "CNY/ton", "evidenceId": "SHFE_20260129"},
-    "SHFE.ZN": {"effectiveFrom": "2026-01-29", "effectiveTo": null, "contractMultiplier": 5, "quoteUnit": "CNY/ton", "evidenceId": "SHFE_20260129"},
-    "SHFE.PB": {"effectiveFrom": "2026-01-29", "effectiveTo": null, "contractMultiplier": 5, "quoteUnit": "CNY/ton", "evidenceId": "SHFE_20260129"},
-    "SHFE.NI": {"effectiveFrom": "2026-01-29", "effectiveTo": null, "contractMultiplier": 1, "quoteUnit": "CNY/ton", "evidenceId": "SHFE_20260129"},
-    "SHFE.SN": {"effectiveFrom": "2026-01-29", "effectiveTo": null, "contractMultiplier": 1, "quoteUnit": "CNY/ton", "evidenceId": "SHFE_20260129"},
-    "SHFE.AU": {"effectiveFrom": "2026-01-29", "effectiveTo": null, "contractMultiplier": 1000, "quoteUnit": "CNY/gram", "evidenceId": "SHFE_20260129"},
-    "SHFE.AG": {"effectiveFrom": "2026-01-29", "effectiveTo": null, "contractMultiplier": 15, "quoteUnit": "CNY/kg", "evidenceId": "SHFE_20260129"},
-    "SHFE.RB": {"effectiveFrom": "2026-01-29", "effectiveTo": null, "contractMultiplier": 10, "quoteUnit": "CNY/ton", "evidenceId": "SHFE_20260129"},
-    "SHFE.WR": {"effectiveFrom": "2026-01-29", "effectiveTo": null, "contractMultiplier": 10, "quoteUnit": "CNY/ton", "evidenceId": "SHFE_20260129"},
-    "SHFE.HC": {"effectiveFrom": "2026-01-29", "effectiveTo": null, "contractMultiplier": 10, "quoteUnit": "CNY/ton", "evidenceId": "SHFE_20260129"},
-    "SHFE.SS": {"effectiveFrom": "2026-01-29", "effectiveTo": null, "contractMultiplier": 5, "quoteUnit": "CNY/ton", "evidenceId": "SHFE_20260129"},
-    "SHFE.FU": {"effectiveFrom": "2026-01-29", "effectiveTo": null, "contractMultiplier": 10, "quoteUnit": "CNY/ton", "evidenceId": "SHFE_20260129"},
-    "SHFE.BU": {"effectiveFrom": "2026-01-29", "effectiveTo": null, "contractMultiplier": 10, "quoteUnit": "CNY/ton", "evidenceId": "SHFE_20260129"},
-    "SHFE.RU": {"effectiveFrom": "2026-01-29", "effectiveTo": null, "contractMultiplier": 10, "quoteUnit": "CNY/ton", "evidenceId": "SHFE_20260129"},
-    "SHFE.SP": {"effectiveFrom": "2026-01-29", "effectiveTo": null, "contractMultiplier": 10, "quoteUnit": "CNY/ton", "evidenceId": "SHFE_20260129"},
-    "SHFE.AO": {"effectiveFrom": "2026-01-29", "effectiveTo": null, "contractMultiplier": 20, "quoteUnit": "CNY/ton", "evidenceId": "SHFE_20260129"},
-    "SHFE.BR": {"effectiveFrom": "2026-01-29", "effectiveTo": null, "contractMultiplier": 5, "quoteUnit": "CNY/ton", "evidenceId": "SHFE_20260129"},
-    "SHFE.AD": {"effectiveFrom": "2026-01-29", "effectiveTo": null, "contractMultiplier": 10, "quoteUnit": "CNY/ton", "evidenceId": "SHFE_20260129"},
-    "SHFE.OP": {"effectiveFrom": "2026-01-29", "effectiveTo": null, "contractMultiplier": 40, "quoteUnit": "CNY/ton", "evidenceId": "SHFE_20260129"},
-    "INE.SC": {"effectiveFrom": "2026-01-29", "effectiveTo": null, "contractMultiplier": 1000, "quoteUnit": "CNY/barrel", "evidenceId": "SHFE_20260129"},
-    "INE.LU": {"effectiveFrom": "2026-01-29", "effectiveTo": null, "contractMultiplier": 10, "quoteUnit": "CNY/ton", "evidenceId": "SHFE_20260129"},
-    "INE.NR": {"effectiveFrom": "2026-01-29", "effectiveTo": null, "contractMultiplier": 10, "quoteUnit": "CNY/ton", "evidenceId": "SHFE_20260129"},
-    "INE.BC": {"effectiveFrom": "2026-01-29", "effectiveTo": null, "contractMultiplier": 5, "quoteUnit": "CNY/ton", "evidenceId": "SHFE_20260129"},
-    "INE.EC": {"effectiveFrom": "2026-01-29", "effectiveTo": null, "contractMultiplier": 50, "quoteUnit": "index-point", "evidenceId": "SHFE_20260129"},
-    "CZCE.CF": {"effectiveFrom": "2026-01-01", "effectiveTo": null, "contractMultiplier": 5, "quoteUnit": "CNY/ton", "evidenceId": "CZCE_202512"},
-    "CZCE.CJ": {"effectiveFrom": "2026-01-01", "effectiveTo": null, "contractMultiplier": 5, "quoteUnit": "CNY/ton", "evidenceId": "CZCE_202512"},
-    "CZCE.CY": {"effectiveFrom": "2026-01-01", "effectiveTo": null, "contractMultiplier": 5, "quoteUnit": "CNY/ton", "evidenceId": "CZCE_202512"},
-    "CZCE.PF": {"effectiveFrom": "2026-01-01", "effectiveTo": null, "contractMultiplier": 5, "quoteUnit": "CNY/ton", "evidenceId": "CZCE_202512"},
-    "CZCE.PK": {"effectiveFrom": "2026-01-01", "effectiveTo": null, "contractMultiplier": 5, "quoteUnit": "CNY/ton", "evidenceId": "CZCE_202512"},
-    "CZCE.PX": {"effectiveFrom": "2026-01-01", "effectiveTo": null, "contractMultiplier": 5, "quoteUnit": "CNY/ton", "evidenceId": "CZCE_202512"},
-    "CZCE.SF": {"effectiveFrom": "2026-01-01", "effectiveTo": null, "contractMultiplier": 5, "quoteUnit": "CNY/ton", "evidenceId": "CZCE_202512"},
-    "CZCE.SM": {"effectiveFrom": "2026-01-01", "effectiveTo": null, "contractMultiplier": 5, "quoteUnit": "CNY/ton", "evidenceId": "CZCE_202512"},
-    "CZCE.TA": {"effectiveFrom": "2026-01-01", "effectiveTo": null, "contractMultiplier": 5, "quoteUnit": "CNY/ton", "evidenceId": "CZCE_202512"},
-    "CZCE.AP": {"effectiveFrom": "2026-01-01", "effectiveTo": null, "contractMultiplier": 10, "quoteUnit": "CNY/ton", "evidenceId": "CZCE_202512"},
-    "CZCE.MA": {"effectiveFrom": "2026-01-01", "effectiveTo": null, "contractMultiplier": 10, "quoteUnit": "CNY/ton", "evidenceId": "CZCE_202512"},
-    "CZCE.OI": {"effectiveFrom": "2026-01-01", "effectiveTo": null, "contractMultiplier": 10, "quoteUnit": "CNY/ton", "evidenceId": "CZCE_202512"},
-    "CZCE.RM": {"effectiveFrom": "2026-01-01", "effectiveTo": null, "contractMultiplier": 10, "quoteUnit": "CNY/ton", "evidenceId": "CZCE_202512"},
-    "CZCE.RS": {"effectiveFrom": "2026-01-01", "effectiveTo": null, "contractMultiplier": 10, "quoteUnit": "CNY/ton", "evidenceId": "CZCE_202512"},
-    "CZCE.SR": {"effectiveFrom": "2026-01-01", "effectiveTo": null, "contractMultiplier": 10, "quoteUnit": "CNY/ton", "evidenceId": "CZCE_202512"},
-    "CZCE.PR": {"effectiveFrom": "2026-01-01", "effectiveTo": null, "contractMultiplier": 15, "quoteUnit": "CNY/ton", "evidenceId": "CZCE_202512"},
-    "CZCE.FG": {"effectiveFrom": "2026-01-01", "effectiveTo": null, "contractMultiplier": 20, "quoteUnit": "CNY/ton", "evidenceId": "CZCE_202512"},
-    "CZCE.PL": {"effectiveFrom": "2026-01-01", "effectiveTo": null, "contractMultiplier": 20, "quoteUnit": "CNY/ton", "evidenceId": "CZCE_202512"},
-    "CZCE.SA": {"effectiveFrom": "2026-01-01", "effectiveTo": null, "contractMultiplier": 20, "quoteUnit": "CNY/ton", "evidenceId": "CZCE_202512"},
-    "CZCE.UR": {"effectiveFrom": "2026-01-01", "effectiveTo": null, "contractMultiplier": 20, "quoteUnit": "CNY/ton", "evidenceId": "CZCE_202512"},
-    "CZCE.SH": {"effectiveFrom": "2026-01-01", "effectiveTo": null, "contractMultiplier": 30, "quoteUnit": "CNY/ton", "evidenceId": "CZCE_202512"},
-    "CZCE.ZC": {"effectiveFrom": "2026-01-01", "effectiveTo": null, "contractMultiplier": 100, "quoteUnit": "CNY/ton", "evidenceId": "CZCE_202512"}
+    "SHFE.CU": {
+      "effectiveFrom": "2023-01-01",
+      "effectiveTo": null,
+      "contractMultiplier": 5.0,
+      "quoteUnit": "元（人民币）/吨",
+      "evidenceId": "SHFE_HISTORICAL_NONFERROUS_2019"
+    },
+    "SHFE.AL": {
+      "effectiveFrom": "2023-01-01",
+      "effectiveTo": null,
+      "contractMultiplier": 5.0,
+      "quoteUnit": "元（人民币）/吨",
+      "evidenceId": "SHFE_HISTORICAL_NONFERROUS_2019"
+    },
+    "SHFE.ZN": {
+      "effectiveFrom": "2023-01-01",
+      "effectiveTo": null,
+      "contractMultiplier": 5.0,
+      "quoteUnit": "元（人民币）/吨",
+      "evidenceId": "SHFE_HISTORICAL_NONFERROUS_2019"
+    },
+    "SHFE.PB": {
+      "effectiveFrom": "2023-01-01",
+      "effectiveTo": null,
+      "contractMultiplier": 5.0,
+      "quoteUnit": "元（人民币）/吨",
+      "evidenceId": "SHFE_HISTORICAL_NONFERROUS_2019"
+    },
+    "SHFE.NI": {
+      "effectiveFrom": "2023-01-01",
+      "effectiveTo": null,
+      "contractMultiplier": 1.0,
+      "quoteUnit": "元（人民币）/吨",
+      "evidenceId": "SHFE_HISTORICAL_NONFERROUS_2019"
+    },
+    "SHFE.SN": {
+      "effectiveFrom": "2023-01-01",
+      "effectiveTo": null,
+      "contractMultiplier": 1.0,
+      "quoteUnit": "元（人民币）/吨",
+      "evidenceId": "SHFE_HISTORICAL_NONFERROUS_2019"
+    },
+    "SHFE.AU": {
+      "effectiveFrom": "2020-08-31",
+      "effectiveTo": null,
+      "contractMultiplier": 1000.0,
+      "quoteUnit": "元（人民币）/克",
+      "evidenceId": "SHFE_AU_OFFICIAL_SPEC"
+    },
+    "SHFE.AG": {
+      "effectiveFrom": "2023-01-01",
+      "effectiveTo": null,
+      "contractMultiplier": 15.0,
+      "quoteUnit": "元（人民币）/千克",
+      "evidenceId": "SHFE_HISTORICAL_PRECIOUS_2018"
+    },
+    "SHFE.RB": {
+      "effectiveFrom": "2023-01-01",
+      "effectiveTo": null,
+      "contractMultiplier": 10.0,
+      "quoteUnit": "元（人民币）/吨",
+      "evidenceId": "SHFE_HISTORICAL_STEEL_2018"
+    },
+    "SHFE.WR": {
+      "effectiveFrom": "2023-01-01",
+      "effectiveTo": null,
+      "contractMultiplier": 10.0,
+      "quoteUnit": "元（人民币）/吨",
+      "evidenceId": "SHFE_HISTORICAL_STEEL_2018"
+    },
+    "SHFE.HC": {
+      "effectiveFrom": "2023-01-01",
+      "effectiveTo": null,
+      "contractMultiplier": 10.0,
+      "quoteUnit": "元（人民币）/吨",
+      "evidenceId": "SHFE_HISTORICAL_STEEL_2018"
+    },
+    "SHFE.SS": {
+      "effectiveFrom": "2023-01-01",
+      "effectiveTo": null,
+      "contractMultiplier": 5.0,
+      "quoteUnit": "元（人民币）/吨",
+      "evidenceId": "SHFE_HISTORICAL_SS_2019"
+    },
+    "SHFE.FU": {
+      "effectiveFrom": "2023-01-01",
+      "effectiveTo": null,
+      "contractMultiplier": 10.0,
+      "quoteUnit": "元（人民币）/吨（交易报价为不含税价格）",
+      "evidenceId": "SHFE_HISTORICAL_FU_2018"
+    },
+    "SHFE.BU": {
+      "effectiveFrom": "2023-01-01",
+      "effectiveTo": null,
+      "contractMultiplier": 10.0,
+      "quoteUnit": "元（人民币）/吨",
+      "evidenceId": "SHFE_HISTORICAL_ENERGY_2016"
+    },
+    "SHFE.RU": {
+      "effectiveFrom": "2023-01-01",
+      "effectiveTo": null,
+      "contractMultiplier": 10.0,
+      "quoteUnit": "元（人民币）/吨",
+      "evidenceId": "SHFE_HISTORICAL_RU_2020"
+    },
+    "SHFE.SP": {
+      "effectiveFrom": "2023-01-01",
+      "effectiveTo": null,
+      "contractMultiplier": 10.0,
+      "quoteUnit": "元（人民币）/吨",
+      "evidenceId": "SHFE_HISTORICAL_SP_2018"
+    },
+    "SHFE.AO": {
+      "effectiveFrom": "2023-06-16",
+      "effectiveTo": null,
+      "contractMultiplier": 20.0,
+      "quoteUnit": "元（人民币）/吨",
+      "evidenceId": "SHFE_AO_OFFICIAL_SPEC"
+    },
+    "SHFE.BR": {
+      "effectiveFrom": "2023-07-26",
+      "effectiveTo": null,
+      "contractMultiplier": 5.0,
+      "quoteUnit": "元（人民币）/吨",
+      "evidenceId": "SHFE_BR_OFFICIAL_SPEC"
+    },
+    "SHFE.AD": {
+      "effectiveFrom": "2025-06-09",
+      "effectiveTo": null,
+      "contractMultiplier": 10.0,
+      "quoteUnit": "元（人民币）/吨",
+      "evidenceId": "SHFE_AD_OFFICIAL_SPEC"
+    },
+    "SHFE.OP": {
+      "effectiveFrom": "2025-09-08",
+      "effectiveTo": null,
+      "contractMultiplier": 40.0,
+      "quoteUnit": "元（人民币）/吨",
+      "evidenceId": "SHFE_OP_OFFICIAL_SPEC"
+    },
+    "INE.SC": {
+      "effectiveFrom": "2023-01-01",
+      "effectiveTo": null,
+      "contractMultiplier": 1000,
+      "quoteUnit": "CNY/barrel",
+      "evidenceId": "SHFE_HISTORICAL_SC_2022"
+    },
+    "INE.LU": {
+      "effectiveFrom": "2020-06-18",
+      "effectiveTo": null,
+      "contractMultiplier": 10.0,
+      "quoteUnit": "元（人民币）/吨（交易报价为不含税价格）",
+      "evidenceId": "INE_LU_OFFICIAL_SPEC"
+    },
+    "INE.NR": {
+      "effectiveFrom": "2019-08-06",
+      "effectiveTo": null,
+      "contractMultiplier": 10.0,
+      "quoteUnit": "元（人民币）/吨（交易报价为不含税价格）",
+      "evidenceId": "INE_NR_OFFICIAL_SPEC"
+    },
+    "INE.BC": {
+      "effectiveFrom": "2020-11-14",
+      "effectiveTo": null,
+      "contractMultiplier": 5.0,
+      "quoteUnit": "元（人民币）/吨（交易报价为不含税价格）",
+      "evidenceId": "INE_BC_OFFICIAL_SPEC"
+    },
+    "INE.EC": {
+      "effectiveFrom": "2023-08-17",
+      "effectiveTo": null,
+      "contractMultiplier": 50.0,
+      "quoteUnit": "指数点",
+      "evidenceId": "INE_EC_OFFICIAL_SPEC"
+    },
+    "CZCE.CF": [
+      {
+        "effectiveFrom": "2023-01-01",
+        "effectiveTo": "2025-12-31",
+        "contractMultiplier": 5,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "CZCE_202212_HISTORICAL_UNITS"
+      },
+      {
+        "effectiveFrom": "2026-01-01",
+        "effectiveTo": null,
+        "contractMultiplier": 5,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "CZCE_202512"
+      }
+    ],
+    "CZCE.CJ": [
+      {
+        "effectiveFrom": "2023-01-01",
+        "effectiveTo": "2025-12-31",
+        "contractMultiplier": 5,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "CZCE_202212_HISTORICAL_UNITS"
+      },
+      {
+        "effectiveFrom": "2026-01-01",
+        "effectiveTo": null,
+        "contractMultiplier": 5,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "CZCE_202512"
+      }
+    ],
+    "CZCE.CY": [
+      {
+        "effectiveFrom": "2023-01-01",
+        "effectiveTo": "2025-12-31",
+        "contractMultiplier": 5,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "CZCE_202212_HISTORICAL_UNITS"
+      },
+      {
+        "effectiveFrom": "2026-01-01",
+        "effectiveTo": null,
+        "contractMultiplier": 5,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "CZCE_202512"
+      }
+    ],
+    "CZCE.PF": [
+      {
+        "effectiveFrom": "2023-01-01",
+        "effectiveTo": "2025-12-31",
+        "contractMultiplier": 5,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "CZCE_202212_HISTORICAL_UNITS"
+      },
+      {
+        "effectiveFrom": "2026-01-01",
+        "effectiveTo": null,
+        "contractMultiplier": 5,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "CZCE_202512"
+      }
+    ],
+    "CZCE.PK": [
+      {
+        "effectiveFrom": "2023-01-01",
+        "effectiveTo": "2025-12-31",
+        "contractMultiplier": 5,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "CZCE_202212_HISTORICAL_UNITS"
+      },
+      {
+        "effectiveFrom": "2026-01-01",
+        "effectiveTo": null,
+        "contractMultiplier": 5,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "CZCE_202512"
+      }
+    ],
+    "CZCE.PX": [
+      {
+        "effectiveFrom": "2023-09-15",
+        "effectiveTo": "2025-12-31",
+        "contractMultiplier": 5,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "CZCE_202309_NEW_PRODUCT_UNITS"
+      },
+      {
+        "effectiveFrom": "2026-01-01",
+        "effectiveTo": null,
+        "contractMultiplier": 5,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "CZCE_202512"
+      }
+    ],
+    "CZCE.SF": [
+      {
+        "effectiveFrom": "2023-01-01",
+        "effectiveTo": "2025-12-31",
+        "contractMultiplier": 5,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "CZCE_202212_HISTORICAL_UNITS"
+      },
+      {
+        "effectiveFrom": "2026-01-01",
+        "effectiveTo": null,
+        "contractMultiplier": 5,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "CZCE_202512"
+      }
+    ],
+    "CZCE.SM": [
+      {
+        "effectiveFrom": "2023-01-01",
+        "effectiveTo": "2025-12-31",
+        "contractMultiplier": 5,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "CZCE_202212_HISTORICAL_UNITS"
+      },
+      {
+        "effectiveFrom": "2026-01-01",
+        "effectiveTo": null,
+        "contractMultiplier": 5,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "CZCE_202512"
+      }
+    ],
+    "CZCE.TA": [
+      {
+        "effectiveFrom": "2023-01-01",
+        "effectiveTo": "2025-12-31",
+        "contractMultiplier": 5,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "CZCE_202212_HISTORICAL_UNITS"
+      },
+      {
+        "effectiveFrom": "2026-01-01",
+        "effectiveTo": null,
+        "contractMultiplier": 5,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "CZCE_202512"
+      }
+    ],
+    "CZCE.AP": [
+      {
+        "effectiveFrom": "2023-01-01",
+        "effectiveTo": "2025-12-31",
+        "contractMultiplier": 10,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "CZCE_202212_HISTORICAL_UNITS"
+      },
+      {
+        "effectiveFrom": "2026-01-01",
+        "effectiveTo": null,
+        "contractMultiplier": 10,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "CZCE_202512"
+      }
+    ],
+    "CZCE.MA": [
+      {
+        "effectiveFrom": "2023-01-01",
+        "effectiveTo": "2025-12-31",
+        "contractMultiplier": 10,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "CZCE_202212_HISTORICAL_UNITS"
+      },
+      {
+        "effectiveFrom": "2026-01-01",
+        "effectiveTo": null,
+        "contractMultiplier": 10,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "CZCE_202512"
+      }
+    ],
+    "CZCE.OI": [
+      {
+        "effectiveFrom": "2023-01-01",
+        "effectiveTo": "2025-12-31",
+        "contractMultiplier": 10,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "CZCE_202212_HISTORICAL_UNITS"
+      },
+      {
+        "effectiveFrom": "2026-01-01",
+        "effectiveTo": null,
+        "contractMultiplier": 10,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "CZCE_202512"
+      }
+    ],
+    "CZCE.RM": [
+      {
+        "effectiveFrom": "2023-01-01",
+        "effectiveTo": "2025-12-31",
+        "contractMultiplier": 10,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "CZCE_202212_HISTORICAL_UNITS"
+      },
+      {
+        "effectiveFrom": "2026-01-01",
+        "effectiveTo": null,
+        "contractMultiplier": 10,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "CZCE_202512"
+      }
+    ],
+    "CZCE.RS": [
+      {
+        "effectiveFrom": "2023-01-01",
+        "effectiveTo": "2025-12-31",
+        "contractMultiplier": 10,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "CZCE_202212_HISTORICAL_UNITS"
+      },
+      {
+        "effectiveFrom": "2026-01-01",
+        "effectiveTo": null,
+        "contractMultiplier": 10,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "CZCE_202512"
+      }
+    ],
+    "CZCE.SR": [
+      {
+        "effectiveFrom": "2023-01-01",
+        "effectiveTo": "2025-12-31",
+        "contractMultiplier": 10,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "CZCE_202212_HISTORICAL_UNITS"
+      },
+      {
+        "effectiveFrom": "2026-01-01",
+        "effectiveTo": null,
+        "contractMultiplier": 10,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "CZCE_202512"
+      }
+    ],
+    "CZCE.PR": [
+      {
+        "effectiveFrom": "2024-08-30",
+        "effectiveTo": "2025-12-31",
+        "contractMultiplier": 15,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "CZCE_202408_PR_UNITS"
+      },
+      {
+        "effectiveFrom": "2026-01-01",
+        "effectiveTo": null,
+        "contractMultiplier": 15,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "CZCE_202512"
+      }
+    ],
+    "CZCE.FG": [
+      {
+        "effectiveFrom": "2023-01-01",
+        "effectiveTo": "2025-12-31",
+        "contractMultiplier": 20,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "CZCE_202212_HISTORICAL_UNITS"
+      },
+      {
+        "effectiveFrom": "2026-01-01",
+        "effectiveTo": null,
+        "contractMultiplier": 20,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "CZCE_202512"
+      }
+    ],
+    "CZCE.PL": [
+      {
+        "effectiveFrom": "2025-07-22",
+        "effectiveTo": "2025-12-31",
+        "contractMultiplier": 20,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "CZCE_202507_PL_UNITS"
+      },
+      {
+        "effectiveFrom": "2026-01-01",
+        "effectiveTo": null,
+        "contractMultiplier": 20,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "CZCE_202512"
+      }
+    ],
+    "CZCE.SA": [
+      {
+        "effectiveFrom": "2023-01-01",
+        "effectiveTo": "2025-12-31",
+        "contractMultiplier": 20,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "CZCE_202212_HISTORICAL_UNITS"
+      },
+      {
+        "effectiveFrom": "2026-01-01",
+        "effectiveTo": null,
+        "contractMultiplier": 20,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "CZCE_202512"
+      }
+    ],
+    "CZCE.UR": [
+      {
+        "effectiveFrom": "2023-01-01",
+        "effectiveTo": "2025-12-31",
+        "contractMultiplier": 20,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "CZCE_202212_HISTORICAL_UNITS"
+      },
+      {
+        "effectiveFrom": "2026-01-01",
+        "effectiveTo": null,
+        "contractMultiplier": 20,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "CZCE_202512"
+      }
+    ],
+    "CZCE.SH": [
+      {
+        "effectiveFrom": "2023-09-15",
+        "effectiveTo": "2025-12-31",
+        "contractMultiplier": 30,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "CZCE_202309_NEW_PRODUCT_UNITS"
+      },
+      {
+        "effectiveFrom": "2026-01-01",
+        "effectiveTo": null,
+        "contractMultiplier": 30,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "CZCE_202512"
+      }
+    ],
+    "CZCE.ZC": [
+      {
+        "effectiveFrom": "2023-01-01",
+        "effectiveTo": "2025-12-31",
+        "contractMultiplier": 100,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "CZCE_202212_HISTORICAL_UNITS"
+      },
+      {
+        "effectiveFrom": "2026-01-01",
+        "effectiveTo": null,
+        "contractMultiplier": 100,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "CZCE_202512"
+      }
+    ],
+    "DCE.A": [
+      {
+        "effectiveFrom": "2023-01-01",
+        "effectiveTo": "2025-09-23",
+        "contractMultiplier": 10,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "DCE_MULTIPLIER_TABLE_201611",
+        "supplementalEvidenceIds": [
+          "DCE_QUOTE_UNITS_202206"
+        ]
+      },
+      {
+        "effectiveFrom": "2025-09-24",
+        "effectiveTo": null,
+        "contractMultiplier": 10,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "DCE_CONTRACT_INFO_20261003"
+      }
+    ],
+    "DCE.B": [
+      {
+        "effectiveFrom": "2023-01-01",
+        "effectiveTo": "2025-09-23",
+        "contractMultiplier": 10,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "DCE_B_UNDERLYING_UNIT_20220805",
+        "supplementalEvidenceIds": []
+      },
+      {
+        "effectiveFrom": "2025-09-24",
+        "effectiveTo": null,
+        "contractMultiplier": 10,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "DCE_CONTRACT_INFO_20261003"
+      }
+    ],
+    "DCE.BB": [
+      {
+        "effectiveFrom": "2023-01-01",
+        "effectiveTo": "2025-09-23",
+        "contractMultiplier": 500,
+        "quoteUnit": "CNY/sheet",
+        "evidenceId": "DCE_MULTIPLIER_TABLE_201611",
+        "supplementalEvidenceIds": [
+          "DCE_QUOTE_UNITS_202206"
+        ]
+      },
+      {
+        "effectiveFrom": "2025-09-24",
+        "effectiveTo": null,
+        "contractMultiplier": 500,
+        "quoteUnit": "CNY/sheet",
+        "evidenceId": "DCE_CONTRACT_INFO_20261003"
+      }
+    ],
+    "DCE.BZ": [
+      {
+        "effectiveFrom": "2025-07-08",
+        "effectiveTo": "2025-09-23",
+        "contractMultiplier": 30,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "DCE_BZ_SPEC_20250627",
+        "supplementalEvidenceIds": [],
+        "listingNoticeEvidenceId": "DCE_BZ_LISTING_20250627"
+      },
+      {
+        "effectiveFrom": "2025-09-24",
+        "effectiveTo": null,
+        "contractMultiplier": 30,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "DCE_CONTRACT_INFO_20261003"
+      }
+    ],
+    "DCE.C": [
+      {
+        "effectiveFrom": "2023-01-01",
+        "effectiveTo": "2025-09-23",
+        "contractMultiplier": 10,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "DCE_MULTIPLIER_TABLE_201611",
+        "supplementalEvidenceIds": [
+          "DCE_QUOTE_UNITS_202206"
+        ]
+      },
+      {
+        "effectiveFrom": "2025-09-24",
+        "effectiveTo": null,
+        "contractMultiplier": 10,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "DCE_CONTRACT_INFO_20261003"
+      }
+    ],
+    "DCE.CS": [
+      {
+        "effectiveFrom": "2023-01-01",
+        "effectiveTo": "2025-09-23",
+        "contractMultiplier": 10,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "DCE_MULTIPLIER_TABLE_201611",
+        "supplementalEvidenceIds": [
+          "DCE_QUOTE_UNITS_202206"
+        ]
+      },
+      {
+        "effectiveFrom": "2025-09-24",
+        "effectiveTo": null,
+        "contractMultiplier": 10,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "DCE_CONTRACT_INFO_20261003"
+      }
+    ],
+    "DCE.EB": [
+      {
+        "effectiveFrom": "2023-01-01",
+        "effectiveTo": "2025-09-23",
+        "contractMultiplier": 5,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "DCE_EB_UNIT_202201",
+        "supplementalEvidenceIds": [
+          "DCE_QUOTE_UNITS_202206"
+        ]
+      },
+      {
+        "effectiveFrom": "2025-09-24",
+        "effectiveTo": null,
+        "contractMultiplier": 5,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "DCE_CONTRACT_INFO_20261003"
+      }
+    ],
+    "DCE.EG": [
+      {
+        "effectiveFrom": "2023-01-01",
+        "effectiveTo": "2025-09-23",
+        "contractMultiplier": 10,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "DCE_EG_FINAL_20181205",
+        "supplementalEvidenceIds": []
+      },
+      {
+        "effectiveFrom": "2025-09-24",
+        "effectiveTo": null,
+        "contractMultiplier": 10,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "DCE_CONTRACT_INFO_20261003"
+      }
+    ],
+    "DCE.FB": [
+      {
+        "effectiveFrom": "2023-01-01",
+        "effectiveTo": "2025-09-23",
+        "contractMultiplier": 10,
+        "quoteUnit": "CNY/cubic-metre",
+        "evidenceId": "DCE_FB_AMEND_20191014",
+        "supplementalEvidenceIds": []
+      },
+      {
+        "effectiveFrom": "2025-09-24",
+        "effectiveTo": null,
+        "contractMultiplier": 10,
+        "quoteUnit": "CNY/cubic-metre",
+        "evidenceId": "DCE_CONTRACT_INFO_20261003"
+      }
+    ],
+    "DCE.I": [
+      {
+        "effectiveFrom": "2023-01-01",
+        "effectiveTo": "2025-09-23",
+        "contractMultiplier": 100,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "DCE_MULTIPLIER_TABLE_201611",
+        "supplementalEvidenceIds": [
+          "DCE_QUOTE_UNITS_202206"
+        ]
+      },
+      {
+        "effectiveFrom": "2025-09-24",
+        "effectiveTo": null,
+        "contractMultiplier": 100,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "DCE_CONTRACT_INFO_20261003"
+      }
+    ],
+    "DCE.J": [
+      {
+        "effectiveFrom": "2023-01-01",
+        "effectiveTo": "2025-09-23",
+        "contractMultiplier": 100,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "DCE_MULTIPLIER_TABLE_201611",
+        "supplementalEvidenceIds": [
+          "DCE_QUOTE_UNITS_202206"
+        ]
+      },
+      {
+        "effectiveFrom": "2025-09-24",
+        "effectiveTo": null,
+        "contractMultiplier": 100,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "DCE_CONTRACT_INFO_20261003"
+      }
+    ],
+    "DCE.JD": [
+      {
+        "effectiveFrom": "2023-01-01",
+        "effectiveTo": "2025-09-23",
+        "contractMultiplier": 10,
+        "quoteUnit": "CNY/500kg",
+        "evidenceId": "DCE_MULTIPLIER_TABLE_201611",
+        "supplementalEvidenceIds": [
+          "DCE_QUOTE_UNITS_202206"
+        ]
+      },
+      {
+        "effectiveFrom": "2025-09-24",
+        "effectiveTo": null,
+        "contractMultiplier": 10,
+        "quoteUnit": "CNY/500kg",
+        "evidenceId": "DCE_CONTRACT_INFO_20261003"
+      }
+    ],
+    "DCE.JM": [
+      {
+        "effectiveFrom": "2023-01-01",
+        "effectiveTo": "2025-09-23",
+        "contractMultiplier": 60,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "DCE_MULTIPLIER_TABLE_201611",
+        "supplementalEvidenceIds": [
+          "DCE_QUOTE_UNITS_202206"
+        ]
+      },
+      {
+        "effectiveFrom": "2025-09-24",
+        "effectiveTo": null,
+        "contractMultiplier": 60,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "DCE_CONTRACT_INFO_20261003"
+      }
+    ],
+    "DCE.L": [
+      {
+        "effectiveFrom": "2023-01-01",
+        "effectiveTo": "2025-09-23",
+        "contractMultiplier": 5,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "DCE_MULTIPLIER_TABLE_201611",
+        "supplementalEvidenceIds": [
+          "DCE_QUOTE_UNITS_202206"
+        ]
+      },
+      {
+        "effectiveFrom": "2025-09-24",
+        "effectiveTo": null,
+        "contractMultiplier": 5,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "DCE_CONTRACT_INFO_20261003"
+      }
+    ],
+    "DCE.LG": [
+      {
+        "effectiveFrom": "2024-11-18",
+        "effectiveTo": "2025-09-23",
+        "contractMultiplier": 90,
+        "quoteUnit": "CNY/cubic-metre",
+        "evidenceId": "DCE_LG_SPEC_20241025",
+        "supplementalEvidenceIds": [],
+        "listingNoticeEvidenceId": "DCE_LG_LISTING_20241028"
+      },
+      {
+        "effectiveFrom": "2025-09-24",
+        "effectiveTo": null,
+        "contractMultiplier": 90,
+        "quoteUnit": "CNY/cubic-metre",
+        "evidenceId": "DCE_CONTRACT_INFO_20261003"
+      }
+    ],
+    "DCE.LH": [
+      {
+        "effectiveFrom": "2023-01-01",
+        "effectiveTo": "2025-09-23",
+        "contractMultiplier": 16,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "DCE_LH_SPEC_20201231",
+        "supplementalEvidenceIds": []
+      },
+      {
+        "effectiveFrom": "2025-09-24",
+        "effectiveTo": null,
+        "contractMultiplier": 16,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "DCE_CONTRACT_INFO_20261003"
+      }
+    ],
+    "DCE.M": [
+      {
+        "effectiveFrom": "2023-01-01",
+        "effectiveTo": "2025-09-23",
+        "contractMultiplier": 10,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "DCE_MULTIPLIER_TABLE_201611",
+        "supplementalEvidenceIds": [
+          "DCE_QUOTE_UNITS_202206"
+        ]
+      },
+      {
+        "effectiveFrom": "2025-09-24",
+        "effectiveTo": null,
+        "contractMultiplier": 10,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "DCE_CONTRACT_INFO_20261003"
+      }
+    ],
+    "DCE.P": [
+      {
+        "effectiveFrom": "2023-01-01",
+        "effectiveTo": "2025-09-23",
+        "contractMultiplier": 10,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "DCE_MULTIPLIER_TABLE_201611",
+        "supplementalEvidenceIds": [
+          "DCE_QUOTE_UNITS_202206"
+        ]
+      },
+      {
+        "effectiveFrom": "2025-09-24",
+        "effectiveTo": null,
+        "contractMultiplier": 10,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "DCE_CONTRACT_INFO_20261003"
+      }
+    ],
+    "DCE.PG": [
+      {
+        "effectiveFrom": "2023-01-01",
+        "effectiveTo": "2025-09-23",
+        "contractMultiplier": 20,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "DCE_PG_SPEC_20200320",
+        "supplementalEvidenceIds": []
+      },
+      {
+        "effectiveFrom": "2025-09-24",
+        "effectiveTo": null,
+        "contractMultiplier": 20,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "DCE_CONTRACT_INFO_20261003"
+      }
+    ],
+    "DCE.PP": [
+      {
+        "effectiveFrom": "2023-01-01",
+        "effectiveTo": "2025-09-23",
+        "contractMultiplier": 5,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "DCE_MULTIPLIER_TABLE_201611",
+        "supplementalEvidenceIds": [
+          "DCE_QUOTE_UNITS_202206"
+        ]
+      },
+      {
+        "effectiveFrom": "2025-09-24",
+        "effectiveTo": null,
+        "contractMultiplier": 5,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "DCE_CONTRACT_INFO_20261003"
+      }
+    ],
+    "DCE.RR": [
+      {
+        "effectiveFrom": "2023-01-01",
+        "effectiveTo": "2025-09-23",
+        "contractMultiplier": 10,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "DCE_RR_RULES_20190813",
+        "supplementalEvidenceIds": []
+      },
+      {
+        "effectiveFrom": "2025-09-24",
+        "effectiveTo": null,
+        "contractMultiplier": 10,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "DCE_CONTRACT_INFO_20261003"
+      }
+    ],
+    "DCE.V": [
+      {
+        "effectiveFrom": "2023-01-01",
+        "effectiveTo": "2025-09-23",
+        "contractMultiplier": 5,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "DCE_MULTIPLIER_TABLE_201611",
+        "supplementalEvidenceIds": [
+          "DCE_QUOTE_UNITS_202206"
+        ]
+      },
+      {
+        "effectiveFrom": "2025-09-24",
+        "effectiveTo": null,
+        "contractMultiplier": 5,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "DCE_CONTRACT_INFO_20261003"
+      }
+    ],
+    "DCE.Y": [
+      {
+        "effectiveFrom": "2023-01-01",
+        "effectiveTo": "2025-09-23",
+        "contractMultiplier": 10,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "DCE_MULTIPLIER_TABLE_201611",
+        "supplementalEvidenceIds": [
+          "DCE_QUOTE_UNITS_202206"
+        ]
+      },
+      {
+        "effectiveFrom": "2025-09-24",
+        "effectiveTo": null,
+        "contractMultiplier": 10,
+        "quoteUnit": "CNY/ton",
+        "evidenceId": "DCE_CONTRACT_INFO_20261003"
+      }
+    ],
+    "GFEX.LC": {
+      "effectiveFrom": "2023-07-21",
+      "effectiveTo": null,
+      "contractMultiplier": 1,
+      "quoteUnit": "CNY/ton",
+      "evidenceId": "GFEX_LC_HISTORICAL_SPEC"
+    },
+    "GFEX.PD": {
+      "effectiveFrom": "2025-11-27",
+      "effectiveTo": null,
+      "contractMultiplier": 1000,
+      "quoteUnit": "CNY/gram",
+      "evidenceId": "GFEX_CONTRACT_INFO_20261003"
+    },
+    "GFEX.PS": {
+      "effectiveFrom": "2024-12-26",
+      "effectiveTo": null,
+      "contractMultiplier": 3,
+      "quoteUnit": "CNY/ton",
+      "evidenceId": "GFEX_PS_SPEC_20241213"
+    },
+    "GFEX.PT": {
+      "effectiveFrom": "2025-11-27",
+      "effectiveTo": null,
+      "contractMultiplier": 1000,
+      "quoteUnit": "CNY/gram",
+      "evidenceId": "GFEX_CONTRACT_INFO_20261003"
+    },
+    "GFEX.SI": {
+      "effectiveFrom": "2022-12-22",
+      "effectiveTo": null,
+      "contractMultiplier": 5,
+      "quoteUnit": "CNY/ton",
+      "evidenceId": "GFEX_SI_HISTORICAL_SPEC"
+    },
+    "DCE.L-F": {
+      "effectiveFrom": "2025-10-29",
+      "effectiveTo": null,
+      "contractMultiplier": 5,
+      "quoteUnit": "CNY/ton",
+      "evidenceId": "DCE_L_F_SPEC_202507",
+      "lastTradingDayRule": "LAST_TRADING_DAY_OF_PREVIOUS_MONTH",
+      "listingNoticeEvidenceId": "DCE_MONTH_AVERAGE_LISTING_20251020"
+    },
+    "DCE.V-F": {
+      "effectiveFrom": "2025-10-29",
+      "effectiveTo": null,
+      "contractMultiplier": 5,
+      "quoteUnit": "CNY/ton",
+      "evidenceId": "DCE_V_F_SPEC_202507",
+      "lastTradingDayRule": "LAST_TRADING_DAY_OF_PREVIOUS_MONTH",
+      "listingNoticeEvidenceId": "DCE_MONTH_AVERAGE_LISTING_20251020"
+    },
+    "DCE.PP-F": {
+      "effectiveFrom": "2025-10-29",
+      "effectiveTo": null,
+      "contractMultiplier": 5,
+      "quoteUnit": "CNY/ton",
+      "evidenceId": "DCE_PP_F_SPEC_202507",
+      "lastTradingDayRule": "LAST_TRADING_DAY_OF_PREVIOUS_MONTH",
+      "listingNoticeEvidenceId": "DCE_MONTH_AVERAGE_LISTING_20251020"
+    },
+    "CZCE.JR": {
+      "effectiveFrom": "2023-01-01",
+      "effectiveTo": null,
+      "contractMultiplier": 20,
+      "quoteUnit": "CNY/ton",
+      "evidenceId": "CZCE_202212_HISTORICAL_UNITS"
+    },
+    "CZCE.LR": {
+      "effectiveFrom": "2023-01-01",
+      "effectiveTo": null,
+      "contractMultiplier": 20,
+      "quoteUnit": "CNY/ton",
+      "evidenceId": "CZCE_202212_HISTORICAL_UNITS"
+    },
+    "CZCE.RI": {
+      "effectiveFrom": "2023-01-01",
+      "effectiveTo": null,
+      "contractMultiplier": 20,
+      "quoteUnit": "CNY/ton",
+      "evidenceId": "CZCE_202212_HISTORICAL_UNITS"
+    },
+    "CZCE.WH": {
+      "effectiveFrom": "2023-01-01",
+      "effectiveTo": null,
+      "contractMultiplier": 20,
+      "quoteUnit": "CNY/ton",
+      "evidenceId": "CZCE_202212_HISTORICAL_UNITS"
+    },
+    "CZCE.PM": {
+      "effectiveFrom": "2023-01-01",
+      "effectiveTo": null,
+      "contractMultiplier": 50,
+      "quoteUnit": "CNY/ton",
+      "evidenceId": "CZCE_202212_HISTORICAL_UNITS"
+    }
   }
 }

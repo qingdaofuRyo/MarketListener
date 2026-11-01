@@ -21,11 +21,12 @@ import LongShortHeatHistoryChart from "./LongShortHeatHistoryChart.vue";
 const props = withDefaults(defineProps<{
   payload: LongShortHeatResponse;
   metricMode?: "variety-deposit" | "contract-turnover";
-}>(), { metricMode: "variety-deposit" });
+  showNotes?: boolean;
+}>(), { metricMode: "variety-deposit", showNotes: true });
 const isContractTurnover = computed(() => props.metricMode === "contract-turnover");
-const heatTitle = computed(() => isContractTurnover.value ? "商品月份合约多空热度" : "多空热度");
+const heatTitle = computed(() => isContractTurnover.value ? "期货合约多空热度" : "多空热度");
 const heatDescription = computed(() => isContractTurnover.value
-  ? "商品月份合约按今收盘与上一有效交易日收盘比较（不含中金所金融期货）；成交额按官方公布值分入上涨/下跌合约，沉淀资金只显示整体估算。"
+  ? "官网期货合约按今日收盘对昨结算判定方向；成交额按官网公布值分配，沉淀资金单独估算。"
   : "品种数量广度与沉淀资金方向的最近 10 个交易日指数衰减结果");
 const countGaugeTitle = computed(() => isContractTurnover.value ? "合约数量多空热度" : "品种多空热度");
 const amountGaugeTitle = computed(() => isContractTurnover.value ? "成交额多空热度" : "资金多空热度");
@@ -159,9 +160,9 @@ const turnoverSummary = computed(() => {
     <header class="heat-header">
       <div>
         <h2>{{ heatTitle }}</h2>
-        <p>{{ heatDescription }}</p>
+        <p v-if="showNotes">{{ heatDescription }}</p>
       </div>
-      <div class="heat-meta">
+      <div v-if="showNotes" class="heat-meta">
         <el-tag v-if="currentPoint" size="small" effect="plain">{{ currentPoint.tradeDate }}</el-tag>
         <el-tag v-if="currentPoint?.isWarmup" size="small" type="warning" effect="plain">预热期</el-tag>
         <el-tag size="small" :type="qualityTagType()" effect="plain">{{ currentPoint?.dataQualityStatus || "质量未知" }}</el-tag>
@@ -199,6 +200,7 @@ const turnoverSummary = computed(() => {
     </div>
 
     <HeatWeightControl
+      :show-notes="showNotes"
       :fund-weight="fundWeight"
       :default-fund-weight="defaultFundWeight"
       :min="userWeight.min"
@@ -212,7 +214,7 @@ const turnoverSummary = computed(() => {
       @reset="reset"
     />
 
-    <div class="heat-summary" aria-live="polite">
+    <div v-if="showNotes" class="heat-summary" aria-live="polite">
       <span>{{ divergenceText }}</span>
       <span>{{ coverageText }}</span>
       <span v-if="currentPoint">{{ isContractTurnover ? '有效月份合约' : '有效品种' }}：{{ currentPoint.upVarietyCount + currentPoint.downVarietyCount }} · 平盘：{{ currentPoint.flatVarietyCount }}</span>
@@ -221,7 +223,7 @@ const turnoverSummary = computed(() => {
       <span v-if="depositSummary">{{ depositSummary }}</span>
     </div>
     <el-alert
-      v-if="isContractTurnover && payload.limitations?.length"
+      v-if="showNotes && isContractTurnover && payload.limitations?.length"
       :title="payload.limitations[0]"
       type="warning"
       :closable="false"
@@ -230,7 +232,7 @@ const turnoverSummary = computed(() => {
 
     <section class="history-section">
       <header class="history-header">
-        <div><h3>{{ isContractTurnover ? '合约数量与成交额热度趋势' : '多空热度历史趋势' }}</h3><p>各点均为截至该交易日的 10 日加权结果，0 轴表示多空均衡。</p></div>
+        <div><h3>{{ isContractTurnover ? '合约数量与成交额热度趋势' : '多空热度历史趋势' }}</h3><p v-if="showNotes">各点均为截至该交易日的 10 日加权结果，0 轴表示多空均衡。</p></div>
         <ChartRangeSelector v-model="range" />
       </header>
       <LongShortHeatHistoryChart

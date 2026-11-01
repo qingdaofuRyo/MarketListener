@@ -12,7 +12,7 @@
 powershell -ExecutionPolicy Bypass -File scripts\verify.ps1
 ```
 
-脚本显式验证并使用 `C:\Users\qingd\.jdks\jbr-21.0.11`（JDK 21.0.11）。Android 子命令开始前自动选择空闲盘符，将仓库临时映射到英文根路径；结束或失败时在 `finally` 中释放映射并恢复进程级 `JAVA_HOME`/`PATH`。任一外部子命令非零均会使脚本以非零退出。质量检查前，脚本还会离线比对已安装版本和 `desktop/requirements.lock` 中全部精确条目。
+脚本显式验证并使用 `C:\Users\<user>\.jdks\jbr-21.0.11`（JDK 21.0.11）。Android 子命令开始前自动选择空闲盘符，将仓库临时映射到英文根路径；结束或失败时在 `finally` 中释放映射并恢复进程级 `JAVA_HOME`/`PATH`。任一外部子命令非零均会使脚本以非零退出。质量检查前，脚本还会离线比对已安装版本和 `desktop/requirements.lock` 中全部精确条目。
 
 Python 开发依赖新增精确锁定的 `ruff==0.12.11`，其直接声明、完整锁文件和实际安装版本已一致。Ruff 的规则配置覆盖生产和测试目录；历史测试中的紧凑写法仅在 `tests/**` 精确忽略 `E701`、`E702` 与 `F401`，生产目录没有这些豁免。
 
@@ -55,7 +55,7 @@ Python 开发依赖新增精确锁定的 `ruff==0.12.11`，其直接声明、完
 
 ## 风险与后续
 
-- `C:\Users\qingd\.jdks\jbr-21.0.11` 是当前环境中该脚本指定的 JDK 21；缺失时脚本会明确失败，不能以 Android Studio 的 JBR 25 替代。
+- `C:\Users\<user>\.jdks\jbr-21.0.11` 是当前环境中该脚本指定的 JDK 21；缺失时脚本会明确失败，不能以 Android Studio 的 JBR 25 替代。
 - Android Gradle 输出仍有既有的 `android.overridePathCheck=true` experimental 警告；本任务未修改该配置，且 `lintDebug`、JVM 单测和 APK 构建均真实成功。
 - 实现完成后仅进入 `REVIEW`，等待全新独立审查任务；本实现任务不自行审查、验收或启动 FULL-100。
 

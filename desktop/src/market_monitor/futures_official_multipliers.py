@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 
 
 REGISTRY_PATH = Path(__file__).with_name("config") / "futures_official_multipliers.json"
-_KEY = re.compile(r"^(SHFE|INE|DCE|CZCE|GFEX|CFFEX)\.([A-Z]+)$")
+_KEY = re.compile(r"^(SHFE|INE|DCE|CZCE|GFEX|CFFEX)\.([A-Z]+(?:-F)?)$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _DOMAINS = {
     "SHFE": {"shfe.com.cn"}, "INE": {"shfe.com.cn", "ine.cn"},
@@ -33,6 +33,7 @@ class OfficialMultiplier:
     source_url: str
     retrieved_at: str
     payload_sha256: str
+    last_trading_day_rule: str | None = None
 
 
 class OfficialMultiplierRegistry:
@@ -103,9 +104,12 @@ def load_official_multiplier_registry(path: Path | None = None) -> OfficialMulti
             quote_unit = str(raw.get("quoteUnit") or "")
             if not quote_unit:
                 raise ValueError(f"missing official quote unit: {key}")
+            last_trading_day_rule = raw.get("lastTradingDayRule")
+            if last_trading_day_rule not in (None, "LAST_TRADING_DAY_OF_PREVIOUS_MONTH"):
+                raise ValueError(f"unsupported official last trading day rule: {key}")
             output.append(OfficialMultiplier(
                 exchange, product_code, effective_from, effective_to, multiplier,
-                quote_unit, url, retrieved_at, digest,
+                quote_unit, url, retrieved_at, digest, last_trading_day_rule,
             ))
         ordered = sorted(output, key=lambda item: item.effective_from)
         for previous, current in zip(ordered, ordered[1:]):

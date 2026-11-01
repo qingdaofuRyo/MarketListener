@@ -274,6 +274,9 @@ def _normalise_exchange(value: str) -> str:
 
 
 def _normalise_contract(value: Any) -> str | None:
+    average = re.fullmatch(r"(L|V|PP)(?:-F)?(\d{4})F?", str(value).strip().upper())
+    if average and ("-F" in str(value).upper() or str(value).upper().endswith("F")):
+        return f"{average.group(1)}-F{average.group(2)}"
     contract = re.sub(r"[^A-Z0-9]", "", str(value).upper())
     if not contract or not re.search(r"[A-Z]", contract):
         return None
@@ -281,6 +284,9 @@ def _normalise_contract(value: Any) -> str | None:
 
 
 def _product_code(contract: str) -> str:
+    average = re.fullmatch(r"(L|V|PP)-F\d{4}", contract)
+    if average:
+        return average.group(1) + "-F"
     match = re.match(r"[A-Z]+", contract)
     if match is None:  # guarded by _normalise_contract
         raise ValueError(f"contract has no product code: {contract}")

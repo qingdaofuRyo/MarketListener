@@ -13,6 +13,8 @@ export interface Palette {
   surfaceElevated: string;
   surfaceSelected: string;
   divider: string;
+  shadowSoft: string;
+  shadowRaised: string;
   textPrimary: string;
   textSecondary: string;
   textDisabled: string;
@@ -83,6 +85,8 @@ export const palettes: Record<EffectiveTheme, Palette> = {
     surfaceElevated: "#151c27",
     surfaceSelected: "#1b2534",
     divider: "#232d3d",
+    shadowSoft: "rgba(0, 0, 0, 0.18)",
+    shadowRaised: "rgba(0, 0, 0, 0.42)",
     textPrimary: "#e8edf5",
     textSecondary: "#929eaf",
     textDisabled: "#586273",
@@ -118,6 +122,8 @@ export const palettes: Record<EffectiveTheme, Palette> = {
     surfaceElevated: "#f0f3f8",
     surfaceSelected: "#e8eef8",
     divider: "#e1e6ee",
+    shadowSoft: "rgba(17, 21, 28, 0.08)",
+    shadowRaised: "rgba(17, 21, 28, 0.22)",
     textPrimary: "#11151c",
     textSecondary: "#687386",
     textDisabled: "#9aa5b4",

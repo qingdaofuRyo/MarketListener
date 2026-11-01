@@ -13,8 +13,8 @@ from market_monitor.macro_series import (
 
 def test_default_macro_series_have_complete_registration():
     index = macro_series_index()
-    assert len(DEFAULT_MACRO_SERIES) == 28
-    assert len(index) == 28
+    assert len(DEFAULT_MACRO_SERIES) == 29
+    assert len(index) == 29
     required = {
         "M0_MONEY_SUPPLY",
         "CN_IMPORT_USD_YOY",
@@ -35,6 +35,7 @@ def test_default_macro_series_have_complete_registration():
         "PMI_CAIXIN_SERVICES",
         "PMI_SERVICES",
         "US_NONFARM_PAYROLLS_SA",
+        "US_NONFARM_BLS_LATEST",
         "US_IMPORTS_SA",
         "US_CORE_PCE_QOQ_SAAR_FINAL",
         "CN10Y_YIELD",
@@ -67,6 +68,12 @@ def test_normalise_macro_point_rejects_unknown_or_invalid_values():
         normalise_macro_point("CPI", available_time="2026-08-01", value=1.0, quality_status="WATCH")
     with pytest.raises(ValueError, match="available_time"):
         normalise_macro_point("CPI", available_time="", value=1.0)
+
+
+@pytest.mark.parametrize("value", [None, "None", "2026-13", "2026-02-30", "2026-Q5", "0000-Q1"])
+def test_normalise_macro_point_rejects_invalid_observation_dates(value):
+    with pytest.raises(ValueError, match="available_time"):
+        normalise_macro_point("CPI", available_time=value, value=1.0)
 
 
 def test_normalise_macro_point_accepts_date_and_keeps_registered_fields():

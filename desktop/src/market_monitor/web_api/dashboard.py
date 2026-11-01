@@ -176,6 +176,8 @@ def _gold_metric_rows(
 
 
 def _inventory_groups(data_root: Path) -> tuple[set[str], set[str]]:
+    if not (Path(data_root) / "silver").is_dir():
+        return set(), set()
     inventory = load_inventory(data_root)
     market_ids: set[str] = set()
     futures_ids: set[str] = set()
@@ -615,6 +617,8 @@ def _heatmap_payload(data_root: Path, category: str, limit: int) -> dict[str, An
 
 @dashboard_router.get("/definitions")
 def dashboard_definitions(request: Request) -> dict[str, Any]:
+    from market_monitor.admin_boundary import INTERNAL_DASHBOARDS
+
     data_root = _resolve_data_root(request)
     availability = _availability(data_root)
     items = [
@@ -626,6 +630,9 @@ def dashboard_definitions(request: Request) -> dict[str, Any]:
             "description": spec["description"],
         }
         for spec in DASHBOARD_SPECS
+        if not (getattr(request.app.state, "customer_surface", False)
+                and not getattr(request.state, "internal_authorized", False)
+                and spec["id"] in INTERNAL_DASHBOARDS)
     ]
     return clean({"items": items})
 

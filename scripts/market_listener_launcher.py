@@ -26,6 +26,7 @@ from PIL import Image, ImageTk
 import pystray
 
 from market_listener_icon import render_icon
+from market_monitor.profile_gate import profile_write_gate
 
 
 APP_TITLE = "MarketListener 终端启动器"
@@ -78,9 +79,15 @@ OPERATION_NAMES = {
     "FUTURES_OFFICIAL_DAILY_UPDATE": "更新交易所期货日行情",
     "TDX_COVERAGE_CHECK": "检查通达信本地文件",
     "TDX_AFTERHOURS_DOWNLOAD": "下载通达信盘后数据",
+    "TDX_FINANCIAL_LAUNCH": "启动通达信金融终端",
+    "TDX_FINANCIAL_AUTO_DOWNLOAD": "自动下载金融终端盘后数据",
+    "TDX_FUTURES_LAUNCH": "启动通达信期货通",
+    "TDX_FUTURES_AUTO_DOWNLOAD": "自动下载期货通盘后数据",
     "TDX_LOCAL_IMPORT": "导入通达信本地数据",
     "FUTURES_HEAT_UPDATE": "更新期货热度",
     "FUTURES_STRUCTURE_UPDATE": "更新期货结构",
+    "EQUITY_DASHBOARD_UPDATE": "更新数据页市场指标",
+    "DISCLOSURES_UPDATE": "检索巨潮公告关键词",
 }
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 ACCESS_LINE = re.compile(r'^INFO:\s+\S+ - "(?:GET|HEAD|OPTIONS) [^\"]+ HTTP/[^\"]+" (\d{3})')
@@ -111,17 +118,18 @@ def load_settings(path: Path) -> LauncherSettings:
 
 
 def save_settings(path: Path, settings: LauncherSettings) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(".tmp")
-    temporary.write_text(
-        json.dumps({
-            "schema": SETTINGS_SCHEMA,
-            "silentStart": settings.silent_start,
-            "closeToTray": settings.close_to_tray,
-        }, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    temporary.replace(path)
+    with profile_write_gate(path.parent.parent):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(
+            json.dumps({
+                "schema": SETTINGS_SCHEMA,
+                "silentStart": settings.silent_start,
+                "closeToTray": settings.close_to_tray,
+            }, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        temporary.replace(path)
 
 
 def windows_startup_command(executable: Path) -> str:
@@ -268,12 +276,29 @@ def build_tdx_command(project_root: Path, terminal: str, *, download: bool) -> l
         raise ValueError(f"未知通达信终端：{terminal}")
     root = Path(project_root).resolve()
     python = root / "desktop" / ".venv" / "Scripts" / "python.exe"
+    starts = None
+    if download:
+        from market_monitor.tdx_gui_auto_refresh import batch_start_dates
+
+        starts = batch_start_dates(root / "data_control", terminal, datetime.now(timezone.utc))
+    if download and terminal == "financial":
+        from market_monitor.tdx_gui_auto_refresh import _is_x86_python
+
+        python = root / "data_control" / "tools" / "python311-x86" / "python.exe"
+        if not _is_x86_python(python):
+            raise FileNotFoundError(f"找不到金融终端的32位Python运行时：{python}")
     if not python.is_file():
         raise FileNotFoundError(f"找不到项目虚拟环境：{python}")
     command = [str(python), "-m", "market_monitor.tdx_download_ui"]
     command.extend(["--execute" if download else "--launch-only", "--terminal", terminal])
     if download:
+        from market_monitor.tdx_download_ui import FINANCIAL, FUTURES
+
+        if terminal == "financial":
+            command.append("--auto-login-saved")
         command.extend(["--state-dir", str(root / "data_control" / "state" / "tdx_download_ui")])
+        for batch in FINANCIAL if terminal == "financial" else FUTURES:
+            command.extend(["--batch-start", f"{batch.key}:{starts[batch.key].isoformat()}"])
     return command
 
 
@@ -454,7 +479,8 @@ class LauncherWindow:
         self.operation_poll_busy = False
         self.import_operation_id: str | None = None
         self.coverage_check_queued = False
-        self.tdx_action_busy = False
+        self.tdx_busy_terminals: set[str] = set()
+        self.tdx_import_after_download = False
         self.tdx_output_queue: SimpleQueue[tuple[str, object]] = SimpleQueue()
         self.tray_actions: SimpleQueue[tuple[str, str | None]] = SimpleQueue()
         self.tray_ready = threading.Event()
@@ -473,7 +499,7 @@ class LauncherWindow:
         ttk.Label(frame, text="MarketListener", font=("Microsoft YaHei UI", 18, "bold")).pack(anchor="w")
         ttk.Label(
             frame,
-            text="启动后自动更新非 F10 行情；通达信软件和盘后下载只在下方手动触发。",
+            text="服务启动时自动启动两款通达信终端，并按盘后时段检查下载；异常弹窗和数据覆盖仍单独核验。",
             font=("Microsoft YaHei UI", 10),
         ).pack(anchor="w", pady=(4, 10))
 
@@ -513,9 +539,10 @@ class LauncherWindow:
             row=2, column=0, columnspan=2, sticky="w", pady=(8, 0),
         )
 
-        tdx_frame = ttk.LabelFrame(frame, text="通达信盘后数据 · 先启动并手动登录，再下载", padding=10)
+        tdx_frame = ttk.LabelFrame(frame, text="通达信盘后数据 · 两款终端自动；也可手动检查", padding=10)
         tdx_frame.pack(fill="x", pady=(0, 10))
         self.tdx_buttons: list[ttk.Button] = []
+        self.tdx_buttons_by_terminal: dict[str, tuple[ttk.Button, ttk.Button]] = {}
         self.tdx_status: dict[str, tk.StringVar] = {}
         for row, (terminal, name) in enumerate(TERMINAL_NAMES.items()):
             ttk.Label(tdx_frame, text=name, width=17).grid(row=row, column=0, sticky="w", pady=3)
@@ -533,9 +560,10 @@ class LauncherWindow:
             ttk.Label(tdx_frame, textvariable=state, wraplength=310).grid(row=row, column=3, sticky="w")
             self.tdx_status[terminal] = state
             self.tdx_buttons.extend((start, download))
+            self.tdx_buttons_by_terminal[terminal] = (start, download)
         ttk.Label(
             tdx_frame,
-            text="登录需本人完成。若终端自绘菜单无法自动打开，请手动打开“盘后数据下载”窗口；程序会等待并继续。",
+            text="金融终端使用已保存模拟账户自动登录；两款软件可同时下载。界面完成后再核对原始文件和入库质量。",
             foreground="#666666", wraplength=790,
         ).grid(row=2, column=0, columnspan=4, sticky="w", pady=(6, 0))
 
@@ -648,10 +676,10 @@ class LauncherWindow:
         self.root.after(750, self._poll_logs)
 
     def run_tdx_action(self, terminal: str, *, download: bool) -> None:
-        if self.tdx_action_busy or terminal not in TERMINAL_NAMES:
+        if terminal not in TERMINAL_NAMES or terminal in self.tdx_busy_terminals:
             return
-        self.tdx_action_busy = True
-        for button in self.tdx_buttons:
+        self.tdx_busy_terminals.add(terminal)
+        for button in self.tdx_buttons_by_terminal[terminal]:
             button.configure(state="disabled")
         name = TERMINAL_NAMES[terminal]
         action = "下载日线和5分钟线" if download else "启动终端"
@@ -702,8 +730,8 @@ class LauncherWindow:
         self, terminal: str, download: bool, exit_code: int,
         report: dict[str, object], error: str | None,
     ) -> None:
-        self.tdx_action_busy = False
-        for button in self.tdx_buttons:
+        self.tdx_busy_terminals.discard(terminal)
+        for button in self.tdx_buttons_by_terminal[terminal]:
             button.configure(state="normal")
         status = str(report.get("status") or "UNKNOWN")
         if download:
@@ -718,7 +746,10 @@ class LauncherWindow:
         self.tdx_status[terminal].set(message)
         level = "success" if exit_code == 0 else "warning"
         self._append_event(level, f"{TERMINAL_NAMES[terminal]}：{message}")
-        if download and exit_code == 0 and report.get("status") == "UI_DONE_UNVERIFIED":
+        if download and exit_code == 0 and status == "UI_DONE_UNVERIFIED":
+            self.tdx_import_after_download = True
+        if not self.tdx_busy_terminals and self.tdx_import_after_download:
+            self.tdx_import_after_download = False
             self._queue_local_import()
 
     def _queue_local_import(self) -> None:

@@ -9,16 +9,17 @@ import math
 from typing import Any, Mapping, Sequence
 
 from .futures_rule_sync import RuleBook
+from .futures_official_daily_sources import PARSER_VERSION
 
 
-FORMULA_VERSION = "2026-09-contract-turnover-v2"
+FORMULA_VERSION = "2026-10-official-daily-heat-v3"
 LOOKBACK_DAYS = 10
 HALF_LIFE_DAYS = 3.0
 MIN_TURNOVER_COVERAGE = 0.8
 MIN_DEPOSIT_COVERAGE = 0.8
-EXCLUDED_EXCHANGES = frozenset({"CFFEX"})
+EXCLUDED_EXCHANGES = frozenset()
 CALCULATION_METHOD = (
-    "有效月份合约按今收盘与该合约上一有效交易日收盘比较；"
+    "全部国内有成交期货合约含中金所和月均价期货，按官网今收盘减昨结算判断方向；"
     "数量热度=(上涨合约数-下跌合约数)/(上涨+下跌合约数)*100；"
     "成交额热度=(上涨合约成交额-下跌合约成交额)/(上涨+下跌成交额)*100；"
     "成交额使用交易所公布的单边人民币值；沉淀资金只保留整体，不按涨跌分桶；"
@@ -70,32 +71,33 @@ def calculate_contract_turnover_heat(
     official = {
         (str(row["trade_date"]), str(row["exchange"]), str(row["contract_code"])): row
         for row in official_rows if row.get("quality_status") == "PASS"
-        and row.get("turnover_unit") == "CNY_10K"
-        and row.get("turnover_sidedness") == "ONE_SIDED"
+        and row.get("parser_version") == PARSER_VERSION
+        and str(row.get("adapter") or "").endswith("-daily-v2")
     }
-    coverage = {
-        (str(row["trade_date"]), str(row["exchange"])): str(row["status"])
-        for row in coverage_rows
-    }
+    coverage: dict[tuple[str, str], str] = {}
+    for row in coverage_rows:
+        if not str(row.get("adapter") or "").endswith("-daily-v2"):
+            continue
+        key = str(row["trade_date"]), str(row["exchange"])
+        if coverage.get(key) != "PASS":
+            coverage[key] = str(row["status"])
     by_day: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
-    for bar in bars:
+    for bar in official.values():
         if str(bar["exchange"]) not in EXCLUDED_EXCHANGES:
             by_day[str(bar["trade_date"])].append(bar)
-    previous_close: dict[tuple[str, str], float] = {}
+    for day, _venue in coverage:
+        by_day.setdefault(day, [])
     results: list[dict[str, Any]] = []
     for trade_day in sorted(by_day):
-        contracts = by_day[trade_day]
+        contracts = [bar for bar in by_day[trade_day] if _positive(bar.get("volume")) is not None]
         directions: list[tuple[Mapping[str, Any], str | None]] = []
         for bar in sorted(contracts, key=lambda item: (str(item["exchange"]), str(item["contract_code"]))):
-            identity = (str(bar["exchange"]), str(bar["contract_code"]))
             close = _positive(bar.get("close"))
-            prior = previous_close.get(identity)
+            prior = _positive(bar.get("previous_settlement"))
             direction = None if close is None or prior is None else (
                 "UP" if close > prior else "DOWN" if close < prior else "FLAT"
             )
             directions.append((bar, direction))
-            if close is not None:
-                previous_close[identity] = close
         total_contracts = len(directions)
         valid = [(bar, direction) for bar, direction in directions if direction is not None]
         up = sum(direction == "UP" for _, direction in valid)
@@ -108,11 +110,10 @@ def calculate_contract_turnover_heat(
             key = (trade_day, str(bar["exchange"]), str(bar["contract_code"]))
             observation = official.get(key)
             turnover = _non_negative(observation.get("turnover_cny")) if observation else None
-            official_close = _positive(observation.get("close")) if observation else None
-            local_close = _positive(bar.get("close"))
             if (
-                turnover is not None and official_close is not None and local_close is not None
-                and math.isclose(local_close, official_close, rel_tol=0.001, abs_tol=0.05)
+                turnover is not None and observation is not None
+                and observation.get("turnover_sidedness") == "ONE_SIDED"
+                and observation.get("turnover_quality_status") == "PASS"
             ):
                 amounts[str(direction)] += turnover
                 amount_count += 1
@@ -143,7 +144,7 @@ def calculate_contract_turnover_heat(
         total_deposit = (
             sum(deposit_values) if deposit_coverage >= MIN_DEPOSIT_COVERAGE and deposit_values else None
         )
-        expected_exchanges = {str(bar["exchange"]) for bar in contracts}
+        expected_exchanges = {"SHFE", "INE", "DCE", "CZCE", "GFEX", "CFFEX"}
         missing_exchanges = sorted(
             exchange for exchange in expected_exchanges if coverage.get((trade_day, exchange)) != "PASS"
         )

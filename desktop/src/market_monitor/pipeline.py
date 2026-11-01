@@ -9,6 +9,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 from .incremental import CheckpointStore, FetchOutcome, IncrementalCollector, IncrementalRunSummary
 from .market_package import PackageLedger, build_market_package
+from .profile_gate import profile_write_gate
 from .quality import QualityReport, quarantine_partition, validate_cross_source, validate_partition
 from .signing import generate_development_key, sign_market_package, verify_market_package
 from .storage import MarketStore, PartitionKey
@@ -117,8 +118,9 @@ class MarketPipeline:
         if not verify_market_package(package, self.public_key_path):
             raise RuntimeError("package signature verification failed after signing")
         if ledger is not None:
-            ledger.register(package_id, "FULL")
-            ledger.activate(package_id)
+            with profile_write_gate(self.store.root):
+                ledger.register(package_id, "FULL")
+                ledger.activate(package_id)
         return package
 
     def load_partition(self, partition_id: str) -> tuple[list[Mapping[str, Any]], str | None]:

@@ -86,5 +86,8 @@ def test_prune_retired_market_data_keeps_non_hz_rows_and_updates_cache(tmp_path:
         assert cache.execute("SELECT instrument_id FROM instrument_period").fetchall() == [
             ("HK.HKEX.INDEX.HSI.TDX_LOCAL",)
         ]
+    from market_monitor.market_query_cache import get_kline_query_store
+
+    assert get_kline_query_store(tmp_path).status().ready is False
     report = Path(summary["backupRoot"]).parent / "report.json"
     assert json.loads(report.read_text(encoding="utf-8"))["tongdaxinSourceFilesModified"] is False

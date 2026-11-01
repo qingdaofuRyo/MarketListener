@@ -11,10 +11,12 @@ const props = withDefaults(defineProps<{
   countWeightLabel?: string;
   amountWeightLabel?: string;
   sliderAriaLabel?: string;
+  showNotes?: boolean;
 }>(), {
   countWeightLabel: "品种热度",
   amountWeightLabel: "资金热度",
   sliderAriaLabel: "资金热度权重",
+  showNotes: true,
 });
 
 const emit = defineEmits<{
@@ -56,7 +58,7 @@ function commit(): void {
       @change="commit"
     />
     <div class="weight-footer">
-      <span>单点调节，两个权重之和始终为 100%</span>
+      <span v-if="showNotes">单点调节，两个权重之和始终为 100%</span>
       <el-button size="small" plain data-test="heat-weight-reset" @click="emit('reset')">
         恢复默认 {{ defaultLabel }}
       </el-button>

@@ -1,8 +1,5 @@
-/* MarketListener terminal structural tokens.
- *
- * These values intentionally mirror the existing desktop UI for a visually neutral
- * first migration. Theme-specific colors continue to come from design/tokens.ts.
- */
+/* Shared geometry and interactions for the research workspace.
+ * Semantic light/dark colors remain in design/tokens.ts. */
 :root {
   --ml-space-1: 4px;
   --ml-space-2: 6px;
@@ -36,6 +33,101 @@
 
 .ml-numeric {
   font-variant-numeric: tabular-nums;
+}
+
+html { color-scheme: light; }
+html[data-theme="dark"] { color-scheme: dark; }
+button, input, select, textarea { font: inherit; }
+::selection { color: var(--ml-text-primary); background: var(--ml-accent-soft); }
+* { scrollbar-width: thin; scrollbar-color: var(--ml-text-disabled) transparent; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--ml-text-disabled); border: 2px solid var(--ml-surface); border-radius: 8px; }
+::-webkit-scrollbar-thumb:hover { background: var(--ml-text-secondary); }
+::-webkit-scrollbar-corner { background: transparent; }
+.el-table, .el-statistic, time { font-variant-numeric: tabular-nums; }
+.el-button { transition: color var(--ml-motion-fast), background-color var(--ml-motion-fast), border-color var(--ml-motion-fast); }
+.el-main:focus-visible { outline: none; }
+
+.workspace-skip {
+  position: fixed;
+  top: 8px;
+  left: 12px;
+  z-index: var(--ml-layer-alert);
+  padding: 8px 14px;
+  border-radius: 6px;
+  background: var(--ml-accent);
+  color: white;
+  transform: translateY(-160%);
+  text-decoration: none;
+}
+.workspace-skip:focus { transform: translateY(0); }
+.topbar { gap: 16px; padding-inline: 18px; box-shadow: 0 2px 14px var(--ml-shadow-soft, var(--ml-divider)); }
+.topbar .brand { display: inline-flex; align-items: center; gap: 10px; font-size: 16px; font-weight: 750; letter-spacing: -.35px; transition: color var(--ml-motion-fast); }
+.topbar .brand:hover { color: var(--ml-accent); }
+.brand-mark { display: flex; align-items: center; justify-content: center; gap: 3px; width: 29px; height: 29px; flex-shrink: 0; border: 1px solid var(--ml-divider); border-radius: 8px; background: var(--ml-surface-elevated); transition: border-color var(--ml-motion-fast), transform var(--ml-motion-fast), box-shadow var(--ml-motion-fast); }
+.brand:hover .brand-mark { border-color: var(--ml-accent); transform: translateY(-1px); box-shadow: 0 3px 9px var(--ml-shadow-soft, var(--ml-divider)); }
+.brand-mark i { display: block; width: 4px; border-radius: 2px; background: var(--ml-accent); }
+.brand-mark i:nth-child(1) { height: 11px; align-self: flex-end; margin-bottom: 4px; opacity: .55; }
+.brand-mark i:nth-child(2) { height: 21px; opacity: .8; }
+.brand-mark i:nth-child(3) { height: 15px; align-self: flex-start; margin-top: 3px; }
+.topbar .workbench-nav { flex: 1; min-width: 0; height: 100%; overflow-x: auto; scrollbar-width: none; }
+.topbar .workbench-nav::-webkit-scrollbar { display: none; }
+.topbar .nav-group a { position: relative; display: inline-flex; align-items: center; min-height: calc(100% - 10px); margin-block: 5px; padding-inline: 12px; border-radius: 6px; font-size: 12px; font-weight: 550; transition: color var(--ml-motion-fast), background-color var(--ml-motion-fast); }
+.topbar .nav-group a::after { content: ""; position: absolute; bottom: 0; left: 22%; right: 22%; height: 2px; border-radius: 2px; background: var(--ml-accent); transform: scaleX(0); transition: transform var(--ml-motion-fast); }
+.topbar .nav-group a.active, .topbar .nav-group a.router-link-active { color: var(--ml-accent); background: var(--ml-surface-selected); box-shadow: none; font-weight: 700; }
+.topbar .nav-group a.active::after, .topbar .nav-group a.router-link-active::after { transform: scaleX(1); }
+.topbar .nav-group a:hover { color: var(--ml-text-primary); background: var(--ml-surface-elevated); }
+.topbar .nav-group a.active:hover, .topbar .nav-group a.router-link-active:hover { color: var(--ml-accent); background: var(--ml-surface-selected); }
+.workspace-tools { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.workspace-tools .theme-menu { margin-left: 0; }
+.workspace-tools .theme-button { min-height: 29px; background: transparent; font-size: 11px; }
+.workspace-command-trigger { display: inline-flex; align-items: center; gap: 7px; min-height: 30px; padding: 4px 8px; background: var(--ml-surface-elevated); border: 1px solid var(--ml-divider); border-radius: 7px; color: var(--ml-text-secondary); font-size: 11px; cursor: pointer; transition: border-color var(--ml-motion-fast), color var(--ml-motion-fast), background-color var(--ml-motion-fast), box-shadow var(--ml-motion-fast); }
+.workspace-command-trigger:hover, .workspace-command-trigger[aria-expanded="true"] { border-color: var(--ml-accent); color: var(--ml-text-primary); background: var(--ml-surface-selected); box-shadow: 0 0 0 2px var(--ml-accent-soft); }
+.workspace-command-trigger svg, .workspace-command-search svg { flex-shrink: 0; width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.7; }
+.workspace-command-trigger kbd, .workspace-command-dialog kbd { border: 1px solid var(--ml-divider); border-radius: 3px; padding: 1px 4px; color: var(--ml-text-secondary); background: var(--ml-surface); font: 10px ui-monospace, Consolas, monospace; }
+.workspace-command-dialog { overflow: hidden; padding: 0; border: 1px solid var(--ml-divider); border-radius: 12px; box-shadow: 0 24px 64px var(--ml-shadow-raised, var(--ml-divider)); }
+.workspace-command-dialog .el-dialog__header { margin: 0; padding: 17px 18px 12px; border-bottom: 1px solid var(--ml-divider); }
+.workspace-command-dialog .el-dialog__title { font-size: 14px; font-weight: 650; }
+.workspace-command-dialog .el-dialog__headerbtn { top: 8px; right: 8px; }
+.workspace-command-dialog .el-dialog__body { padding: 0; }
+.workspace-command-search { display: flex; align-items: center; gap: 10px; margin: 0 16px 10px; padding: 9px 11px; border: 1px solid var(--ml-divider); border-radius: 7px; color: var(--ml-text-secondary); background: var(--ml-surface-elevated); }
+.workspace-command-search:focus-within { border-color: var(--ml-accent); box-shadow: 0 0 0 2px var(--ml-accent-soft); }
+.workspace-command-search input { min-width: 0; flex: 1; padding: 2px 0; border: 0; outline: none; background: transparent; color: var(--ml-text-primary); font-size: 13px; }
+.workspace-command-search input:focus-visible { outline: none; }
+.workspace-command-search input::placeholder { color: var(--ml-text-disabled); }
+.workspace-command-list { max-height: min(390px, 52vh); overflow-y: auto; padding: 0 8px 10px; }
+.workspace-command-list button { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left; min-height: 48px; padding: 7px 10px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--ml-text-primary); cursor: pointer; transition: background-color var(--ml-motion-fast), border-color var(--ml-motion-fast), transform var(--ml-motion-fast); }
+.workspace-command-list button:hover { background: var(--ml-surface-elevated); transform: translateX(2px); }
+.workspace-command-list button.selected { background: var(--ml-surface-selected); border-color: var(--ml-divider); }
+.workspace-command-list button.selected:hover { border-color: var(--ml-accent); }
+.command-kind { display: grid; place-items: center; width: 29px; height: 29px; border-radius: 6px; border: 1px solid var(--ml-divider); color: var(--ml-text-secondary); background: var(--ml-surface); }
+.command-name { display: flex; flex: 1; flex-direction: column; gap: 3px; font-size: 12px; font-weight: 600; }
+.command-name small { font-size: 10px; font-weight: 400; color: var(--ml-text-secondary); }
+.command-enter { color: var(--ml-text-secondary); opacity: 0; }
+.selected .command-enter { opacity: 1; }
+.workspace-command-empty { margin: 0; padding: 28px 16px; text-align: center; font-size: 12px; color: var(--ml-text-secondary); }
+.workspace-command-hint { display: flex; flex-wrap: wrap; gap: 7px 16px; padding: 11px 18px; border-top: 1px solid var(--ml-divider); background: var(--ml-surface-elevated); color: var(--ml-text-secondary); font-size: 10px; }
+.workspace-command-hint span { display: inline-flex; gap: 4px; align-items: center; }
+
+@supports (color: color-mix(in srgb, #000 50%, transparent)) {
+  .topbar { background: linear-gradient(110deg, var(--ml-surface) 40%, color-mix(in srgb, var(--ml-accent) 4%, var(--ml-surface))); }
+  .brand-mark { background: linear-gradient(145deg, var(--ml-surface-elevated), color-mix(in srgb, var(--ml-accent) 10%, var(--ml-surface))); }
+  .workspace-command-dialog .el-dialog__header { background: linear-gradient(100deg, var(--ml-surface), color-mix(in srgb, var(--ml-accent) 7%, var(--ml-surface))); }
+}
+
+@media (max-width: 1180px) {
+  .topbar { gap: 10px; padding-inline: 12px; }
+  .topbar .nav-group a { padding-inline: 9px; }
+  .workspace-command-trigger kbd { display: none; }
+}
+@media (max-width: 760px) {
+  .topbar { overflow: hidden; gap: 8px; padding-inline: 10px; }
+  .topbar .brand > span:last-child, .workspace-command-trigger > span, .theme-caption { display: none; }
+  .topbar .nav-group a { padding-inline: 9px; }
+  .workspace-tools { gap: 5px; }
+  .workspace-command-trigger { justify-content: center; min-width: 30px; }
+  .workspace-tools .theme-button { justify-content: center; min-width: 29px; padding-inline: 6px; }
 }
 
 /* Keep keyboard focus visually distinct from hover/selected states. */

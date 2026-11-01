@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from io import BytesIO
 import json
 from pathlib import Path
+from threading import Event, Thread
 from time import perf_counter
 import zipfile
 
@@ -14,8 +15,10 @@ from fastapi.testclient import TestClient
 from market_monitor.futures_calendar import sync_futures_trading_calendar
 from market_monitor.collector import run_official_member_rank_backfill
 from market_monitor.futures_official_backfill import (
+    BEIJING,
     HostRateLimiter,
     RequestBudgetExhausted,
+    default_backfill_range,
     effective_request_policy,
     run_official_futures_backfill,
 )
@@ -137,6 +140,84 @@ def test_official_backfill_is_calendar_bound_resumable_and_archives_raw_bytes(tm
     assert len(session.calls) == 2
 
 
+@pytest.mark.parametrize("first_body", [_czce_daily("2026-09-25"), b"unsupported old report body"])
+def test_retry_failed_replaces_invalid_cached_report_without_deleting_audit(
+    tmp_path: Path, first_body: bytes,
+) -> None:
+    day = "2026-09-24"
+    _calendar(tmp_path, day)
+    first = _Session(_Response(first_body))
+    failed = run_official_futures_backfill(
+        tmp_path, start_day=day, end_day=day, exchanges=("CZCE",), session=first,
+    )
+    assert failed["outcomes"][0]["status"] == "FAILED"
+    recovered = _Session(_Response(_czce_daily(day)))
+    result = run_official_futures_backfill(
+        tmp_path, start_day=day, end_day=day, exchanges=("CZCE",),
+        retry_failed=True, session=recovered,
+    )
+    assert result["status"] == "PASS"
+    assert len(recovered.calls) == 1
+    proofs = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in (tmp_path / "bronze" / "official_futures_daily_czce").glob("*.json")
+    ]
+    assert len(proofs) == 2
+    assert len({proof["payloadSha256"] for proof in proofs}) == 2
+    store = MarketStore(tmp_path)
+    try:
+        rows = store.list_futures_official_daily()
+        coverage = store.list_futures_official_daily_coverage()
+    finally:
+        store.close()
+    assert len(rows) == 1 and rows[0]["trade_date"] == day
+    assert coverage[0]["status"] == "PASS"
+
+
+def test_pass_with_missing_fact_count_is_reimported_from_verified_bronze(tmp_path: Path) -> None:
+    day = "2026-09-24"
+    _calendar(tmp_path, day)
+    session = _Session(_Response(_czce_daily(day)))
+    run_official_futures_backfill(
+        tmp_path, start_day=day, end_day=day, exchanges=("CZCE",), session=session,
+    )
+    store = MarketStore(tmp_path)
+    try:
+        store.connection.execute("UPDATE futures_contract_daily_official_coverage SET usable_count=2")
+    finally:
+        store.close()
+    result = run_official_futures_backfill(
+        tmp_path, start_day=day, end_day=day, exchanges=("CZCE",),
+        retry_failed=True, session=session,
+    )
+    assert result["status"] == "PASS" and result["attempts"] == 1
+    assert len(session.calls) == 1  # Repair uses the valid original report.
+    store = MarketStore(tmp_path)
+    try:
+        assert len(store.list_futures_official_daily()) == 1
+        assert store.list_futures_official_daily_coverage()[0]["usable_count"] == 1
+    finally:
+        store.close()
+
+
+def test_default_completed_day_includes_today_only_after_beijing_close(tmp_path: Path, monkeypatch) -> None:
+    _calendar(tmp_path, "2026-09-23", "2026-09-24")
+    import market_monitor.futures_official_backfill as backfill
+
+    class _Clock(datetime):
+        instant = datetime(2026, 9, 24, 15, 59, tzinfo=BEIJING)
+
+        @classmethod
+        def now(cls, timezone=None):
+            return cls.instant.astimezone(timezone) if timezone is not None else cls.instant
+
+    monkeypatch.setattr(backfill, "datetime", _Clock)
+    assert default_backfill_range(tmp_path)[1] == "2026-09-23"
+    _Clock.instant = datetime(2026, 9, 24, 16, 0, tzinfo=BEIJING)
+    assert default_backfill_range(tmp_path)[1] == "2026-09-24"
+    assert default_backfill_range(tmp_path, today=date(2026, 9, 24))[1] == "2026-09-23"
+
+
 def test_max_days_resumes_after_completed_or_failed_source_days(tmp_path: Path) -> None:
     days = ("2026-09-22", "2026-09-23", "2026-09-24")
     _calendar(tmp_path, *days)
@@ -247,6 +328,50 @@ def test_cffex_archive_cache_is_keyed_by_compact_calendar_month(tmp_path: Path) 
     assert any(name.startswith("202511-") for name in names)
 
 
+def test_cffex_invalid_cached_csv_can_recover_without_erasing_old_archive(tmp_path: Path) -> None:
+    day = "2026-09-24"
+    _calendar(tmp_path, day)
+    bad_zip = BytesIO()
+    with zipfile.ZipFile(bad_zip, "w") as archive:
+        archive.writestr("20260924_1.csv", "unexpected,columns\nwrong,body\n")
+    first = _Session(_Response(bad_zip.getvalue(), content_type="application/zip"))
+    failed = run_official_futures_backfill(
+        tmp_path, start_day=day, end_day=day, exchanges=("CFFEX",), session=first,
+    )
+    assert failed["status"] == "PARTIAL"
+    retry = _Session(_Response(_cffex_monthly_archive(day), content_type="application/zip"))
+    result = run_official_futures_backfill(
+        tmp_path, start_day=day, end_day=day, exchanges=("CFFEX",),
+        retry_failed=True, session=retry,
+    )
+    assert result["status"] == "PASS"
+    assert len(retry.calls) == 1
+    assert len(list((tmp_path / "bronze" / "official_futures_cffex_archives").glob("*.zip"))) == 2
+
+
+def test_cffex_month_cache_rechecks_each_requested_daily_entry(tmp_path: Path) -> None:
+    days = ("2026-09-23", "2026-09-24")
+    _calendar(tmp_path, *days)
+    for day in days:
+        session = _Session(_Response(_cffex_monthly_archive(day), content_type="application/zip"))
+        result = run_official_futures_backfill(
+            tmp_path, start_day=day, end_day=day, exchanges=("CFFEX",), session=session,
+        )
+        assert result["status"] == "PASS"
+    store = MarketStore(tmp_path)
+    try:
+        store.connection.execute("UPDATE futures_contract_daily_official_coverage SET usable_count=2")
+    finally:
+        store.close()
+    session = _Session(_Response(b"should not be downloaded", status_code=412))
+    result = run_official_futures_backfill(
+        tmp_path, start_day=days[0], end_day=days[-1], exchanges=("CFFEX",),
+        retry_failed=True, session=session,
+    )
+    assert result["status"] == "PASS" and result["passed"] == 2
+    assert session.calls == []
+
+
 def test_rate_limiter_persists_host_budget_and_spacing(tmp_path: Path) -> None:
     fixed_now = datetime.fromisoformat("2026-09-27T12:00:00+08:00")
     sleeps: list[float] = []
@@ -272,6 +397,94 @@ def test_rate_limiter_enforces_minimum_elapsed_time_between_requests(tmp_path: P
     elapsed = perf_counter() - started
     limiter.complete("www.dce.com.cn")
     assert elapsed >= 0.18
+
+
+def test_rate_limiter_keeps_slow_host_pacing_separate_from_global_spacing(tmp_path: Path) -> None:
+    started = datetime.fromisoformat("2026-09-27T12:00:00+08:00")
+    current = [started]
+    sleeps: list[float] = []
+
+    def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        current[0] += timedelta(seconds=seconds)
+
+    fast = HostRateLimiter(
+        tmp_path, min_interval_seconds=0.2, daily_budget=20,
+        sleep=sleep, now=lambda: current[0],
+    )
+    slow = HostRateLimiter(
+        tmp_path, min_interval_seconds=2.0, daily_budget=20,
+        sleep=sleep, now=lambda: current[0],
+    )
+    for offset in (0, 0.2):
+        current[0] = started + timedelta(seconds=offset)
+        fast.acquire("www.gfex.com.cn")
+        fast.complete("www.gfex.com.cn")
+
+    current[0] = started + timedelta(seconds=0.3)
+    slow.acquire("www.czce.com.cn")
+    slow.complete("www.czce.com.cn")
+    assert sleeps == pytest.approx([0.1])
+
+    for fifth in range(3, 12):
+        current[0] = started + timedelta(seconds=fifth / 5)
+        fast.acquire("www.gfex.com.cn")
+        fast.complete("www.gfex.com.cn")
+
+    current[0] = started + timedelta(seconds=2.3)
+    slow.acquire("www.czce.com.cn")
+    slow.complete("www.czce.com.cn")
+    assert sleeps == pytest.approx([0.1, 0.1])
+
+    current[0] = started + timedelta(seconds=3.3)
+    slow.acquire("www.czce.com.cn")
+    slow.complete("www.czce.com.cn")
+    assert sleeps == pytest.approx([0.1, 0.1, 1.1])
+
+
+def test_rate_limiter_allows_other_host_during_in_flight_request(tmp_path: Path) -> None:
+    first = HostRateLimiter(tmp_path, min_interval_seconds=0.2, daily_budget=3)
+    second = HostRateLimiter(tmp_path, min_interval_seconds=0.2, daily_budget=3)
+    acquired = Event()
+    errors: list[Exception] = []
+
+    def reserve_second() -> None:
+        try:
+            second.acquire("www.cffex.com.cn")
+            acquired.set()
+        except Exception as error:
+            errors.append(error)
+
+    first.acquire("www.shfe.com.cn")
+    worker = Thread(target=reserve_second, daemon=True)
+    worker.start()
+    try:
+        assert acquired.wait(2), "another host must reserve while the first HTTP request remains open"
+        assert not errors
+        saved = json.loads((tmp_path / "state" / "official_futures_request_budget.json").read_text(encoding="utf-8"))
+        assert saved["hosts"]["__GLOBAL__"]["count"] == 2
+        assert saved["hosts"]["www.shfe.com.cn"]["count"] == 1
+        assert saved["hosts"]["www.cffex.com.cn"]["count"] == 1
+    finally:
+        first.complete("www.shfe.com.cn")
+        worker.join(timeout=2)
+        if acquired.is_set():
+            second.complete("www.cffex.com.cn")
+
+
+def test_rate_limiter_preserves_retry_after_and_budget_with_in_flight_lease(tmp_path: Path) -> None:
+    first = HostRateLimiter(tmp_path, min_interval_seconds=0.2, daily_budget=2)
+    second = HostRateLimiter(tmp_path, min_interval_seconds=0.2, daily_budget=2)
+    first.acquire("www.shfe.com.cn")
+    second.acquire("www.cffex.com.cn")
+    second.complete("www.cffex.com.cn", retry_after_seconds=30)
+    first.complete("www.shfe.com.cn")
+    saved = json.loads((tmp_path / "state" / "official_futures_request_budget.json").read_text(encoding="utf-8"))
+    assert saved["hosts"]["__GLOBAL__"]["count"] == 2
+    assert "pausedUntil" in saved["hosts"]["www.cffex.com.cn"]
+    assert "pausedUntil" not in saved["hosts"]["www.shfe.com.cn"]
+    with pytest.raises(RequestBudgetExhausted, match="Retry-After"):
+        HostRateLimiter(tmp_path, min_interval_seconds=0.2, daily_budget=2).acquire("www.cffex.com.cn")
 
 
 def test_daily_budget_is_shared_across_hosts(tmp_path: Path) -> None:
@@ -376,7 +589,7 @@ def _record_official_rows(root: Path, *, partial_day: str | None = None) -> None
                     "adapter": adapter, "payload_sha256": "a" * 64,
                     "retrieved_at": "2026-09-27T00:00:00+00:00", "quality_status": "PASS",
                     "volume_sidedness": "ONE_SIDED", "open_interest_sidedness": "ONE_SIDED",
-                    "turnover_quality_status": "UNVERIFIED", "parser_version": "official-futures-daily-v2",
+                    "turnover_quality_status": "UNVERIFIED", "parser_version": "official-futures-daily-v4",
                 }
                 coverage = {
                     "trade_date": day, "exchange": exchange,
@@ -405,7 +618,7 @@ def test_official_structure_has_area_gaps_but_retains_verified_product_lines(tmp
         "/api/futures/structures/product-open-interest",
         params={"source": "official", "range": "all"},
     ).json()
-    assert payload["formulaVersion"] == "futures-structure-oi-official-v1"
+    assert payload["formulaVersion"] == "futures-structure-oi-official-v2"
     assert payload["dates"] == ["2026-09-24", "2026-09-25"]
     assert payload["totals"][0] == 600
     assert payload["totals"][1] is None
@@ -434,8 +647,8 @@ def test_official_notional_reports_missing_multipliers_without_falling_back_to_t
         "/api/futures/structures/product-notional",
         params={"source": "official", "range": "all"},
     ).json()
-    assert payload["formulaVersion"] == "futures-structure-notional-official-v5"
+    assert payload["formulaVersion"] == "futures-structure-notional-official-v6"
     assert payload["baselineQualityStatus"] == "PARTIAL"
     assert payload["totals"] == [None]
     assert payload["coverage"][0]["missingSettlementCount"] == 1
-    assert payload["coverage"][0]["missingMultiplierCount"] == 2
+    assert payload["coverage"][0]["missingMultiplierCount"] == 0

@@ -168,7 +168,7 @@ def test_dce_official_json_keeps_raw_fields_for_unit_audit(tmp_path: Path, monke
 
 
 def test_direct_shfe_parser_separates_ine_and_ignores_tas_rows() -> None:
-    raw = json.dumps({"o_curinstrument": [
+    raw = json.dumps({"report_date": "20260924", "o_curinstrument": [
         {"PRODUCTGROUPID": "cu", "PRODUCTID": "cu_f", "PRODUCTCLASS": "1",
          "DELIVERYMONTH": "2610", "CLOSEPRICE": 80000, "SETTLEMENTPRICE": 79900,
          "VOLUME": 200, "OPENINTEREST": 300, "TURNOVER": 1598},
@@ -192,7 +192,7 @@ def test_direct_shfe_parser_separates_ine_and_ignores_tas_rows() -> None:
     assert shfe[0]["turnover_cny"] == 15_980_000
 
 
-def test_direct_historical_czce_parser_keeps_quantities_without_unverified_turnover() -> None:
+def test_direct_historical_czce_parser_converts_explicit_wan_yuan_turnover() -> None:
     raw = (
         "郑州商品交易所期货每日行情表(2025-09-24)\n"
         "合约代码|昨结算|今开盘|最高价|最低价|今收盘|今结算|涨跌1|涨跌2|成交量(手)|持仓量|增减量|成交额(万元)|交割结算价\n"
@@ -210,5 +210,5 @@ def test_direct_historical_czce_parser_keeps_quantities_without_unverified_turno
     assert rows[0]["open_interest"] == 300
     assert rows[0]["settlement"] == 6040
     assert rows[0]["turnover_raw"] == 1208
-    assert rows[0]["turnover_cny"] is None
-    assert rows[0]["turnover_quality_status"] == "UNVERIFIED"
+    assert rows[0]["turnover_cny"] == 12_080_000
+    assert rows[0]["turnover_quality_status"] == "PASS"

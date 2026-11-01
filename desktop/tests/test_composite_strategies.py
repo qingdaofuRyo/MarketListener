@@ -172,7 +172,7 @@ def test_api_python_edit_scan_restore_legacy_and_persistence(tmp_path, monkeypat
     api = TestClient(create_web_app(tmp_path), client=("127.0.0.1", 1234))
     monkeypatch.setattr(signals, "_logical_instruments", lambda _: {INSTRUMENT["instrumentId"]: INSTRUMENT})
     history = bars([9, 12])
-    monkeypatch.setattr(signals, "_history_before", lambda *args: (deepcopy(history), len(history), None, False, None, None))
+    monkeypatch.setattr(signals, "_history_before", lambda *args, **kwargs: (deepcopy(history), len(history), None, False, None, None))
     request = {"displayName": "组合", "source": SOURCE, "enabled": True}
     response = api.post("/api/composites/definitions", json=request)
     assert response.status_code == 201, response.text
@@ -200,7 +200,7 @@ def test_api_python_edit_scan_restore_legacy_and_persistence(tmp_path, monkeypat
 def test_scanning_one_combination_never_starts_another(tmp_path, monkeypatch):
     api = TestClient(create_web_app(tmp_path), client=("127.0.0.1", 1234))
     monkeypatch.setattr(signals, "_logical_instruments", lambda _: {INSTRUMENT["instrumentId"]: INSTRUMENT})
-    monkeypatch.setattr(signals, "_history_before", lambda *args: (bars([9, 12]), 2, None, False, None, None))
+    monkeypatch.setattr(signals, "_history_before", lambda *args, **kwargs: (bars([9, 12]), 2, None, False, None, None))
     first = api.post("/api/composites/definitions", json={"displayName": "A", "source": SOURCE, "enabled": True}).json()
     api.post("/api/composites/definitions", json={"displayName": "B", "source": SOURCE, "enabled": True})
     result = api.post("/api/composites/scan", json={"strategyIds": [first["id"]]}).json()

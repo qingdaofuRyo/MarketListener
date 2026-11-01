@@ -3,7 +3,7 @@ import { computed } from "vue";
 import FuturesLongShortHeat from "./FuturesLongShortHeat.vue";
 import type { ContractTurnoverHeatPoint, ContractTurnoverHeatResponse, LongShortHeatResponse } from "../../domain/futures";
 
-const props = defineProps<{ payload: ContractTurnoverHeatResponse }>();
+const props = withDefaults(defineProps<{ payload: ContractTurnoverHeatResponse; showNotes?: boolean }>(), { showNotes: true });
 
 function adaptPoint(point: ContractTurnoverHeatPoint) {
   return {
@@ -54,5 +54,5 @@ const adaptedPayload = computed<LongShortHeatResponse>(() => {
 </script>
 
 <template>
-  <FuturesLongShortHeat :payload="adaptedPayload" metric-mode="contract-turnover" />
+  <FuturesLongShortHeat :payload="adaptedPayload" metric-mode="contract-turnover" :show-notes="showNotes" />
 </template>

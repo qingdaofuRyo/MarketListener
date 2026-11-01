@@ -46,6 +46,7 @@ from market_monitor.industry_graph.f10.providers import get_governance, list_pro
 from market_monitor.industry_atlas import build_atlas
 from market_monitor.package_builder import build_android_package
 from market_monitor.market_query_cache import rebuild_kline_query_cache
+from market_monitor.market_silver_catalog_audit import audit_silver_catalog
 from market_monitor.retired_market_data import prune_retired_market_data
 from market_monitor.report_pipeline import (
     build_chain_index,
@@ -96,6 +97,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     kline_cache = subcommands.add_parser("kline-cache", help="build or refresh the local low-latency K-line query cache")
     kline_cache.add_argument("--data-root", type=Path, default=Path("data_control"))
+    silver_audit = subcommands.add_parser("audit-silver-catalog", help="read-only full Catalog/Silver SHA audit")
+    silver_audit.add_argument("--data-root", type=Path, default=Path("data_control"))
+    silver_audit.add_argument("--max-seconds", type=float, default=1800.0)
     prune_retired = subcommands.add_parser(
         "prune-retired-market-data", help="可恢复地清理已退役的 Binance、HZ 与香港基金行情"
     )
@@ -235,6 +239,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     official_backfill.add_argument("--dry-run", action="store_true", help="只显示计划请求，不访问官网")
     official_backfill.add_argument("--retry-failed", action="store_true", help="显式重试之前标记FAILED/NO_PUBLICATION的来源日")
+    contract_info = subcommands.add_parser(
+        "futures-contract-info-sync", help="采集六个发布场所官网期货品种合约文本与上市证据"
+    )
+    contract_info.add_argument("--data-root", type=Path, default=Path("data_control"))
+    settlement_params = subcommands.add_parser(
+        "futures-settlement-sync", help="采集六发布场所官网逐合约投机结算保证金参数"
+    )
+    settlement_params.add_argument("--data-root", type=Path, default=Path("data_control"))
+    settlement_params.add_argument("--start-day", default="2023-01-01")
+    settlement_params.add_argument("--end-day", default=None)
+    settlement_params.add_argument("--exchange", action="append", choices=("SHFE", "INE", "DCE", "CZCE", "GFEX", "CFFEX"))
+    settlement_params.add_argument("--bronze-only", action="store_true")
     official_structure = subcommands.add_parser(
         "futures-official-structure", help="从六大交易所官方日行情构建独立持仓、市值和成交量结构"
     )
@@ -347,6 +363,8 @@ def main(argv: list[str] | None = None) -> int:
             return _serve(args)
         if args.command == "kline-cache":
             return _kline_cache(args)
+        if args.command == "audit-silver-catalog":
+            return _audit_silver_catalog(args)
         if args.command == "prune-retired-market-data":
             return _prune_retired_market_data(args)
         if args.command == "fetch":
@@ -381,6 +399,10 @@ def main(argv: list[str] | None = None) -> int:
             return _futures_calendar_sync(args)
         if args.command == "futures-official-backfill":
             return _futures_official_backfill(args)
+        if args.command == "futures-contract-info-sync":
+            return _futures_contract_info_sync(args)
+        if args.command == "futures-settlement-sync":
+            return _futures_settlement_sync(args)
         if args.command == "futures-official-structure":
             return _futures_official_structure(args)
         if args.command == "vix-sync":
@@ -459,6 +481,45 @@ def _kline_cache(args: argparse.Namespace) -> int:
     return EXIT_SUCCESS
 
 
+def _audit_silver_catalog(args: argparse.Namespace) -> int:
+    if args.max_seconds <= 0:
+        raise ValueError("--max-seconds must be positive")
+    version_path = args.data_root / "state" / "market_data_version.json"
+    try:
+        state = json.loads(version_path.read_text(encoding="utf-8"))
+        revision = state["revision"]
+        if not isinstance(revision, str) or not revision:
+            raise ValueError("Silver revision is absent")
+    except (OSError, KeyError, TypeError, json.JSONDecodeError) as error:
+        raise ValueError("Silver revision file is absent or invalid") from error
+    def audit_progress(state: dict[str, int]) -> None:
+        print(json.dumps({"phase": "HASHING_SILVER", **state}, ensure_ascii=False),
+              file=sys.stderr, flush=True)
+
+    report = audit_silver_catalog(
+        args.data_root, revision, max_seconds=args.max_seconds, progress=audit_progress,
+    )
+    exit_code = EXIT_SUCCESS if report.ok else EXIT_PARTIAL_FAILURE
+    _emit(
+        "SUCCESS" if report.ok else "PARTIAL_FAILURE", exit_code,
+        message=(f"Silver/Catalog核对 {report.status}："
+                 f"分区{report.catalog_partitions}，已核{report.verified_files}，"
+                 f"差异{report.issue_count}，读取{report.hashed_bytes}字节"),
+    )
+    print(json.dumps({
+        "revision": report.revision, "status": report.status,
+        "catalogDigest": report.catalog_digest,
+        "catalogPartitions": report.catalog_partitions,
+        "physicalFiles": report.physical_files,
+        "verifiedFiles": report.verified_files,
+        "hashedBytes": report.hashed_bytes,
+        "issueCount": report.issue_count,
+        "issues": [{"code": item.code, "path": item.path, "detail": item.detail}
+                   for item in report.issues],
+    }, ensure_ascii=False, sort_keys=True))
+    return exit_code
+
+
 def _fetch(args: argparse.Namespace) -> int:
     if args.limit_futures <= 0:
         raise ValueError("--limit-futures must be positive")
@@ -535,7 +596,7 @@ def _bulk_futures(args: argparse.Namespace) -> int:
         start_date=args.start_date,
         end_date=args.end_date,
     )
-    success = summary["状态"] == "完成"
+    success = summary["状态"] in {"完成", "无需增量"}
     print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
     _emit("SUCCESS" if success else "PARTIAL_FAILURE", EXIT_SUCCESS if success else EXIT_PARTIAL_FAILURE, message="国内外期货增量任务结束")
     return EXIT_SUCCESS if success else EXIT_PARTIAL_FAILURE
@@ -747,6 +808,44 @@ def _futures_official_backfill(args: argparse.Namespace) -> int:
                  f"官方期货日行情回填结束：通过/缓存 {summary['passed']}/{summary['attempts']} 条来源日"),
     )
     return EXIT_SUCCESS if success else EXIT_PARTIAL_FAILURE
+
+
+def _futures_contract_info_sync(args: argparse.Namespace) -> int:
+    from .futures_contract_info import collect_official_contract_info
+
+    summary = collect_official_contract_info(args.data_root)
+    print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
+    complete = summary["quality"].get("PASS", 0) == summary["products"]
+    _emit(
+        "SUCCESS" if complete else "PARTIAL_FAILURE",
+        EXIT_SUCCESS if complete else EXIT_PARTIAL_FAILURE,
+        message=f"官网期货合约信息：完整 {summary['quality'].get('PASS', 0)}/{summary['products']} 个品种",
+    )
+    return EXIT_SUCCESS if complete else EXIT_PARTIAL_FAILURE
+
+
+def _futures_settlement_sync(args: argparse.Namespace) -> int:
+    from .futures_settlement_parameters import sync_settlement_parameters
+    from .futures_settlement_parameters import SettlementSourceError
+    from .futures_dce_settlement_browser import DceSettlementBrowser
+
+    browser = None
+    if args.exchange is None or "DCE" in args.exchange:
+        try:
+            browser = DceSettlementBrowser()
+        except SettlementSourceError:
+            pass
+    try:
+        report = sync_settlement_parameters(
+            args.data_root, start_day=args.start_day, end_day=args.end_day,
+            exchanges=args.exchange, bronze_only=args.bronze_only,
+            dce_fetcher=browser.capture if browser else None,
+        )
+    finally:
+        if browser is not None:
+            browser.close()
+    print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+    return EXIT_SUCCESS if report.get("status") == "PASS" else EXIT_PARTIAL_FAILURE
 
 
 def _futures_official_structure(args: argparse.Namespace) -> int:

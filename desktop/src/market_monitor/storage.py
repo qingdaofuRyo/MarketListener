@@ -7,6 +7,7 @@ import json
 import math
 import os
 import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,11 +16,29 @@ from uuid import uuid4
 
 import duckdb
 
-from .market_data_version import advance_market_data_version, market_data_version
+from .market_data_version import (
+    advance_market_data_version, market_data_version, pending_market_writes,
+    recover_abandoned_pending_write, revision_is_settled, settle_market_data_version,
+)
 from .market_query_cache import apply_kline_cache_update
 
 
 _SCHEMA_INIT_LOCK = threading.RLock()
+_CATALOG_CONNECT_DELAYS = (0.05, 0.1, 0.2, 0.4)
+
+
+def connect_catalog(root: Path) -> duckdb.DuckDBPyConnection:
+    """Retry brief Windows file-lock windows without hiding persistent errors."""
+
+    path = Path(root) / "catalog.duckdb"
+    for delay in (*_CATALOG_CONNECT_DELAYS, None):
+        try:
+            return duckdb.connect(str(path))
+        except (duckdb.IOException, duckdb.ConnectionException):
+            if delay is None:
+                raise
+            time.sleep(delay)
+    raise AssertionError("unreachable catalog connection retry state")
 
 
 @dataclass(frozen=True)
@@ -45,7 +64,7 @@ class MarketStore:
     def __init__(self, root: Path) -> None:
         self.root = root
         self.root.mkdir(parents=True, exist_ok=True)
-        self.connection = duckdb.connect(str(root / "catalog.duckdb"))
+        self.connection = connect_catalog(root)
         with _SCHEMA_INIT_LOCK:
             self._create_schema()
 
@@ -86,7 +105,10 @@ class MarketStore:
             raise ValueError("A Silver partition requires at least one normalized bar")
         target = self.root / key.relative_path()
         target.parent.mkdir(parents=True, exist_ok=True)
-        staging_parquet = target.with_suffix(f".{uuid4().hex}.parquet")
+        previous_metadata = self.partition_metadata(key.partition_id) if target.is_file() else None
+        # The query-index full build scans *.parquet. Keep unpublished bytes
+        # outside that glob until the validated file is atomically promoted.
+        staging_parquet = target.with_name(f"{target.name}.{uuid4().hex}.tmp")
         try:
             escaped_parquet = str(staging_parquet).replace("'", "''")
             existing: list[dict[str, str]] = []
@@ -100,14 +122,34 @@ class MarketStore:
             rows: dict[tuple[str, str, str], dict[str, str]] = {
                 (row["instrument_id"], row["bar_period"], row["bar_open_time"]): row for row in existing
             }
+            incoming: dict[tuple[str, str, str], dict[str, str]] = {}
             for bar in bars:
                 key_tuple = (_bar_instrument_id(bar), str(bar.get("period", "")), str(bar.get("bar_open_time", "")))
-                rows[key_tuple] = {
+                incoming[key_tuple] = {
                     "bar_json": json.dumps(bar, ensure_ascii=False),
                     "instrument_id": key_tuple[0],
                     "bar_period": key_tuple[1],
                     "bar_open_time": key_tuple[2],
                 }
+            same_market_facts = target.is_file() and revision_is_settled(
+                self.root, market_data_version(self.root),
+            ) and all(
+                key_tuple in rows and _same_market_fact(rows[key_tuple]["bar_json"], row["bar_json"])
+                for key_tuple, row in incoming.items()
+            )
+            registered_file = str(target.relative_to(self.root)).replace("\\", "/")
+            registered_sha = str(previous_metadata[3]).lower() if previous_metadata else None
+            if (
+                same_market_facts and previous_metadata is not None
+                and str(previous_metadata[0]).replace("\\", "/") == registered_file
+                and previous_metadata[4] == "COMPLETE"
+                and registered_sha == _sha256(target)
+            ):
+                # Bronze still records this retrieval.  A new fetched_at alone
+                # is not a Silver correction and must not invalidate 4.8e8
+                # indexed bars on every routine startup update.
+                return target
+            rows.update(incoming)
             self.connection.execute(
                 "CREATE OR REPLACE TEMP TABLE _silver_stage (bar_json VARCHAR, instrument_id VARCHAR, bar_period VARCHAR, bar_open_time VARCHAR)"
             )
@@ -143,12 +185,25 @@ class MarketStore:
             if row_count != len(rows):
                 raise RuntimeError(f"Silver validation row mismatch: expected {len(rows)}, got {row_count}")
             checksum = _sha256(staging_parquet)
-            # The immutable Parquet write is authoritative.  Advance the
-            # revision only after it succeeds, then update the optional chart
-            # query cache in-place.  If that cache update fails it is safely
-            # rebuilt on the next chart read.
+            # Invalidate the mutable-path index before replacing the file.
+            # A process crash after promotion must never leave an old CURRENT
+            # index pointing into new Parquet bytes with old time bounds.
             previous_revision = market_data_version(self.root)
-            os.replace(staging_parquet, target)
+            recorded_previous, current_revision = advance_market_data_version(
+                self.root, changed_file=target, sha256=checksum, pending=True,
+            )
+            try:
+                os.replace(staging_parquet, target)
+            except OSError:
+                # A failed promotion leaves the prior file in place.  Verify
+                # that fact before clearing the pending write; ambiguous
+                # failures stay pending and require a recovery audit.
+                old_sha = str(previous_metadata[3]) if previous_metadata else None
+                if (old_sha is None and not target.exists()) or (
+                    old_sha is not None and target.is_file() and _sha256(target) == old_sha
+                ):
+                    settle_market_data_version(self.root, current_revision)
+                raise
             self.connection.execute(
                 """INSERT INTO partitions VALUES (?, ?, ?, ?, ?, ?, 'COMPLETE', ?)
                 ON CONFLICT(partition_id) DO UPDATE SET file_path=excluded.file_path, row_count=excluded.row_count,
@@ -156,9 +211,11 @@ class MarketStore:
                 status=excluded.status, updated_at=excluded.updated_at""",
                 [key.partition_id, str(target.relative_to(self.root)), row_count, data_cutoff, checksum, source_run_id, _now()],
             )
-            recorded_previous, current_revision = advance_market_data_version(self.root)
+            settle_market_data_version(self.root, current_revision)
+            if pending_market_writes(self.root)["count"]:
+                recover_abandoned_pending_write(self.root)
             if update_query_cache:
-                apply_kline_cache_update(self.root, recorded_previous or previous_revision, current_revision, bars)
+                apply_kline_cache_update(self.root, recorded_previous or previous_revision, current_revision, target)
             return target
         finally:
             staging_parquet.unlink(missing_ok=True)
@@ -210,7 +267,12 @@ class MarketStore:
             self.connection.execute(
                 """INSERT INTO gold_metrics (metric_id, instrument_id, trading_date, period, metric_name, value,
                 definition, calculation_method, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(metric_id) DO UPDATE SET value=excluded.value, timestamp=excluded.timestamp""",
+                ON CONFLICT(metric_id) DO UPDATE SET
+                    metric_name=excluded.metric_name,
+                    value=excluded.value,
+                    definition=excluded.definition,
+                    calculation_method=excluded.calculation_method,
+                    timestamp=excluded.timestamp""",
                 [
                     metric["metric_id"], metric["instrument_id"], metric["trading_date"], metric["period"],
                     metric["metric_name"], metric["value"], metric["definition"], metric["calculation_method"],
@@ -341,11 +403,13 @@ class MarketStore:
             raise ValueError("official futures daily rows must belong to one source day")
         if coverage["status"] != "PASS" and rows:
             raise ValueError("failed official source cannot publish normalized rows")
+        coverage = {**coverage, "parser_version": coverage.get("parser_version") or (rows[0].get("parser_version") if rows else None)}
         columns = _OFFICIAL_FUTURES_DAILY_COLUMNS
         coverage_columns = _OFFICIAL_FUTURES_DAILY_COVERAGE_COLUMNS
         prepared_rows = [
             {
                 **row,
+                **{column: row.get(column) for column in _OFFICIAL_DAILY_EXTRA_COLUMNS},
                 "volume_sidedness": row.get("volume_sidedness"),
                 "open_interest_sidedness": row.get("open_interest_sidedness"),
                 "turnover_quality_status": row.get("turnover_quality_status") or (
@@ -376,7 +440,7 @@ class MarketStore:
                     f"{column}=excluded.{column}" for column in coverage_columns
                     if column not in {"trade_date", "exchange", "adapter"}
                 ),
-                [coverage[column] for column in coverage_columns],
+                [coverage.get(column) if column == "parser_version" else coverage[column] for column in coverage_columns],
             )
             self.connection.execute("COMMIT")
         except Exception:
@@ -594,7 +658,17 @@ class MarketStore:
 
     def replace_futures_structure_input_coverage(
         self, rows: Sequence[Mapping[str, Any]], *, chart_id: str, formula_version: str,
+        start_day: str | None = None, end_day: str | None = None,
     ) -> int:
+        if start_day is not None and end_day is not None and start_day > end_day:
+            raise ValueError("start_day must not be after end_day")
+        if any(
+            row["chart_id"] != chart_id or row["formula_version"] != formula_version
+            or (start_day is not None and str(row["trade_date"]) < start_day)
+            or (end_day is not None and str(row["trade_date"]) > end_day)
+            for row in rows
+        ):
+            raise ValueError("structure input coverage rows must belong to the selected formula and date range")
         columns = _FUTURES_STRUCTURE_INPUT_COVERAGE_COLUMNS
         prepared = [
             {
@@ -610,9 +684,17 @@ class MarketStore:
         ]
         try:
             self.connection.execute("BEGIN TRANSACTION")
+            clauses = ["chart_id=?", "formula_version=?"]
+            parameters = [chart_id, formula_version]
+            if start_day is not None:
+                clauses.append("trade_date>=?")
+                parameters.append(start_day)
+            if end_day is not None:
+                clauses.append("trade_date<=?")
+                parameters.append(end_day)
             self.connection.execute(
-                "DELETE FROM futures_structure_input_coverage WHERE chart_id=? AND formula_version=?",
-                [chart_id, formula_version],
+                "DELETE FROM futures_structure_input_coverage WHERE " + " AND ".join(clauses),
+                parameters,
             )
             if prepared:
                 self.connection.executemany(
@@ -810,6 +892,91 @@ class MarketStore:
         self.connection.commit()
         return len(rows)
 
+    def replace_futures_member_rank_day_source(
+        self,
+        *,
+        trading_day: str,
+        exchange: str,
+        source: str,
+        positions: Sequence[Mapping[str, Any]],
+        trades: Sequence[Mapping[str, Any]],
+        coverage: Mapping[str, Any],
+    ) -> tuple[int, int]:
+        """Atomically replace one source's position, trade and coverage facts.
+
+        A resumed daily import cannot expose half of a published ZIP. Rows of
+        every other source, including the authorized DCE API, are untouched.
+        """
+
+        prepared_positions = [_member_rank_with_provenance(row) for row in positions]
+        prepared_trades = [_member_trade_rank_with_provenance(row) for row in trades]
+        prepared_coverage = _member_coverage_with_provenance(coverage)
+        for row in prepared_positions:
+            _validate_futures_member_position_rank(row)
+        for row in prepared_trades:
+            _validate_futures_member_trade_rank(row)
+        _validate_futures_member_position_coverage(prepared_coverage)
+        if any(
+            row["trading_day"] != trading_day or row["exchange"] != exchange or row["source"] != source
+            for row in (*prepared_positions, *prepared_trades, prepared_coverage)
+        ):
+            raise ValueError("member ranking replacement contains another day, exchange or source")
+        if prepared_coverage["status"] != "PASS" or prepared_coverage["record_count"] != len(prepared_positions):
+            raise ValueError("member ranking replacement needs matching PASS position coverage")
+        if not prepared_positions or not prepared_trades:
+            raise ValueError("member ranking replacement needs published position and trade rows")
+
+        position_columns = _FUTURES_MEMBER_POSITION_RANK_COLUMNS
+        trade_columns = _FUTURES_MEMBER_TRADE_RANK_COLUMNS
+        coverage_columns = _FUTURES_MEMBER_POSITION_COVERAGE_COLUMNS
+        try:
+            import pandas as pd
+        except ImportError:  # pragma: no cover - AkShare supplies pandas in the locked environment
+            pd = None
+
+        def insert_ranks(table: str, columns: tuple[str, ...], rows: list[dict[str, Any]]) -> None:
+            if pd is None:
+                self.connection.executemany(
+                    f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})",
+                    [[row[column] for column in columns] for row in rows],
+                )
+                return
+            frame = pd.DataFrame.from_records(rows, columns=columns)
+            view = f"_{table}_batch"
+            self.connection.register(view, frame)
+            try:
+                self.connection.execute(
+                    f"INSERT INTO {table} ({', '.join(columns)}) "
+                    f"SELECT {', '.join(columns)} FROM {view}"
+                )
+            finally:
+                self.connection.unregister(view)
+
+        try:
+            self.connection.execute("BEGIN TRANSACTION")
+            parameters = [trading_day, exchange, source]
+            for table in (
+                "futures_member_position_ranks",
+                "futures_member_trade_ranks",
+                "futures_member_position_coverage",
+            ):
+                self.connection.execute(
+                    f"DELETE FROM {table} WHERE trading_day=? AND exchange=? AND source=?",
+                    parameters,
+                )
+            insert_ranks("futures_member_position_ranks", position_columns, prepared_positions)
+            insert_ranks("futures_member_trade_ranks", trade_columns, prepared_trades)
+            self.connection.execute(
+                f"INSERT INTO futures_member_position_coverage ({', '.join(coverage_columns)}) "
+                f"VALUES ({', '.join('?' for _ in coverage_columns)})",
+                [prepared_coverage[column] for column in coverage_columns],
+            )
+            self.connection.commit()
+        except Exception:
+            self.connection.rollback()
+            raise
+        return len(prepared_positions), len(prepared_trades)
+
     def list_futures_member_trade_ranks(
         self, *, trading_day: str | None = None, exchange: str | None = None,
         product_code: str | None = None, contract_code: str | None = None,
@@ -869,8 +1036,14 @@ class MarketStore:
                 definition VARCHAR NOT NULL, calculation_method VARCHAR NOT NULL, timestamp VARCHAR NOT NULL
             )"""
         )
+        self.connection.execute(
+            """CREATE TABLE IF NOT EXISTS market_schema_migrations (
+                migration_key VARCHAR PRIMARY KEY, completed_at VARCHAR NOT NULL
+            )"""
+        )
         self._ensure_futures_long_short_heat_schema()
         self._ensure_futures_contract_turnover_schema()
+        self._ensure_futures_product_contract_info_schema()
         self._ensure_futures_structure_schema()
         self._ensure_futures_member_position_rank_schema()
         self._ensure_futures_member_position_coverage_schema()
@@ -912,6 +1085,43 @@ class MarketStore:
         except Exception:
             self.connection.execute("ROLLBACK")
             raise
+
+    def _ensure_futures_product_contract_info_schema(self) -> None:
+        self.connection.execute(
+            """CREATE TABLE IF NOT EXISTS futures_product_contract_spec_observation (
+                product_key VARCHAR NOT NULL, source_url VARCHAR NOT NULL,
+                payload_sha256 VARCHAR NOT NULL, retrieved_at VARCHAR NOT NULL,
+                published_on VARCHAR, effective_from VARCHAR,
+                fields_json VARCHAR NOT NULL, source_kind VARCHAR NOT NULL,
+                parser_version VARCHAR NOT NULL, quality_status VARCHAR NOT NULL,
+                PRIMARY KEY(product_key, payload_sha256)
+            )"""
+        )
+        self.connection.execute(
+            """CREATE TABLE IF NOT EXISTS futures_product_listing_evidence (
+                product_key VARCHAR NOT NULL, source_url VARCHAR NOT NULL,
+                payload_sha256 VARCHAR NOT NULL, retrieved_at VARCHAR NOT NULL,
+                first_trading_day VARCHAR, date_precision VARCHAR NOT NULL,
+                evidence_status VARCHAR NOT NULL, note VARCHAR,
+                PRIMARY KEY(product_key, payload_sha256)
+            )"""
+        )
+        self.connection.execute(
+            """CREATE TABLE IF NOT EXISTS futures_month_contract_listing_evidence (
+                product_key VARCHAR NOT NULL, contract_code VARCHAR NOT NULL,
+                listed_on VARCHAR NOT NULL, last_trading_day VARCHAR,
+                last_delivery_day VARCHAR, source_url VARCHAR NOT NULL,
+                payload_sha256 VARCHAR NOT NULL, retrieved_at VARCHAR NOT NULL,
+                PRIMARY KEY(product_key, contract_code, payload_sha256)
+            )"""
+        )
+        self.connection.execute(
+            """CREATE TABLE IF NOT EXISTS futures_product_contract_info_coverage (
+                product_key VARCHAR PRIMARY KEY, exchange VARCHAR NOT NULL,
+                status VARCHAR NOT NULL, source_url VARCHAR,
+                last_checked_at VARCHAR NOT NULL, error VARCHAR
+            )"""
+        )
 
     def _ensure_futures_contract_turnover_schema(self) -> None:
         self.connection.execute(
@@ -972,6 +1182,16 @@ class MarketStore:
                 PRIMARY KEY(trade_date, exchange, adapter)
             )"""
         )
+        for column in _OFFICIAL_DAILY_EXTRA_COLUMNS:
+            if column not in existing_columns:
+                kind = "VARCHAR" if column in {"source_contract_code", "source_product_name", "delivery_month"} else "DOUBLE"
+                self.connection.execute(f'ALTER TABLE futures_contract_daily_official ADD COLUMN "{column}" {kind}')
+        coverage_columns = {str(row[1]) for row in self.connection.execute("PRAGMA table_info('futures_contract_daily_official_coverage')").fetchall()}
+        if "parser_version" not in coverage_columns:
+            self.connection.execute("ALTER TABLE futures_contract_daily_official_coverage ADD COLUMN parser_version VARCHAR")
+        from .futures_settlement_parameters import ensure_schema as ensure_settlement_schema
+
+        ensure_settlement_schema(self.connection)
         self.connection.execute(
             """CREATE TABLE IF NOT EXISTS futures_contract_turnover_heat_daily (
                 formula_version VARCHAR NOT NULL, trade_date VARCHAR NOT NULL,
@@ -1158,42 +1378,88 @@ class MarketStore:
         self._ensure_member_position_provenance_columns("futures_member_trade_ranks")
 
     def _ensure_member_position_provenance_columns(self, table: str) -> None:
+        if table not in {
+            "futures_member_position_ranks",
+            "futures_member_position_coverage",
+            "futures_member_trade_ranks",
+        }:
+            raise ValueError("unsupported member provenance migration table")
         columns = {
             str(row[1]) for row in self.connection.execute(f"PRAGMA table_info('{table}')").fetchall()
         }
+        missing = set(_FUTURES_MEMBER_POSITION_PROVENANCE_COLUMNS) - columns
+        migration_key = f"member-provenance-v1:{table}"
+        completed = self.connection.execute(
+            "SELECT 1 FROM market_schema_migrations WHERE migration_key=?",
+            [migration_key],
+        ).fetchone() is not None
+        if completed:
+            if missing:
+                raise RuntimeError("member provenance migration marker conflicts with table schema")
+            return
+        # An interrupted column addition leaves no completion marker. The
+        # following run sees the existing columns and repeats the backfill.
         for column in _FUTURES_MEMBER_POSITION_PROVENANCE_COLUMNS:
-            if column not in columns:
+            if column in missing:
                 self.connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} VARCHAR")
-        self.connection.execute(
-            f"UPDATE {table} SET publisher=exchange WHERE publisher IS NULL"
-        )
-        self.connection.execute(
-            f"UPDATE {table} SET adapter=source WHERE adapter IS NULL"
-        )
-        self.connection.execute(
-            f"UPDATE {table} SET retrieved_at=collected_at WHERE retrieved_at IS NULL"
-        )
-        self.connection.execute(
-            f"UPDATE {table} SET legacy_adapter=source "
-            "WHERE legacy_adapter IS NULL AND source LIKE 'akshare-%'"
-        )
-        self.connection.execute(
-            f"UPDATE {table} SET quality_status="
-            "CASE WHEN source LIKE 'akshare-%' THEN 'LEGACY_WRAPPED' ELSE 'UNVERIFIED' END "
-            "WHERE quality_status IS NULL"
-        )
+        self.connection.execute("BEGIN TRANSACTION")
+        try:
+            needs_backfill = bool(missing)
+            if not needs_backfill:
+                # Existing installations may have completed this historical
+                # backfill before the durable marker was introduced. One
+                # existence query avoids five unconditional UPDATEs.
+                needs_backfill = self.connection.execute(
+                    f"SELECT 1 FROM {table} WHERE publisher IS NULL OR adapter IS NULL "
+                    "OR retrieved_at IS NULL OR quality_status IS NULL "
+                    "OR (legacy_adapter IS NULL AND source LIKE 'akshare-%') LIMIT 1"
+                ).fetchone() is not None
+            if needs_backfill:
+                self.connection.execute(
+                    f"UPDATE {table} SET publisher=exchange WHERE publisher IS NULL"
+                )
+                self.connection.execute(
+                    f"UPDATE {table} SET adapter=source WHERE adapter IS NULL"
+                )
+                self.connection.execute(
+                    f"UPDATE {table} SET retrieved_at=collected_at WHERE retrieved_at IS NULL"
+                )
+                self.connection.execute(
+                    f"UPDATE {table} SET legacy_adapter=source "
+                    "WHERE legacy_adapter IS NULL AND source LIKE 'akshare-%'"
+                )
+                self.connection.execute(
+                    f"UPDATE {table} SET quality_status="
+                    "CASE WHEN source LIKE 'akshare-%' THEN 'LEGACY_WRAPPED' ELSE 'UNVERIFIED' END "
+                    "WHERE quality_status IS NULL"
+                )
+            self.connection.execute(
+                "INSERT INTO market_schema_migrations VALUES (?, ?)",
+                [migration_key, _now()],
+            )
+            self.connection.execute("COMMIT")
+        except Exception:
+            self.connection.execute("ROLLBACK")
+            raise
 
+
+_OFFICIAL_DAILY_EXTRA_COLUMNS = (
+    "source_contract_code", "source_product_name", "delivery_month", "previous_settlement",
+    "open", "high", "low", "change_close", "change_settlement", "open_interest_change",
+)
 
 _OFFICIAL_FUTURES_DAILY_COLUMNS = (
     "trade_date", "exchange", "contract_code", "product_code", "close", "settlement",
     "volume", "open_interest", "turnover_raw", "turnover_cny", "turnover_unit", "turnover_sidedness",
     "source_url", "adapter", "payload_sha256", "retrieved_at", "quality_status",
     "volume_sidedness", "open_interest_sidedness", "turnover_quality_status", "parser_version",
+    *_OFFICIAL_DAILY_EXTRA_COLUMNS,
 )
 
 _OFFICIAL_FUTURES_DAILY_COVERAGE_COLUMNS = (
     "trade_date", "exchange", "status", "record_count", "usable_count", "adapter",
     "source_url", "payload_sha256", "error", "retrieved_at",
+    "parser_version",
 )
 
 _FUTURES_CONTRACT_TURNOVER_HEAT_COLUMNS = (
@@ -1564,6 +1830,23 @@ def _sha256(path: Path) -> str:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def _same_market_fact(previous: str, current: str) -> bool:
+    if previous == current:
+        return True
+    try:
+        left = json.loads(previous)
+        right = json.loads(current)
+    except (ValueError, TypeError):
+        return False
+    if not isinstance(left, dict) or not isinstance(right, dict):
+        return False
+    # The retrieval timestamp is retained in Bronze; every other field,
+    # including source, parser version and quality, remains a correction gate.
+    left.pop("fetched_at", None)
+    right.pop("fetched_at", None)
+    return left == right
 
 
 def _bar_instrument_id(bar: Mapping[str, Any]) -> str:

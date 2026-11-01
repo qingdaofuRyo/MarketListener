@@ -124,3 +124,39 @@ test("R4 list domain rules retain trading-date wording and stable three-state so
   expect(nextSortState(ascending, "latestPrice")).toEqual({ field: null, direction: null });
   expect(weekdayLabel("2026-09-04T09:30:00+08:00")).toBe("周五");
 });
+
+test("forced first-page refresh does not wait for persistent cache opening", async ({ page }) => {
+  await page.addInitScript(() => {
+    const nativeOpen = indexedDB.open.bind(indexedDB);
+    Object.defineProperty(indexedDB, "open", {
+      configurable: true,
+      value: (name: string, version?: number): IDBOpenDBRequest => {
+        if (name === "marketlistener-query-cache") {
+          const state = window as Window & { blockedMarketCacheOpens?: number };
+          state.blockedMarketCacheOpens = (state.blockedMarketCacheOpens ?? 0) + 1;
+          // An unresolved request models a browser whose persistent store is
+          // blocked. The independent prefill may wait, but the forced GET may not.
+          return {} as IDBOpenDBRequest;
+        }
+        return version === undefined ? nativeOpen(name) : nativeOpen(name, version);
+      },
+    });
+  });
+  await page.route("**/api/composites/**", route => route.fulfill({ json: { events: [] } }));
+  await page.route("**/api/market/**", route => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/api/market/cache-status") return route.fulfill({ json: { dataVersion: "blocked-cache" } });
+    if (path === "/api/market/instruments") return route.fulfill({ json: {
+      items: [instrument(1)], total: 1, dataVersion: "blocked-cache",
+    } });
+    return route.fulfill({ json: { items: [], bars: [], total: 0, availablePeriods: [] } });
+  });
+
+  const firstPageRequested = page.waitForRequest(request =>
+    new URL(request.url()).pathname === "/api/market/instruments", { timeout: 10_000 });
+  await page.goto("/market/all/?category=cn-future-main");
+  await firstPageRequested;
+  await expect(page.locator(".instrument-row .row-main").first()).toContainText("测试主连001");
+  expect(await page.evaluate(() => (window as Window & { blockedMarketCacheOpens?: number }).blockedMarketCacheOpens))
+    .toBeGreaterThan(0);
+});

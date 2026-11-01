@@ -19,8 +19,12 @@ dependencies = [
     "openpyxl==3.1.5",
     "pypdf==6.14.2",
     "pytdx==1.72",
+    "requests==2.34.2",
+    "pywin32==312; sys_platform == 'win32'",
     "tushare==1.4.29",
     "uvicorn==0.52.1",
+    "websocket-client==1.9.0",
+    "xlrd==2.0.2",
 ]
 
 [project.optional-dependencies]
@@ -33,7 +37,7 @@ market-monitor = "market_monitor.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-market_monitor = ["config/*.json"]
+market_monitor = ["config/*.json", "admin_web_dist/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

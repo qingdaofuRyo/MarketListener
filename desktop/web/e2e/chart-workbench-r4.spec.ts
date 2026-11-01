@@ -1,6 +1,35 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 import { heikinAshi } from "../src/domain/chartPresentation";
 import { bars, id, setupMarketWorkbench as setup } from "./helpers/market-workbench";
+
+async function priceGrid(page: Page) {
+  const root = page.locator(".workbench-chart .chart-root");
+  await expect(root.locator("canvas").first()).toBeVisible();
+  return root.evaluate(async (element) => {
+    const chunk = performance.getEntriesByType("resource").find((entry) => /\/echarts-[^/]+\.js$/.test(entry.name));
+    if (!chunk) throw new Error("ECharts production chunk not loaded");
+    const module = await import(chunk.name);
+    const init = Object.values(module)[0] as (node: Element) => { getOption: () => { grid: Array<{ left: number; right: number; top: number; height: number }> } };
+    const grid = init(element).getOption().grid[0];
+    const box = element.getBoundingClientRect();
+    return {
+      left: box.left + grid.left,
+      width: box.width - grid.left - grid.right,
+      top: box.top + grid.top,
+      height: grid.height,
+    };
+  });
+}
+
+async function clickPriceGrid(page: Page, xRatio: number, yRatio: number) {
+  const root = page.locator(".workbench-chart .chart-root");
+  const grid = await priceGrid(page);
+  const box = (await root.boundingBox())!;
+  await root.click({ position: {
+    x: grid.left - box.x + grid.width * xRatio,
+    y: grid.top - box.y + grid.height * yRatio,
+  } });
+}
 
 test("chart presentation formulas use historical bars", () => {
   const result = heikinAshi([{ open: 10, high: 14, low: 8, close: 12 }, { open: 12, high: 15, low: 9, close: 14 }]);
@@ -108,10 +137,11 @@ test("trend line uses two logical anchors and survives reopening", async ({ page
   await page.getByRole("button", { name: "线条工具", exact: true }).click();
   await page.getByRole("menuitem", { name: "趋势线", exact: true }).click();
   const chart = page.locator(".workbench-chart .chart-root");
-  const box = (await chart.boundingBox())!;
-  await page.mouse.click(box.x + box.width * .3, box.y + box.height * .3);
+  await expect(page.locator(".workbench-chart .kline-chart")).toHaveClass(/drawing-active/);
+  await clickPriceGrid(page, .4, .35);
+  await expect(chart).toHaveAttribute("data-rectangle-anchor", "true");
   expect(state.saves()).toBe(0);
-  await page.mouse.click(box.x + box.width * .6, box.y + box.height * .4);
+  await clickPriceGrid(page, .55, .45);
   await expect.poll(state.saves).toBe(1);
   expect(state.drawings()[0].type).toBe("trend");
   expect(state.drawings()[0].points).toHaveLength(2);
@@ -123,10 +153,13 @@ test("grouped risk reward drawings use three prices and list board periods are d
   const state=await setup(page);
   await page.getByRole("button",{name:"图形与盈亏比",exact:true}).click();
   await page.getByRole("menuitem",{name:"多头盈亏比",exact:true}).click();
-  const chart=page.locator(".workbench-chart .chart-root"),box=(await chart.boundingBox())!;
-  await page.mouse.click(box.x+box.width*.35,box.y+box.height*.3);
-  await page.mouse.click(box.x+box.width*.45,box.y+box.height*.4);
-  await page.mouse.click(box.x+box.width*.6,box.y+box.height*.18);
+  await expect(page.locator(".workbench-chart .kline-chart")).toHaveClass(/drawing-active/);
+  await expect(page.locator(".risk-drawing-hint")).toBeVisible();
+  await clickPriceGrid(page,.4,.48);
+  await expect(page.locator(".risk-drawing-hint")).toContainText("请选择止损参考价");
+  await clickPriceGrid(page,.45,.7);
+  await expect(page.locator(".risk-drawing-hint")).toContainText("请选择目标参考价");
+  await clickPriceGrid(page,.5,.26);
   await expect.poll(state.saves).toBe(1);
   expect(state.drawings()[0].type).toBe("long_position");
   expect(state.drawings()[0].points).toHaveLength(3);

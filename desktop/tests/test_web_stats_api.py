@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from market_monitor.web_app import create_web_app
@@ -225,6 +227,25 @@ def test_strategy_ledger_crud_merges_legacy_and_calculates_long_short_performanc
     deleted = client.delete(f"/api/stats/strategy-trades/{trade_id}")
     assert deleted.status_code == 200
     assert client.get("/api/stats/strategy-ledger").json()["total"] == 2
+
+
+def test_strategy_performance_writes_return_retry_when_profile_capture_is_busy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from market_monitor.profile_gate import ProfileGateBusy
+    from market_monitor.web_api import stats
+
+    client = _app(tmp_path)
+
+    @contextmanager
+    def unavailable(_root: Path):
+        raise ProfileGateBusy("synthetic backup in progress")
+        yield
+
+    monkeypatch.setattr(stats, "profile_write_gate", unavailable)
+    response = client.put("/api/stats/strategy-capital/demo", json={"initialCapital": 1000})
+    assert response.status_code == 503
+    assert response.headers["Retry-After"] == "2"
 
 
 def test_strategy_performance_requires_independent_capital(tmp_path: Path) -> None:

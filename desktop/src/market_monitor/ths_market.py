@@ -19,8 +19,7 @@ _HEADERS = {"User-Agent": "Mozilla/5.0", "Referer": f"{_BASE}/"}
 def run_ths_market_snapshot(data_root: Path, *, session: requests.Session | None = None) -> dict[str, Any]:
     """Collect public pages and persist a precise Chinese status/partial result.
 
-    同花顺的市场宽度接口及索引后续分页在未携带已登录浏览器会话时会
-    返回 403/401；此处明确记录受阻项，不把缺失数据伪造成零值。
+    只记录来源状态，不把访问受阻推断为某一种登录原因，也不将缺失数据填零。
     """
     client = session or requests.Session()
     root = Path(data_root) / "ths_market"
@@ -28,7 +27,13 @@ def run_ths_market_snapshot(data_root: Path, *, session: requests.Session | None
     status: dict[str, Any] = {"状态": "运行中", "数据源": "同花顺行情中心", "更新时间": _now(), "市场宽度": {}, "沪深指数": {}}
 
     breadth, breadth_issue = _fetch_breadth(client)
-    status["市场宽度"] = {"状态": "完成" if breadth else "受阻", "字段": breadth or {}, "说明": breadth_issue}
+    complete_breadth = bool(breadth and not breadth_issue and all(
+        breadth.get(key) is not None for key in ("上涨个股数量", "下跌个股数量", "涨停个股数量",
+                                                 "跌停个股数量", "昨日涨停今日收益率")))
+    if complete_breadth:
+        breadth_issue = "已解析来源字段；行情日期与收盘状态尚未核验。"
+    status["市场宽度"] = {"状态": "部分完成" if breadth else "受阻",
+                         "字段": breadth or {}, "说明": breadth_issue}
 
     indices, pages, index_issue = _fetch_indices(client)
     status["沪深指数"] = {
@@ -39,9 +44,7 @@ def run_ths_market_snapshot(data_root: Path, *, session: requests.Session | None
         "字段": ["代码", "名称", "最新价", "涨跌额", "涨跌幅", "昨收", "今开", "最高价", "最低价", "成交量", "成交额"],
         "说明": index_issue,
     }
-    if breadth and len(indices) >= 575:
-        status["状态"] = "完成"
-    elif breadth or indices:
+    if breadth or indices:
         status["状态"] = "部分完成"
     else:
         status["状态"] = "受阻"
@@ -57,22 +60,31 @@ def _fetch_breadth(client: requests.Session) -> tuple[dict[str, Any] | None, str
     if response.status_code != 200:
         fallback = _breadth_from_stock_page(client)
         if fallback:
-            return fallback, f"实时宽度接口返回 HTTP {response.status_code}；已按公开 A 股列表页的涨跌幅计算上涨/横盘/下跌，涨停、跌停和昨日涨停收益仍需已登录会话。"
-        return None, f"接口返回 HTTP {response.status_code}；需要同花顺已登录浏览器会话后重试。"
+            return fallback, f"实时宽度接口返回 HTTP {response.status_code}；仅按公开 A 股列表页样本计算上涨/横盘/下跌，无法代表全市场；其他指标待核。"
+        return None, f"接口返回 HTTP {response.status_code}；来源访问受阻，原因待核。"
     try:
-        payload = json.loads(response.content.decode("gbk", "ignore"))
+        try:
+            payload = json.loads(response.content.decode("utf-8-sig"))
+        except UnicodeDecodeError:
+            payload = json.loads(response.content.decode("gb18030"))
     except (ValueError, UnicodeDecodeError) as error:
         return None, f"接口响应无法解析：{type(error).__name__}"
     try:
         distribution = payload["zdfb_data"]
-        limit_data = payload["zdt_data"]
-        yesterday_limit = payload["jrbx_data"]
+        limit_data = payload.get("zdt_data") or {}
+        yesterday_limit = payload.get("jrbx_data") or {}
+        limits = payload.get("last_zdt") or limit_data.get("last_zdt") or {}
         return {
             "涨跌分布": distribution.get("zdfb"),
-            "涨停个股数量": limit_data.get("last_zdt", {}).get("ztzs") or distribution.get("znum"),
-            "跌停个股数量": limit_data.get("last_zdt", {}).get("dtzs") or distribution.get("dnum"),
-            "昨日涨停今日平均收益率": yesterday_limit.get("last_zdf"),
-            "数据时间": yesterday_limit.get("time") or limit_data.get("zd_time"),
+            "上涨个股数量": distribution.get("znum"),
+            "下跌个股数量": distribution.get("dnum"),
+            "涨停个股数量": limits.get("ztzs"),
+            "跌停个股数量": limits.get("dtzs"),
+            "昨日涨停今日收益率": yesterday_limit.get("last_zdf"),
+            # The website uses these as chart-axis arrays; neither proves the
+            # trading date or the timestamp of the headline values.
+            "数据时间": None,
+            "日内时间序列": yesterday_limit.get("time"),
         }, ""
     except (AttributeError, KeyError) as error:
         return None, f"接口字段变更：{type(error).__name__}"
@@ -110,7 +122,7 @@ def _fetch_indices(client: requests.Session) -> tuple[list[dict[str, Any]], int,
     for page in range(2, 13):
         response = client.get(f"{_BASE}/zs/index/field/zdf/order/desc/page/{page}/ajax/1/", headers=_HEADERS, timeout=30)
         if response.status_code != 200:
-            issue = f"第 {page} 页返回 HTTP {response.status_code}；需要同花顺已登录浏览器会话后续抓取。"
+            issue = f"第 {page} 页返回 HTTP {response.status_code}；来源访问受阻，原因待核。"
             break
         rows = _parse_index_page(response.content)
         if not rows:

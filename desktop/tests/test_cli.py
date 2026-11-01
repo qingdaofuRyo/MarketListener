@@ -1,6 +1,9 @@
 """Stable, safe CLI outcomes without performing real provider probes."""
 
 import json
+import shutil
+
+from market_monitor.storage import MarketStore, PartitionKey
 
 from market_monitor.providers import (
     Capability,
@@ -67,6 +70,30 @@ def test_main_returns_success(capsys) -> None:
     assert main([]) == 0
     out = capsys.readouterr().out
     assert json.loads(out)["status"] == "SUCCESS"
+
+
+def test_cli_silver_audit_reports_verified_files_and_orphans(tmp_path, capsys) -> None:
+    root = tmp_path / "data"
+    store = MarketStore(root)
+    try:
+        bar = {"instrument_id": "CN.DCE.FUTURE.JM2701", "period": "1d",
+               "bar_open_time": "2026-10-09T15:00:00+08:00", "close": 1200.0}
+        path = store.write_silver_bars(
+            PartitionKey("CN", "FUTURE", "1d", 2026, "cli-audit"),
+            [bar], bar["bar_open_time"], store.begin_run("cli-audit"),
+        )
+    finally:
+        store.close()
+    assert main(["audit-silver-catalog", "--data-root", str(root)]) == 0
+    output = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert output[-1]["status"] == "PASS"
+    assert output[-1]["verifiedFiles"] == 1
+
+    shutil.copy2(path, path.with_name("unregistered.parquet"))
+    assert main(["audit-silver-catalog", "--data-root", str(root)]) == 2
+    output = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert output[-1]["status"] == "FAILED"
+    assert {item["code"] for item in output[-1]["issues"]} == {"ORPHAN_PARQUET"}
 
 
 def test_probe_exit_codes_are_machine_readable_without_real_network(monkeypatch, tmp_path, capsys) -> None:

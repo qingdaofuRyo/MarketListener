@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+from datetime import date
 from pathlib import Path
 import sys
 
@@ -66,20 +67,53 @@ def test_build_backend_command_rejects_invalid_port(tmp_path: Path) -> None:
         launcher.build_backend_command(root, port=0)
 
 
-def test_tdx_commands_keep_launch_and_download_explicit(tmp_path: Path) -> None:
+def test_tdx_commands_keep_launch_and_download_explicit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from market_monitor import tdx_gui_auto_refresh
+
     root = _project_tree(tmp_path)
     base = [str(root / "desktop" / ".venv" / "Scripts" / "python.exe"),
             "-m", "market_monitor.tdx_download_ui"]
+    financial_python = root / "data_control" / "tools" / "python311-x86" / "python.exe"
+    financial_python.parent.mkdir(parents=True)
+    financial_python.write_bytes(b"synthetic x86 executable marker")
+    monkeypatch.setattr(tdx_gui_auto_refresh, "_is_x86_python", lambda path: path == financial_python)
+    monkeypatch.setattr(tdx_gui_auto_refresh, "batch_start_dates",
+                        lambda _root, _terminal, _now: {
+                            key: date(2026, 10, 22) for key in (
+                                "cn-day", "cn-5m", "extended-day", "extended-5m",
+                                "future-day", "future-5m",
+                            )
+                        })
 
     assert launcher.build_tdx_command(root, "financial", download=False) == [
         *base, "--launch-only", "--terminal", "financial",
     ]
+    assert launcher.build_tdx_command(root, "financial", download=True) == [
+        str(financial_python), "-m", "market_monitor.tdx_download_ui",
+        "--execute", "--terminal", "financial", "--auto-login-saved",
+        "--state-dir", str(root / "data_control" / "state" / "tdx_download_ui"),
+        "--batch-start", "cn-day:2026-10-22",
+        "--batch-start", "cn-5m:2026-10-22",
+        "--batch-start", "extended-day:2026-10-22",
+        "--batch-start", "extended-5m:2026-10-22",
+    ]
     assert launcher.build_tdx_command(root, "futures", download=True) == [
         *base, "--execute", "--terminal", "futures", "--state-dir",
         str(root / "data_control" / "state" / "tdx_download_ui"),
+        "--batch-start", "future-day:2026-10-22",
+        "--batch-start", "future-5m:2026-10-22",
     ]
     with pytest.raises(ValueError, match="未知通达信终端"):
         launcher.build_tdx_command(root, "unknown", download=True)
+
+
+def test_financial_download_button_does_not_fall_back_to_64bit_python(tmp_path: Path) -> None:
+    root = _project_tree(tmp_path)
+
+    with pytest.raises(FileNotFoundError, match="32位Python"):
+        launcher.build_tdx_command(root, "financial", download=True)
 
 
 def test_launcher_log_summary_filters_access_and_progress_but_keeps_errors() -> None:
@@ -400,6 +434,88 @@ def test_tk_window_embeds_log_view_and_startup_options(tmp_path: Path, monkeypat
         assert window.close_to_tray_var.get() is False
     finally:
         root.destroy()
+
+
+def test_manual_terminal_downloads_can_run_concurrently_and_import_once() -> None:
+    class Button:
+        def __init__(self) -> None:
+            self.state = "disabled"
+
+        def configure(self, *, state: str) -> None:
+            self.state = state
+
+    class Status:
+        def set(self, _value: str) -> None:
+            pass
+
+    window = object.__new__(launcher.LauncherWindow)
+    window.tdx_busy_terminals = {"financial", "futures"}
+    window.tdx_import_after_download = False
+    window.tdx_buttons_by_terminal = {
+        terminal: (Button(), Button()) for terminal in ("financial", "futures")
+    }
+    window.tdx_status = {terminal: Status() for terminal in ("financial", "futures")}
+    window._append_event = lambda *_args: None
+    imports: list[str] = []
+    window._queue_local_import = lambda: imports.append("import")
+
+    window._on_tdx_done("financial", True, 0, {
+        "status": "UI_DONE_UNVERIFIED",
+        "terminals": {"financial": "UI_DONE_UNVERIFIED"},
+    }, None)
+    assert window.tdx_busy_terminals == {"futures"}
+    assert imports == []
+    assert all(button.state == "normal" for button in window.tdx_buttons_by_terminal["financial"])
+    assert all(button.state == "disabled" for button in window.tdx_buttons_by_terminal["futures"])
+
+    window._on_tdx_done("futures", True, 0, {
+        "status": "UI_DONE_UNVERIFIED",
+        "terminals": {"futures": "UI_DONE_UNVERIFIED"},
+    }, None)
+    assert window.tdx_busy_terminals == set()
+    assert imports == ["import"]
+
+
+def test_launcher_allows_one_manual_download_per_terminal_at_the_same_time(monkeypatch) -> None:
+    class Button:
+        def __init__(self) -> None:
+            self.state = "normal"
+
+        def configure(self, *, state: str) -> None:
+            self.state = state
+
+    class Status:
+        def set(self, _value: str) -> None:
+            pass
+
+    started: list[tuple[str, bool]] = []
+
+    class Thread:
+        def __init__(self, *, target, args, name, daemon) -> None:
+            assert name.startswith("marketlistener-tdx-") and daemon is True
+            self.args = args
+
+        def start(self) -> None:
+            started.append(self.args)
+
+    monkeypatch.setattr(launcher.threading, "Thread", Thread)
+    window = object.__new__(launcher.LauncherWindow)
+    window.tdx_busy_terminals = set()
+    window.tdx_status = {terminal: Status() for terminal in ("financial", "futures")}
+    window.tdx_buttons_by_terminal = {
+        terminal: (Button(), Button()) for terminal in ("financial", "futures")
+    }
+    window._append_log = lambda *_args: None
+    window._tdx_worker = lambda *_args: None
+
+    window.run_tdx_action("financial", download=True)
+    window.run_tdx_action("futures", download=True)
+    window.run_tdx_action("financial", download=True)
+
+    assert started == [("financial", True), ("futures", True)]
+    assert window.tdx_busy_terminals == {"financial", "futures"}
+    assert all(button.state == "disabled" for buttons in window.tdx_buttons_by_terminal.values()
+               for button in buttons)
 
 
 def test_binary_self_test_checks_project_without_opening_gui(tmp_path: Path, monkeypatch) -> None:

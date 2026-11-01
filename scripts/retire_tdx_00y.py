@@ -12,8 +12,10 @@ import shutil
 
 import duckdb
 
-from market_monitor.market_data_version import advance_market_data_version
-from market_monitor.market_query_cache import refresh_kline_cache_partitions
+from market_monitor.market_data_version import (
+    advance_market_data_version, market_data_version, settle_market_data_version,
+)
+from market_monitor.market_query_cache import get_kline_query_store, refresh_kline_cache_partitions
 
 PATTERN = r"GLOBAL\.(COMEX|NYMEX|CBOT)\.FUTURE\.[A-Z0-9_-]+00Y\.TDX_LOCAL"
 
@@ -42,6 +44,7 @@ def run(root: Path, terminal: Path, apply: bool):
     if not apply:
         connection.close()
         return report
+    cache_base_revision = market_data_version(root)
     backup = root / "retired" / ("00Y-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ"))
     backup.mkdir(parents=True, exist_ok=False)
     # Closed/checkpointed catalog copy is a recovery record, not a live DB clone.
@@ -56,6 +59,9 @@ def run(root: Path, terminal: Path, apply: bool):
                 "raw": [str(p) for p in raw], "status": "BACKED_UP"}
     (backup / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     connection = duckdb.connect(str(root / "catalog.duckdb"))
+    cache_target_revision = (
+        advance_market_data_version(root, pending=True)[1] if changes else market_data_version(root)
+    )
     try:
         connection.execute("BEGIN TRANSACTION")
         for partition, path, _ in changes:
@@ -70,19 +76,27 @@ def run(root: Path, terminal: Path, apply: bool):
         connection.execute("ROLLBACK")
         for _, path, _ in changes:
             shutil.copy2(backup / path.relative_to(root), path)
+        if changes:
+            settle_market_data_version(root, cache_target_revision)
         raise
     finally:
         connection.close()
+    if changes:
+        settle_market_data_version(root, cache_target_revision)
     for path in raw:
         source = inside(terminal / "vipdoc/ds", path)
         target = backup / "terminal" / source.relative_to(terminal.resolve())
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(source), str(target))
-    advance_market_data_version(root)
     # Existing cache paths use the caller's relative data-root spelling.
     cache_files = [Path(os.path.relpath(path, Path.cwd())) for _, path, _ in changes]
-    refreshed = refresh_kline_cache_partitions(root, cache_files) if changes else True
-    manifest.update(status="RETIRED", cacheRefreshed=refreshed)
+    refreshed = refresh_kline_cache_partitions(
+        root, cache_files, expected_base_revision=cache_base_revision,
+        target_revision=cache_target_revision,
+    ) if changes else get_kline_query_store(root).status().ready
+    manifest.update(status="RETIRED" if refreshed else "RETIRED_INDEX_STALE",
+                    cacheRefreshed=refreshed,
+                    cacheRevision=cache_target_revision if refreshed else None)
     (backup / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     return manifest
 

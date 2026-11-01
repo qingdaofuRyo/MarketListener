@@ -17,8 +17,8 @@ android\gradlew.bat -p android testDebugUnitTest
 android\gradlew.bat -p android assembleDebug
 ```
 
-注意：Windows 中文物理路径会导致 JVM 单元测试 worker 加载测试类失败，而且 JDK 21 会把英文 junction 解析回物理路径。命令行测试应先把仓库临时映射到空闲盘符（示例：`subst M: <仓库绝对路径>`），从 `M:\` 执行上述 Gradle 命令，最后用 `subst M: /D` 释放盘符。Android Studio 可继续从英文 junction `C:\Users\qingd\Documents\MarketListener\android` 打开。
+注意：Windows 中文物理路径会导致 JVM 单元测试 worker 加载测试类失败，而且 JDK 21 会把英文 junction 解析回物理路径。命令行测试应先把仓库临时映射到空闲盘符（示例：`subst M: <仓库绝对路径>`），从 `M:\` 执行上述 Gradle 命令，最后用 `subst M: /D` 释放盘符。Android Studio 可继续从英文 junction `C:\Users\<user>\Documents\MarketListener\android` 打开。
 
-完整基线请从仓库根目录运行 `powershell -ExecutionPolicy Bypass -File scripts\verify.ps1`。该脚本显式验证并使用 `C:\Users\qingd\.jdks\jbr-21.0.11`，自动选择空闲临时盘符，且在失败时仍清理该映射。
+完整基线请从仓库根目录运行 `powershell -ExecutionPolicy Bypass -File scripts\verify.ps1`。该脚本显式验证并使用 `C:\Users\<user>\.jdks\jbr-21.0.11`，自动选择空闲临时盘符，且在失败时仍清理该映射。
 
 后续开发不自动继续历史 D0/`FULL-*` 任务；架构和数据边界仍以 `../docs/ADR.md` 为准。Android 不保存 Provider API Key、Token 或桌面本地数据库，也不直接访问第三方行情服务。

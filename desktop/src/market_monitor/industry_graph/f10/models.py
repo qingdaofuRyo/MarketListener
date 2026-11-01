@@ -78,6 +78,7 @@ class RevenueSegment:
 
     name: str
     amount: MoneySnapshot | None = None
+    amount_without_timestamp: dict[str, Any] | None = None
     ratio: float | None = None
     segment_type: str | None = None
     revenue_share_pct: float | None = None
@@ -95,6 +96,7 @@ class RevenueSegment:
             {
                 "name": self.name,
                 "amount": self.amount.to_dict() if self.amount is not None else None,
+                "amountWithoutTimestamp": self.amount_without_timestamp,
                 "ratio": self.ratio,
                 "segmentType": self.segment_type,
                 "revenueSharePct": self.revenue_share_pct,

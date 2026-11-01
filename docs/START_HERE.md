@@ -19,7 +19,7 @@
 ### 实现或修复
 
 ```text
-项目路径：C:\Users\qingd\Documents\MarketListener
+项目路径：C:\Users\<user>\Documents\MarketListener
 
 阅读 START_HERE.md 和 STATUS.md。若存在 CHANGES_REQUIRED，修复其中指定的同一任务；
 否则执行第一项 READY 任务。严格遵守 Plan_full.md 中该任务的依赖、修改范围、
@@ -30,7 +30,7 @@
 ### 独立审查
 
 ```text
-项目路径：C:\Users\qingd\Documents\MarketListener
+项目路径：C:\Users\<user>\Documents\MarketListener
 
 阅读 START_HERE.md、STATUS.md 和目标任务交付记录，只审查 STATUS.md 中处于 REVIEW
 的当前任务。按 P0/P1/P2/P3 输出带文件和行号的问题并运行只读复核。
@@ -40,7 +40,7 @@
 ### 独立验收
 
 ```text
-项目路径：C:\Users\qingd\Documents\MarketListener
+项目路径：C:\Users\<user>\Documents\MarketListener
 
 阅读 START_HERE.md、STATUS.md 和目标任务交付/审查记录，只验收 STATUS.md 中处于
 ACCEPTANCE 的当前任务。重新运行 Plan_full.md 规定的测试和真实操作并保存证据。

@@ -120,6 +120,174 @@ export interface ContractTurnoverHeatResponse {
 
 export type FuturesStructureRange = "1y" | "3y" | "5y" | "all";
 
+export interface RankingSeries { key: string; name: string; values: Array<number | null> }
+export interface FuturesRankingDirectory {
+  available: boolean;
+  snapshotStatus?: "CURRENT" | "CACHED_DURING_UPDATE" | "CACHED_AWAITING_REFRESH";
+  latestDay: string;
+  baselineDay: string;
+  dataVersion: string;
+  members: Array<{ key: string; name: string; position: number | null }>;
+  products: Array<{ key: string; name: string; contracts: string[]; position?: number | null }>;
+}
+export type FuturesDistributionMetric = "open_interest" | "notional" | "turnover" | "deposit" | "volume" | "return";
+export interface FuturesContractInfoSpec {
+  sourceUrl: string;
+  payloadSha256: string;
+  retrievedAt: string;
+  publishedOn: string | null;
+  effectiveFrom: string | null;
+  fields: Record<string, string>;
+  sourceKind: string;
+  parserVersion: string;
+  qualityStatus: string;
+}
+export interface FuturesContractInfoProduct {
+  key: string;
+  exchange: string;
+  productCode: string;
+  name: string;
+  qualityStatus: string;
+  lastCheckedAt: string;
+  error: string | null;
+  sourceUrl: string | null;
+  listing: { date: string; precision: string; status: string; sourceUrl: string; payloadSha256: string; note: string | null } | null;
+  firstObservedDay: string | null;
+  monthContractListings: Array<{ contractCode: string; listedOn: string; lastTradingDay: string | null; lastDeliveryDay: string | null; sourceUrl: string }>;
+  currentSpec: FuturesContractInfoSpec | null;
+  versions: FuturesContractInfoSpec[];
+}
+export interface FuturesContractInfoResponse {
+  products: FuturesContractInfoProduct[];
+  coverage: Record<string, number>;
+  limitations: string[];
+}
+export interface FuturesDistributionSeries extends RankingSeries {
+  xValues: Array<number | null>;
+  yValues: Array<number | null>;
+  sizeValues: Array<number | null>;
+  tenDayReturnValues?: Array<number | null>;
+  tenDayCoverageValues?: Array<number | null>;
+  tenDayWindowMinValues?: Array<number | null>;
+  tenDayWindowMaxValues?: Array<number | null>;
+  directionSumValues?: Array<number | null>;
+  directionUpCountValues?: Array<number | null>;
+  directionDownCountValues?: Array<number | null>;
+  directionFlatCountValues?: Array<number | null>;
+  directionWindowCountValues?: Array<number | null>;
+  directionStatusValues?: Array<string | null>;
+  directionReasonValues?: Array<string | null>;
+  shortMove3Values?: Array<number | null>;
+  shortRankValues?: Array<number | null>;
+  shortSampleCountValues?: Array<number | null>;
+  shortCompareStatusValues?: Array<string | null>;
+  shortWindowContractCountValues?: Array<number | null>;
+  depositReasonValues?: Array<string | null>;
+  missingMarginContractCountValues?: Array<number | null>;
+  marginPublicationDayValues?: Array<string | null>;
+  weeklyStreakValues?: Array<number | null>;
+}
+export interface FuturesDistributionResponse {
+  available: boolean;
+  snapshotStatus?: "CURRENT" | "CACHED_DURING_UPDATE" | "CACHED_AWAITING_REFRESH";
+  dataVersion?: string;
+  metric: FuturesDistributionMetric;
+  unit: string;
+  dates: string[];
+  totals: Array<number | null>;
+  series: FuturesDistributionSeries[];
+  baselineDay: string | null;
+  formulaVersion: string;
+  directionFormulaVersion?: string;
+  shortMoveFormulaVersion?: string;
+  shortRankFormulaVersion?: string;
+  windowTradingDays?: number;
+  coverage: Array<{ tradeDate: string; dataQualityStatus?: string; missingExchanges?: string[]; reason?: string }>;
+  limitations: string[];
+}
+export interface FuturesPairedBubbleSeries {
+  key: string;
+  name: string;
+  horizontalValues: Array<number | null>;
+  verticalValues: Array<number | null>;
+  sizeValues: Array<number | null>;
+  dailyReturnValues?: Array<number | null>;
+  tenDayReturnValues?: Array<number | null>;
+  directionUpCountValues?: Array<number | null>;
+  directionDownCountValues?: Array<number | null>;
+  directionFlatCountValues?: Array<number | null>;
+  directionWindowCountValues?: Array<number | null>;
+  directionStatusValues?: Array<string | null>;
+  directionReasonValues?: Array<string | null>;
+  shortMove3Values?: Array<number | null>;
+  shortRankValues?: Array<number | null>;
+  shortSampleCountValues?: Array<number | null>;
+  shortCompareStatusValues?: Array<string | null>;
+  coverageValues?: Array<number | null>;
+  windowMinValues?: Array<number | null>;
+  windowMaxValues?: Array<number | null>;
+  shortContractCountValues?: Array<number | null>;
+  depositReasonValues?: Array<string | null>;
+  missingMarginContractCountValues?: Array<number | null>;
+  marginPublicationDayValues?: Array<string | null>;
+}
+export interface FuturesPairedBubblePayload {
+  dates: string[];
+  series: FuturesPairedBubbleSeries[];
+  xLabel: string;
+  yLabel: string;
+  sizeLabel: string;
+  xUnit: "张" | "亿元";
+  yUnit: "亿元" | "%" | "百分点";
+  sizeUnit: "张" | "亿元";
+  ySigned: boolean;
+}
+export interface FuturesWeeklyHeatPoint {
+  tradeDate: string;
+  weekEndDate: string;
+  totalScore: number | null;
+  breadthScore: number | null;
+  streakScore: number | null;
+  magnitudeScore: number | null;
+  upCount?: number | null;
+  downCount?: number | null;
+  flatCount?: number | null;
+  streakUpCount?: number | null;
+  streakDownCount?: number | null;
+  upWeightedReturnPct?: number | null;
+  downWeightedReturnPct?: number | null;
+  upTurnoverCny?: number | null;
+  downTurnoverCny?: number | null;
+  dataQualityStatus: string;
+  pendingWeek?: string | null;
+  coverage: { direction: number; turnover: number; missingExchanges: string[];
+    dailyMissingExchanges?: string[]; invalidContracts?: string[]; newContractSeeds?: string[] };
+}
+export interface FuturesWeeklyHeatResponse {
+  available: boolean;
+  formulaVersion: string;
+  config: {
+    weights: { breadth: number; streak: number; magnitude: number };
+    score: { min: number; max: number };
+    stateBands: LongShortHeatStateBand[];
+  };
+  points: FuturesWeeklyHeatPoint[];
+  latest?: FuturesWeeklyHeatPoint | null;
+  limitations: string[];
+}
+export interface FuturesRankingSeriesResponse {
+  available: boolean;
+  snapshotStatus?: "CURRENT" | "CACHED_DURING_UPDATE" | "CACHED_AWAITING_REFRESH";
+  baselineDay: string;
+  latestDay: string;
+  dataVersion: string;
+  dates: string[];
+  metrics: Record<string, RankingSeries[]>;
+  members: Array<{ key: string; name: string; position: number | null }>;
+  products: Array<{ key: string; name: string; contracts: string[]; position?: number | null }>;
+  coverage: Array<{ tradeDate: string; missingExchanges: string[] }>;
+}
+
 export interface FuturesStructureMember {
   memberKey: string;
   memberName: string;
@@ -146,6 +314,7 @@ export interface FuturesStructureCoverage {
   unverifiedVolumeCount?: number;
   unverifiedOpenInterestCount?: number;
   missingProducts?: string[];
+  missingProductKeys?: string[];
   missingContracts?: string[];
 }
 
@@ -166,6 +335,7 @@ export interface FuturesStructureResponse {
   unclassifiedMembers: FuturesStructureMember[];
   dates: string[];
   series: FuturesStructureSeries[];
+  lineSeries?: FuturesStructureSeries[];
   totals: Array<number | null>;
   unclassifiedTotals: Array<number | null>;
   coverage: FuturesStructureCoverage[];

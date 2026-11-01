@@ -13,6 +13,8 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
+from market_monitor.profile_gate import ProfileGateBusy, profile_write_gate
+
 from .common import clean, load_inventory, load_json, now_iso, save_json
 
 router = APIRouter(prefix="/api/personal", tags=["personal"])
@@ -99,27 +101,35 @@ def add_watchlist(request: Request, body: WatchlistItemIn) -> dict[str, Any]:
     instrument_id = body.instrumentId.strip()
     if instrument_id not in inventory.instruments:
         raise HTTPException(status_code=400, detail="instrument not found in silver inventory")
-    entries = _load_entries(data_root)
-    existing = next((entry for entry in entries if entry.get("instrumentId") == instrument_id), None)
-    if existing is not None:
-        return clean({"item": existing})
-    entry = {"instrumentId": instrument_id, "addedAt": now_iso(), "note": body.note}
-    entries.append(entry)
-    _save_entries(data_root, entries)
-    return clean({"item": entry})
+    try:
+        with profile_write_gate(data_root):
+            entries = _load_entries(data_root)
+            existing = next((entry for entry in entries if entry.get("instrumentId") == instrument_id), None)
+            if existing is not None:
+                return clean({"item": existing})
+            entry = {"instrumentId": instrument_id, "addedAt": now_iso(), "note": body.note}
+            entries.append(entry)
+            _save_entries(data_root, entries)
+            return clean({"item": entry})
+    except ProfileGateBusy as error:
+        raise HTTPException(status_code=503, detail=str(error), headers={"Retry-After": "2"}) from error
 
 
 @router.delete("/watchlist/{instrument_id}")
 def delete_watchlist(instrument_id: str, request: Request) -> dict[str, Any]:
     """Remove one watchlist entry; missing entries return 404."""
     data_root = _data_root(request)
-    entries = _load_entries(data_root)
-    removed = next((entry for entry in entries if entry.get("instrumentId") == instrument_id), None)
-    if removed is None:
-        raise HTTPException(status_code=404, detail="watchlist item not found")
-    remaining = [entry for entry in entries if entry.get("instrumentId") != instrument_id]
-    _save_entries(data_root, remaining)
-    return clean({"item": removed})
+    try:
+        with profile_write_gate(data_root):
+            entries = _load_entries(data_root)
+            removed = next((entry for entry in entries if entry.get("instrumentId") == instrument_id), None)
+            if removed is None:
+                raise HTTPException(status_code=404, detail="watchlist item not found")
+            remaining = [entry for entry in entries if entry.get("instrumentId") != instrument_id]
+            _save_entries(data_root, remaining)
+            return clean({"item": removed})
+    except ProfileGateBusy as error:
+        raise HTTPException(status_code=503, detail=str(error), headers={"Retry-After": "2"}) from error
 
 
 @router.get("/dashboard")
@@ -131,8 +141,12 @@ def get_dashboard(request: Request) -> dict[str, Any]:
 @router.put("/dashboard")
 def save_dashboard(request: Request, body: DashboardLayoutIn) -> dict[str, Any]:
     payload = {"updatedAt": now_iso(), "panels": [panel.model_dump() for panel in body.panels]}
-    save_json(_dashboard_path(_data_root(request)), payload)
-    return clean(payload)
+    try:
+        with profile_write_gate(_data_root(request)):
+            save_json(_dashboard_path(_data_root(request)), payload)
+            return clean(payload)
+    except ProfileGateBusy as error:
+        raise HTTPException(status_code=503, detail=str(error), headers={"Retry-After": "2"}) from error
 
 
 __all__ = ("router",)

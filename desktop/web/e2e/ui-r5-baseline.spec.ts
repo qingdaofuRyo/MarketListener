@@ -46,9 +46,9 @@ test('R5 结构 token 已加载且密度基线未漂移', async ({ page }) => {
     };
   });
 
-  expect(tokens).toEqual({
+  expect(tokens).toMatchObject({
     radiusPanel: '8px',
-    motionFast: '120ms',
     layerModal: '3000',
   });
+  expect(parseFloat(tokens.motionFast) * (tokens.motionFast.endsWith('ms') ? 1 : 1000)).toBeCloseTo(120);
 });

@@ -14,7 +14,9 @@ import json
 import math
 from pathlib import Path
 import re
+import time
 from typing import Any, Literal
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -26,7 +28,27 @@ from market_monitor.chart_drawings import (
     validate_fibonacci_retracement,
 )
 from market_monitor.market_data_version import market_data_version
+from market_monitor.profile_gate import ProfileGateBusy, profile_write_gate
+from market_monitor.market_continuous_futures_metrics import (
+    is_continuous_future, continuous_snapshot, enrich_continuous_bars, aggregate_continuous_daily,
+    product_months, continuous_product_code, trading_day as continuous_trading_day,
+)
 from market_monitor.market_list_metrics import RETURN_WINDOWS, finite_number, trailing_trading_returns
+from market_monitor.market_tdx_futures_projection import (
+    SOURCE_POLICY_VERSION, apply_tdx_daily_changes, compare_return_prices,
+    enrich_tdx_contract_bars, is_tdx_futures_id, official_price_checks, strict_tdx_returns,
+)
+from market_monitor.futures_calendar import load_futures_trading_calendar
+from market_monitor.market_list_snapshot import batch_daily_tails, list_snapshot
+from market_monitor.market_readmodel import load_market_readmodel, publish_market_readmodel
+from market_monitor.market_official_futures_metrics import (
+    contract_identity,
+    enrich_official_bars,
+    financial_metrics_version,
+    refresh_financial_metrics_version,
+    is_actual_future,
+    missing_metrics,
+)
 from market_monitor.market_classification import (
     UNCLASSIFIED_CATEGORY,
     classify_market,
@@ -34,7 +56,9 @@ from market_monitor.market_classification import (
     matches_market_category,
     night_session,
 )
-from market_monitor.market_query_cache import get_kline_query_store
+from market_monitor.market_query_cache import (
+    KLineCacheUnavailable, QUERY_INDEX_SCHEMA_VERSION, get_kline_query_store,
+)
 from market_monitor.futures import (
     compute_future_capital_deposit,
     futures_product_name,
@@ -99,13 +123,21 @@ _PERIOD_ORDER = ("1m", "5m", "15m", "30m", "1h", "2h", "4h", "1d", "1w", "1mo", 
 _SOURCE_MINUTES = {"1m": 1, "5m": 5, "15m": 15, "30m": 30}
 _DAILY_WINDOW_FACTORS = {"1w": 6, "1mo": 24, "1q": 70, "3mo": 70, "6mo": 140, "1y": 270}
 _MARKET_CAP_CACHE: dict[str, dict[str, tuple[float | None, float | None]]] = {}
-_MARKET_LIST_METRICS_CACHE: dict[tuple[str, str], dict[str, Any]] = {}
+_MARKET_LIST_METRICS_CACHE: dict[tuple[str, str, bool], dict[str, Any]] = {}
+_LOGICAL_INSTRUMENTS_CACHE: dict[tuple[str, str, int, int], dict[str, dict[str, Any]]] = {}
+_PERIOD_ROUTES_CACHE: dict[
+    tuple[str, str, tuple[tuple[str, str, str, str], ...]],
+    tuple[tuple[str, tuple[str, ...]], ...],
+] = {}
 _CONTINUOUS_LABELS = {"SECONDARY": "次连", "MAIN": "主连", "WEIGHTED": "加权"}
 # The v5 revision adds the canonical continuous-series views and retires the
 # former night-session filter from public market navigation.  Night-session
 # metadata remains available to data-processing code, but persisted v4 UI
 # choices must not leak into the list.
-_PRESENTATION_SCHEMA_VERSION = "market-categories-r4-v5"
+_PRESENTATION_SCHEMA_VERSION = "market-categories-r4-v12-tdx-futures"
+_ALLOWED_MARKET_SORTS = {"name", "symbol", "latestPrice", "pctChange", "volume", "amount", "openInterest",
+                         "notionalValue", "capitalDeposit", "totalMarketCap", "floatMarketCap", "amplitude",
+                         "settlement", "open", "high", "low", "return3", "return5", "return10", "return22", "return44"}
 _TDX_SECURITY_NAMES_PATH = Path(__file__).resolve().parents[1] / "config" / "tdx_security_names.json"
 _TDX_COMMODITY_INDEX_NAMES_PATH = Path(__file__).resolve().parents[1] / "config" / "tdx_commodity_index_names.json"
 _TDX_FUTURES_INDEX_NAMES_PATH = Path(__file__).resolve().parents[1] / "config" / "tdx_futures_index_names.json"
@@ -172,8 +204,20 @@ def _tdx_commodity_index_names() -> dict[str, str]:
 
 def _response_data_version(data_root: Path) -> str:
     """Invalidate persisted UI payloads when display semantics change."""
-
-    return f"{market_data_version(data_root)}:{_PRESENTATION_SCHEMA_VERSION}"
+    sources = (data_root / "industry" / "f10" / "cn_f10.jsonl",
+               data_root / "industry" / "f10" / "hk_f10.jsonl",
+               data_root / "state" / "futures_catalog.json")
+    stamps = []
+    for path in sources:
+        try:
+            stat = path.stat()
+            stamps.append((path.name, stat.st_size, stat.st_mtime_ns))
+        except OSError:
+            stamps.append((path.name, None, None))
+    catalog_version = sha256(json.dumps(stamps, separators=(",", ":")).encode()).hexdigest()[:16]
+    return (f"{market_data_version(data_root)}:{_PRESENTATION_SCHEMA_VERSION}:"
+            f"query-index-{QUERY_INDEX_SCHEMA_VERSION}:"
+            f"{_beijing_today().isoformat()}:{financial_metrics_version(data_root)}:{catalog_version}")
 
 
 def _session_rule(bar: dict[str, Any]) -> str | None:
@@ -242,6 +286,16 @@ def _as_datetime(value: Any) -> datetime | None:
 
 def _logical_instruments(data_root: Path) -> dict[str, dict[str, Any]]:
     """Collapse source-isolated Silver rows into one public canonical instrument."""
+    catalog_path = data_root / "state" / "futures_catalog.json"
+    try:
+        catalog_stat = catalog_path.stat()
+        catalog_stamp = (catalog_stat.st_mtime_ns, catalog_stat.st_size)
+    except OSError:
+        catalog_stamp = (0, 0)
+    key = (str(data_root.resolve()), market_data_version(data_root), *catalog_stamp)
+    cached = _LOGICAL_INSTRUMENTS_CACHE.get(key)
+    if cached is not None:
+        return cached
     physical = load_inventory(data_root).instruments
     groups: dict[str, list[dict[str, Any]]] = {}
     for item in physical.values():
@@ -255,16 +309,29 @@ def _logical_instruments(data_root: Path) -> dict[str, dict[str, Any]]:
             timestamp = _as_datetime(item.get("lastBarAt"))
             if latest is None or timestamp is None or latest - timestamp <= timedelta(days=1):
                 fresh.append(item)
-        chosen = sorted(fresh or candidates, key=lambda item: (_source_rank(item), str(item.get("lastBarAt") or "")), reverse=False)[0]
-        # ``sorted`` above selects TDX first.  A candidate older by more than a
-        # day is excluded, so the AKShare fallback wins when the local client is stale.
+        tdx_continuous = [item for item in candidates if str(item.get("seriesKind") or "").upper() in
+                          {"MAIN", "SECONDARY", "WEIGHTED"} and _source_rank(item) == 0]
+        tdx_month = [item for item in candidates if str(item.get("seriesKind") or "").upper() == "CONTRACT"
+                     and is_tdx_futures_id(item.get("instrumentId"))]
+        chosen = sorted(tdx_continuous or tdx_month or fresh or candidates,
+                        key=lambda item: (_source_rank(item), str(item.get("lastBarAt") or "")), reverse=False)[0]
+        # TDX owns continuous-series prices and roll decisions even when stale.
+        # Other instruments retain the normal freshness-based source selection.
         logical = dict(chosen)
+        if is_continuous_future(logical):
+            logical["productCode"] = continuous_product_code(logical)
+        elif is_actual_future(logical):
+            _venue, code = contract_identity(logical)
+            product_match = re.fullmatch(r"([A-Z]+(?:-F)?)\d{4}", code)
+            if product_match:
+                logical["productCode"] = product_match[1]
         logical["instrumentId"] = canonical
         logical["storageInstrumentId"] = chosen["instrumentId"]
         logical["actualSource"] = chosen.get("actualSource") or chosen.get("source")
         logical["latestTimeText"] = beijing_text(chosen.get("lastBarAt"))
+        selected = tdx_continuous or tdx_month or candidates
         logical["sourceCandidates"] = [str(chosen["instrumentId"]), *[
-            str(item["instrumentId"]) for item in candidates if item["instrumentId"] != chosen["instrumentId"]
+            str(item["instrumentId"]) for item in selected if item["instrumentId"] != chosen["instrumentId"]
         ]]
         if latest and _as_datetime(chosen.get("lastBarAt")) and latest - _as_datetime(chosen.get("lastBarAt")) > timedelta(days=1):
             logical["availability"] = "数据滞后"
@@ -280,6 +347,8 @@ def _logical_instruments(data_root: Path) -> dict[str, dict[str, Any]]:
                                  "assetType": str(item.get("assetType") or ""), "period": "", "seriesKind": str(item.get("seriesKind") or ""),
                                  "availability": str(item.get("availability") or "暂不支持"), "unsupportedReason": item.get("unsupportedReason"),
                                  "actualSource": "", "latestTimeText": None, "sourceCandidates": []}
+    _LOGICAL_INSTRUMENTS_CACHE.clear()
+    _LOGICAL_INSTRUMENTS_CACHE[key] = result
     return result
 
 
@@ -409,8 +478,13 @@ def _enrich_bars(bars: list[dict[str, Any]], instrument: dict[str, Any] | None =
         if bar.get("turnover_rate") is None and bar.get("turnoverRate") is not None:
             bar["turnover_rate"] = bar.get("turnoverRate")
         asset_type = str((instrument or {}).get("assetType") or bar.get("asset_type") or "").upper()
+        market = str((instrument or {}).get("market") or bar.get("market") or "").upper()
+        if (market == "CN" and asset_type == "STOCK" and bar.get("source") == "通达信金融终端（本地）"
+                and str(bar.get("source_period") or bar.get("period") or "") == "5m"):
+            bar["time_basis_warning"] = "TDX_CN_STOCK_5M_TIME_UNVERIFIED"
         series_kind = str((instrument or {}).get("seriesKind") or bar.get("series_kind") or "").upper()
-        if asset_type == "FUTURE" or series_kind == "COMMODITY_INDEX":
+        if ((asset_type == "FUTURE" and series_kind not in {"CONTRACT", "MAIN", "SECONDARY", "WEIGHTED"})
+                or series_kind == "COMMODITY_INDEX"):
             capital, reason, trace = _capital_deposit(bar, instrument)
             bar["capital_deposit"] = capital
             bar["capital_deposit_reason"] = reason
@@ -419,6 +493,42 @@ def _enrich_bars(bars: list[dict[str, Any]], instrument: dict[str, Any] | None =
             previous_close = close
         result.append(bar)
     return result
+
+
+def _enrich_market_bars(data_root: Path, raw: list[dict[str, Any]],
+                        instrument: dict[str, Any], period: str) -> list[dict[str, Any]]:
+    bars = _enrich_bars(raw, instrument)
+    if is_actual_future(instrument):
+        return enrich_tdx_contract_bars(data_root, bars, instrument, period)
+    return enrich_official_bars(data_root, bars, instrument, period)
+
+
+def _aggregate_tdx_contract_daily(data_root: Path, raw: list[dict[str, Any]],
+                                  instrument: dict[str, Any], period: str) -> list[dict[str, Any]]:
+    """Sum dated turnover; use the period-end TDX notional and margin."""
+    from market_monitor.market_official_futures_metrics import _bucket_start
+
+    daily = enrich_tdx_contract_bars(data_root, _enrich_bars(raw, instrument), instrument, "1d")
+    aggregate = aggregate_daily_bars(daily, period)
+    calendar = load_futures_trading_calendar(data_root)
+    for bar in aggregate:
+        end = str(bar["trading_day"])
+        bucket_days = [row for row in daily if _bucket_start(str(row["trading_day"]), period) == _bucket_start(end, period)]
+        last = bucket_days[-1]
+        for key, value in last.items():
+            if key.startswith(("official_", "comparison_", "margin_", "spec_margin_", "notional_",
+                               "capital_", "field_sources", "tdx_", "financial_", "source_policy_",
+                               "contract_multiplier")):
+                bar[key] = value
+        observed = [str(row["trading_day"]) for row in bucket_days]
+        expected = calendar.between(observed[0], observed[-1]) if calendar and observed else []
+        amounts = [row.get("amount") for row in bucket_days]
+        bar["amount"] = (sum(amounts) if expected == observed and all(value is not None for value in amounts)
+                         else None)
+        bar["amount_trading_days"] = observed
+        if bar["amount"] is None:
+            bar["official_metrics_status"] = "PARTIAL"
+    return aggregate
 
 
 def _normalize_future_name(item: dict[str, Any]) -> dict[str, Any]:
@@ -440,6 +550,21 @@ def _normalize_future_name(item: dict[str, Any]) -> dict[str, Any]:
         delivery = symbol[len(product) :] if product and symbol.startswith(product) else ""
         result["name"] = f"{configured_name}{delivery}"
     return result
+
+
+def _is_retired_future_alias(item: dict[str, Any]) -> bool:
+    """Hide legacy generic domestic continuous entries from public lists."""
+    if str(item.get("market") or "").upper() != "CN" or str(item.get("assetType") or "").upper() != "FUTURE":
+        return False
+    kind = str(item.get("seriesKind") or "").upper()
+    if kind in {"MAIN", "SECONDARY", "WEIGHTED", "CONTRACT", "COMMODITY_INDEX"}:
+        return False
+    if kind == "CONTINUOUS":
+        return True
+    symbol = str(item.get("symbol") or item.get("sourceSymbol") or "").upper()
+    source = str(item.get("actualSource") or item.get("source") or "")
+    return bool(re.fullmatch(r"[A-Z]{1,3}0", symbol) and (
+        str(item.get("name") or "").endswith("连续") or source == "akshare-futures_main_sina"))
 
 
 _TDX_EXCHANGE_PREFIX = {"SSE": "sh", "SZSE": "sz", "BSE": "bj"}
@@ -469,7 +594,9 @@ def _normalize_tdx_instrument(item: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def _daily_list_metrics(data_root: Path, item: dict[str, Any], data_version: str) -> dict[str, Any]:
+def _daily_list_metrics(data_root: Path, item: dict[str, Any], data_version: str,
+                        prepared: dict[str, list[dict[str, Any]]] | None = None,
+                        price_checks: dict[tuple[str, str, str], dict[str, float | None]] | None = None) -> dict[str, Any]:
     """Read the bounded daily window required by the market-list columns.
 
     The canonical instrument may have multiple source-isolated rows.  Use the
@@ -478,23 +605,33 @@ def _daily_list_metrics(data_root: Path, item: dict[str, Any], data_version: str
     """
 
     instrument_id = str(item.get("instrumentId") or "")
-    cache_key = (data_version, instrument_id)
+    cache_key = (data_version, instrument_id, bool(price_checks))
     cached = _MARKET_LIST_METRICS_CACHE.get(cache_key)
     if cached is not None:
         return dict(cached)
     candidates = [str(item.get("storageInstrumentId") or "")]
     candidates.extend(str(value) for value in item.get("sourceCandidates", []) if value)
-    candidate = next(
-        (value for value in dict.fromkeys(candidates) if value and "1d" in instrument_periods(data_root, value)),
-        "",
-    )
+    if is_actual_future(item):
+        candidates = [candidate for candidate in candidates if is_tdx_futures_id(candidate)]
+    candidate = next((value for value in dict.fromkeys(candidates) if value and (
+        bool(prepared.get(value)) if prepared is not None else "1d" in instrument_periods(data_root, value)
+    )), "")
     if not candidate:
         result = {"dailyReturns": {str(window): None for window in RETURN_WINDOWS}, "fieldCapabilities": {}}
         _MARKET_LIST_METRICS_CACHE[cache_key] = result
         return dict(result)
-    bars = _enrich_bars(read_bars(data_root, candidate, period="1d", limit=max(RETURN_WINDOWS) + 1), item)
+    bars = _enrich_bars(prepared.get(candidate, []) if prepared is not None else
+                        read_bars(data_root, candidate, period="1d", limit=max(RETURN_WINDOWS) + 1), item)
+    if is_actual_future(item) and price_checks:
+        venue, contract = contract_identity(item)
+        for bar in bars:
+            day = str(bar.get("trading_day") or bar.get("trading_date") or "")[:10]
+            bar["comparisonFields"] = compare_return_prices(bar, price_checks.get((venue, contract, day)))
+    if is_actual_future(item) or is_continuous_future(item):
+        apply_tdx_daily_changes(data_root, bars)
     latest = bars[-1] if bars else {}
-    returns = trailing_trading_returns(bars)
+    returns = (strict_tdx_returns(data_root, bars) if is_actual_future(item) or is_continuous_future(item)
+               else {str(key): value for key, value in trailing_trading_returns(bars).items()})
     values = {
         "open": finite_number(latest.get("open")),
         "high": finite_number(latest.get("high")),
@@ -511,7 +648,7 @@ def _daily_list_metrics(data_root: Path, item: dict[str, Any], data_version: str
     }
     result = {
         **values,
-        "dailyReturns": {str(window): returns[window] for window in RETURN_WINDOWS},
+        "dailyReturns": {str(window): returns[str(window)] for window in RETURN_WINDOWS},
         "fieldCapabilities": {
             "openInterest": values["openInterest"] is not None,
             "capitalDeposit": values["capitalDeposit"] is not None,
@@ -532,6 +669,9 @@ def _quote_item(
     caps: dict[str, tuple[float | None, float | None]],
     data_root: Path,
     data_version: str,
+    prepared: dict[str, list[dict[str, Any]]] | None = None,
+    price_checks: dict[tuple[str, str, str], dict[str, float | None]] | None = None,
+    continuous_months: dict[str, list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     result = _normalize_tdx_instrument(_normalize_future_name(item))
     total_cap, float_cap = caps.get(str(item.get("instrumentId") or ""), (None, None))
@@ -539,7 +679,7 @@ def _quote_item(
     result["totalMarketCap"] = total_cap
     result["floatMarketCap"] = float_cap
     result["openInterest"] = item.get("lastOpenInterest")
-    capital, reason, trace = _capital_deposit(
+    capital, reason, trace = (None, None, {}) if is_actual_future(result) or is_continuous_future(result) else _capital_deposit(
         {
             "open_interest": item.get("lastOpenInterest"),
             "close": item.get("lastClose"),
@@ -554,7 +694,7 @@ def _quote_item(
     result["nightSession"] = night_session(item)
     inventory_open_interest = result["openInterest"]
     inventory_capital_deposit = result["capitalDeposit"]
-    result.update(_daily_list_metrics(data_root, result, data_version))
+    result.update(_daily_list_metrics(data_root, result, data_version, prepared, price_checks))
     # The bounded daily snapshot is the authoritative list source when it is
     # available; otherwise preserve the existing latest inventory value.
     result["latestPrice"] = result.get("close") if result.get("close") is not None else result.get("latestPrice")
@@ -562,6 +702,39 @@ def _quote_item(
         result["openInterest"] = inventory_open_interest
     if result.get("capitalDeposit") is None:
         result["capitalDeposit"] = inventory_capital_deposit
+    if is_actual_future(result):
+        venue, code = contract_identity(result)
+        day = str(result.get("dailyAsOf") or "")
+        product = str(result.get("productCode") or "").upper()
+        monthly = (continuous_months or {}).get(f"{venue}.{product}|{day}", [])
+        quote = next((row for row in monthly if row.get("contractCode") == code), None)
+        result.update(quote or {**missing_metrics(), "sourcePolicyVersion": SOURCE_POLICY_VERSION,
+                                "comparisonStatus": "UNCOMPARED", "tdxQualityStatus": "INVALID",
+                                "capitalDepositReason": "缺少已核验的通达信月份合约日线"})
+        if quote is None:
+            result.update(open=None, high=None, low=None, close=None, settlement=None,
+                          volume=None, openInterest=None, pctChange=None, change=None)
+        result["totalMarketCap"] = None
+        result["floatMarketCap"] = None
+        result["quoteAsOf"] = day or None
+        if result.get("close") is not None:
+            result["latestPrice"] = result["close"]
+        else:
+            result["latestPrice"] = None
+        result["dailyReturns"] = (result.get("dailyReturns") or {str(window): None for window in RETURN_WINDOWS})
+        if result.get("comparisonFields", {}).get("close") == "MISMATCH":
+            result["dailyReturns"] = {str(window): None for window in RETURN_WINDOWS}
+            result["pctChange"] = result["change"] = None
+        result["fieldCapabilities"] = {**result.get("fieldCapabilities", {}),
+            "notionalValue": result.get("notionalValue") is not None,
+            "amount": result.get("amount") is not None,
+            "capitalDeposit": result.get("capitalDeposit") is not None}
+    elif is_continuous_future(result):
+        snapshot = continuous_snapshot(data_root, result, {**result, "trading_day": result.get("dailyAsOf")}, continuous_months)
+        result.update(snapshot)
+        result["totalMarketCap"] = result["floatMarketCap"] = None
+        result["fieldCapabilities"] = {**result.get("fieldCapabilities", {}),
+            **{field: result.get(field) is not None for field in ("notionalValue", "amount", "capitalDeposit")}}
     return result
 
 
@@ -587,15 +760,33 @@ def _is_expired_contract_item(item: dict[str, Any], *, reference_day: date | Non
     )
 
 
-def _available_periods(data_root: Path, instrument_id: str) -> list[str]:
-    raw = _raw_periods_for_instrument(data_root, instrument_id)
+def _available_periods(
+    data_root: Path,
+    instrument_id: str,
+    *,
+    raw_periods: list[str] | None = None,
+    physical_item: dict[str, Any] | None = None,
+) -> list[str]:
+    raw = (raw_periods if raw_periods is not None
+           else _raw_periods_for_instrument(data_root, instrument_id))
     available = set(raw)
     if "1d" in raw:
         available.update(_DAILY_DERIVATIVES)
     minute_source = next((period for period in _MINUTE_SOURCES if period in raw), None)
     if minute_source:
-        probe = read_bars(data_root, instrument_id, period=minute_source, limit=1)
-        if probe and _session_rule(probe[0]):
+        # When the latest inventory row is from the same minute period, its
+        # market/asset identity can answer session support without decoding a
+        # second bar. For an older minute series with a newer daily row, keep
+        # probing the minute source rather than assuming its identity matches.
+        item = physical_item if physical_item is not None else load_inventory(data_root).instruments.get(instrument_id)
+        identity_matches_source = item is not None and item.get("period") == minute_source
+        session_supported = bool(_session_rule({
+            "market": item.get("market"), "asset_type": item.get("assetType"),
+        })) if identity_matches_source else False
+        if not session_supported:
+            probe = read_bars(data_root, instrument_id, period=minute_source, limit=1)
+            session_supported = bool(probe and _session_rule(probe[0]))
+        if session_supported:
             available.update(period for period, minutes in _MINUTE_DERIVATIVES.items() if minutes >= {"1m": 1, "5m": 5, "15m": 15, "30m": 30}[minute_source])
     return [period for period in _PERIOD_ORDER if period in available]
 
@@ -612,16 +803,19 @@ def _all_raw_bars(data_root: Path, instrument_id: str, period: str) -> list[dict
             return output
 
 
-def _derived_bars(data_root: Path, instrument_id: str, period: str) -> list[dict[str, Any]]:
+def _derived_bars(data_root: Path, instrument_id: str, period: str, instrument: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     cache = get_kline_query_store(data_root)
-    cached = cache.get_derived(instrument_id, period)
+    cached = None if instrument and (is_continuous_future(instrument) or is_actual_future(instrument)) else cache.get_derived(instrument_id, period)
     if cached is not None:
         return cached
     if period in _DAILY_DERIVATIVES:
         daily = _all_raw_bars(data_root, instrument_id, "1d")
         normalized = [_daily_bar_for_aggregate(bar) for bar in daily]
-        result = aggregate_daily_bars(normalized, period) if normalized else []
-        cache.put_derived(instrument_id, period, result)
+        result = (aggregate_continuous_daily(data_root, normalized, instrument, period) if instrument and is_continuous_future(instrument)
+                  else _aggregate_tdx_contract_daily(data_root, normalized, instrument, period) if instrument and is_actual_future(instrument)
+                  else aggregate_daily_bars(normalized, period)) if normalized else []
+        if not instrument or not (is_continuous_future(instrument) or is_actual_future(instrument)):
+            cache.put_derived(instrument_id, period, result)
         return result
     minutes = _MINUTE_DERIVATIVES.get(period)
     if minutes is None:
@@ -685,6 +879,7 @@ def _derived_before(
     *,
     before: str | None,
     size: int,
+    instrument: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], int, str | None, bool, str | None, str | None]:
     """Project only the requested derived viewport instead of all history."""
 
@@ -698,9 +893,12 @@ def _derived_before(
             before=before,
             target_rows=max(64, (size + 2) * factor),
         )
-        projected = aggregate_daily_bars(
-            [_daily_bar_for_aggregate(bar) for bar in raw], period
-        ) if raw else []
+        normalized = [_daily_bar_for_aggregate(bar) for bar in raw]
+        projected = (aggregate_continuous_daily(data_root, normalized, instrument, period)
+                     if instrument and is_continuous_future(instrument)
+                     else _aggregate_tdx_contract_daily(data_root, normalized, instrument, period)
+                     if instrument and is_actual_future(instrument)
+                     else aggregate_daily_bars(normalized, period)) if raw else []
     else:
         target_minutes = _MINUTE_DERIVATIVES.get(period)
         raw_periods = _raw_periods_for_instrument(data_root, instrument_id)
@@ -765,6 +963,45 @@ def market_cache_status(request: Request) -> dict[str, Any]:
     payload = get_kline_query_store(data_root).status().to_dict()
     payload["dataVersion"] = _response_data_version(data_root)
     return clean(payload)
+
+
+def prime_market_list_snapshots(data_root: Path) -> None:
+    """Publish small priority categories before the complete market universe."""
+    data_root = Path(data_root)
+    refresh_financial_metrics_version(data_root, versions={
+        "marketRevision": market_data_version(data_root),
+        "sourcePolicyVersion": SOURCE_POLICY_VERSION,
+    })
+    version = _response_data_version(data_root)
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(
+        data_root=data_root, market_publication_builder=True)))
+    priorities = ("cn-future-main", "cn-future-shfe", "cn-future-ine", "cn-future-dce",
+                  "cn-future-czce", "cn-future-cffex", "cn-future-gfex", "a-sh", "a-sz", "hk-stock")
+    for category in (*priorities, None):
+        model_identity = f"category:{category}" if category else "all"
+        if load_market_readmodel(data_root, current_version=version,
+                                 identity=model_identity, allow_stale=False) is not None:
+            continue
+        items: list[dict[str, Any]] = []
+        page = 1
+        while True:
+            response = market_instruments(request, market=None, asset_type=None, series_kind=None,
+                                          category_key=category, q="", include_expired=True, page=page,
+                                          page_size=MAX_PAGE_SIZE, sort_field=None,
+                                          sort_direction="desc", version=version)
+            if response["dataVersion"] != version:
+                raise RuntimeError("行情源版本在发布期间变化")
+            items.extend(response["items"])
+            if len(items) >= response["total"]:
+                break
+            page += 1
+        if _response_data_version(data_root) != version:
+            raise RuntimeError("行情源版本在发布期间变化")
+        publish_market_readmodel(data_root, version=version, items=items,
+                                 identity=model_identity,
+                                 source_policy_version=SOURCE_POLICY_VERSION,
+                                 dependencies={"marketRevision": market_data_version(data_root),
+                                               "financialVersion": financial_metrics_version(data_root)})
 
 
 @router.get("/groups")
@@ -858,40 +1095,201 @@ def market_instruments(
     include_expired: bool = Query(default=False, alias="includeExpired"),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE, alias="pageSize"),
+    sort_field: str | None = Query(default=None, alias="sortField"),
+    sort_direction: Literal["asc", "desc"] = Query(default="desc", alias="sortDirection"),
+    version: str | None = None,
 ) -> dict[str, Any]:
     """Paginate the local instrument index, optionally filtered by market/q."""
-    items = [
-        _normalize_tdx_instrument(_normalize_future_name(item))
-        for item in _logical_instruments(_data_root(request)).values()
-    ]
-    items = [item for item in items if classify_market(item) != UNCLASSIFIED_CATEGORY]
-    if not include_expired:
-        items = [item for item in items if not _is_expired_contract_item(item)]
-    if category_key:
-        items = [item for item in items if matches_market_category(item, category_key)]
-    if market:
-        wanted = market.strip().casefold()
-        items = [item for item in items if str(item.get("market") or "").casefold() == wanted]
-    if asset_type:
-        wanted_type = asset_type.strip().casefold()
-        items = [item for item in items if str(item.get("assetType") or "").casefold() == wanted_type]
-    if series_kind:
-        wanted_kinds = {value.strip().casefold() for value in series_kind.split(",") if value.strip()}
-        items = [item for item in items if str(item.get("seriesKind") or "").casefold() in wanted_kinds]
-    keyword = q.strip().casefold()
-    if keyword:
-        items = [
-            item
-            for item in items
-            if any(
+    data_root = _data_root(request)
+    version_started = time.perf_counter()
+    data_version = _response_data_version(data_root)
+    version_finished = time.perf_counter()
+    if getattr(request.app.state, "customer_surface", False) and not getattr(
+        request.app.state, "market_publication_builder", False
+    ):
+        model = load_market_readmodel(
+            data_root, current_version=data_version,
+            identity=f"category:{category_key}" if category_key and category_key != "all" else "all",
+            allow_stale=True,
+        )
+        if model is None and category_key:
+            model = load_market_readmodel(data_root, current_version=data_version, allow_stale=True)
+        elif model is not None and model.status == "STALE" and category_key:
+            newer = load_market_readmodel(data_root, current_version=data_version, allow_stale=False)
+            if newer is not None:
+                model = newer
+        model_loaded = time.perf_counter()
+        if model is None:
+            if not (data_root / "silver").is_dir():
+                payload = paginate([], page, page_size)
+                payload.update(dataVersion=data_version, queryVersion=data_version,
+                               snapshotVersion=None, publicationVersion=None,
+                               snapshotStatus="NO_DATA")
+                return clean(payload)
+            raise HTTPException(status_code=503, detail="行情列表正在恢复已发布快照，请稍后重试")
+        if version is not None and version != model.snapshot_version:
+            raise HTTPException(status_code=409, detail="行情快照版本已更新，请重新加载列表")
+        rows = model.items
+        if not include_expired:
+            rows = [item for item in rows if not _is_expired_contract_item(item)]
+        if category_key:
+            rows = [item for item in rows if matches_market_category(item, category_key)]
+        if market:
+            wanted = market.strip().casefold()
+            rows = [item for item in rows if str(item.get("market") or "").casefold() == wanted]
+        if asset_type:
+            wanted = asset_type.strip().casefold()
+            rows = [item for item in rows if str(item.get("assetType") or "").casefold() == wanted]
+        if series_kind:
+            kinds = {value.strip().casefold() for value in series_kind.split(",") if value.strip()}
+            rows = [item for item in rows if str(item.get("seriesKind") or "").casefold() in kinds]
+        keyword = q.strip().casefold()
+        if keyword:
+            rows = [item for item in rows if any(
                 keyword in str(item.get(field) or "").casefold()
                 for field in ("instrumentId", "symbol", "name", "productCode", "sourceSymbol")
-            )
-        ]
-    data_root = _data_root(request)
-    data_version = _response_data_version(data_root)
-    caps = _market_caps(data_root)
-    payload = paginate([_quote_item(item, caps, data_root, data_version) for item in items], page, page_size)
+            )]
+        if sort_field:
+            if sort_field not in _ALLOWED_MARKET_SORTS:
+                raise HTTPException(status_code=422, detail="不支持的行情排序字段")
+
+            def sort_value(item: dict[str, Any]) -> Any:
+                if sort_field.startswith("return"):
+                    return finite_number(item.get("dailyReturns", {}).get(sort_field[6:]))
+                if sort_field in {"name", "symbol"}:
+                    return str(item.get(sort_field) or "").casefold()
+                return finite_number(item.get(sort_field))
+
+            present = [item for item in rows if sort_value(item) is not None]
+            missing = [item for item in rows if sort_value(item) is None]
+            rows = sorted(present, key=sort_value, reverse=sort_direction == "desc") + missing
+        payload = paginate(rows, page, page_size)
+        payload["dataVersion"] = model.snapshot_version
+        payload.update(model.metadata())
+        filtered = time.perf_counter()
+        request.state.market_timings = (
+            f"version;dur={(version_finished - version_started) * 1000:.2f}, "
+            f"snapshot;dur={(model_loaded - version_finished) * 1000:.2f}, "
+            f"filter;dur={(filtered - model_loaded) * 1000:.2f}"
+        )
+        return clean(payload)
+    if version is not None and version != data_version:
+        raise HTTPException(status_code=409, detail="行情数据版本已更新，请重新加载列表")
+    identity = repr((market, asset_type, series_kind, category_key, include_expired, _beijing_today().isoformat()))
+
+    def build_base() -> list[dict[str, Any]]:
+        items = [_normalize_tdx_instrument(_normalize_future_name(item))
+                 for item in _logical_instruments(data_root).values()]
+        items = [item for item in items if not _is_retired_future_alias(item)]
+        items = [item for item in items if classify_market(item) != UNCLASSIFIED_CATEGORY]
+        if not include_expired:
+            items = [item for item in items if not _is_expired_contract_item(item)]
+        if category_key:
+            items = [item for item in items if matches_market_category(item, category_key)]
+        if market:
+            wanted = market.strip().casefold()
+            items = [item for item in items if str(item.get("market") or "").casefold() == wanted]
+        if asset_type:
+            wanted_type = asset_type.strip().casefold()
+            items = [item for item in items if str(item.get("assetType") or "").casefold() == wanted_type]
+        if series_kind:
+            wanted_kinds = {value.strip().casefold() for value in series_kind.split(",") if value.strip()}
+            items = [item for item in items if str(item.get("seriesKind") or "").casefold() in wanted_kinds]
+        return items
+
+    def decorate(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        candidates = [str(value) for item in items for value in item.get("sourceCandidates", [])
+                      if value and (not is_actual_future(item) or is_tdx_futures_id(value))]
+        try:
+            prepared = batch_daily_tails(data_root, candidates, max(RETURN_WINDOWS) + 1)
+        except Exception:
+            if getattr(request.app.state, "market_publication_builder", False):
+                raise
+            # Legacy test adapter may still use the existing partition reads.
+            prepared = None
+        return_price_keys: set[tuple[str, str, str]] = set()
+        for item in items:
+            if not is_actual_future(item) or prepared is None:
+                continue
+            venue, code = contract_identity(item)
+            candidate = next((str(value) for value in item.get("sourceCandidates", [])
+                              if is_tdx_futures_id(value) and prepared.get(str(value))), "")
+            bars = prepared.get(candidate, [])
+            indices = {len(bars) - 1, len(bars) - 2,
+                       *(len(bars) - 1 - window for window in RETURN_WINDOWS)}
+            return_price_keys.update((venue, code, str(bars[index].get("trading_day") or
+                                                       bars[index].get("trading_date") or "")[:10])
+                                     for index in indices if 0 <= index < len(bars))
+        prices = official_price_checks(data_root, return_price_keys)
+        products_by_day: dict[str, set[tuple[str, str]]] = {}
+        for item in items:
+            if not (is_continuous_future(item) or is_actual_future(item)):
+                continue
+            candidate = next((str(value) for value in item.get("sourceCandidates", [])
+                              if prepared is not None and prepared.get(str(value))
+                              and (not is_actual_future(item) or is_tdx_futures_id(value))), "")
+            if not candidate:
+                continue
+            day = continuous_trading_day(prepared[candidate][-1])
+            if re.fullmatch(r"20\d{2}-\d{2}-\d{2}", day) and day >= "2023-01-01":
+                product = (continuous_product_code(item) if is_continuous_future(item)
+                           else str(item.get("productCode") or "").upper())
+                products_by_day.setdefault(day, set()).add((str(item.get("exchange") or "").upper(), product))
+        continuous: dict[str, list[dict[str, Any]]] = {}
+        # Common days amortize one all-market join. Rare stale dates load only
+        # the visible products, never hundreds of unrelated old contracts.
+        for day, products in sorted(products_by_day.items()):
+            if len(products) >= 8:
+                venues = {exchange for exchange, _product in products}
+                # A single-exchange list needs its own month universe; reading
+                # every exchange here made a DCE cold list scan unrelated files.
+                venue = next(iter(venues)) if len(venues) == 1 else ""
+                continuous.update(product_months(data_root, exchange=venue, start=day, end=day))
+            else:
+                for exchange, product in sorted(products):
+                    continuous.update(product_months(data_root, exchange=exchange, product=product,
+                                                     start=day, end=day))
+        caps = _market_caps(data_root)
+        return [_quote_item(item, caps, data_root, data_version, prepared, prices, continuous) for item in items]
+
+    keyword = q.strip().casefold()
+    base = list(list_snapshot(data_root, data_version, identity + ":base", build_base))
+    if not sort_field:
+        if keyword:
+            base = [item for item in base if any(keyword in str(item.get(field) or "").casefold()
+                    for field in ("instrumentId", "symbol", "name", "productCode", "sourceSymbol"))]
+        payload = paginate(base, page, page_size)
+        selected = payload["items"]
+        # First-page daily calculations do not wait for a multi-thousand-row
+        # category. Every subsequent page is derived from the same immutable
+        # versioned base and persisted once, then reused across browser sessions.
+        page_identity = repr((identity, keyword, page, page_size))
+        payload["items"] = list_snapshot(data_root, data_version, page_identity, lambda: decorate(selected))
+        if _response_data_version(data_root) != data_version:
+            raise HTTPException(status_code=409, detail="行情数据版本已更新，请重新加载列表")
+        payload["dataVersion"] = data_version
+        return clean(payload)
+    decorated = list(list_snapshot(data_root, data_version, identity, lambda: decorate(base)))
+    if keyword:
+        decorated = [item for item in decorated if any(
+            keyword in str(item.get(field) or "").casefold()
+            for field in ("instrumentId", "symbol", "name", "productCode", "sourceSymbol")
+        )]
+    if sort_field:
+        if sort_field not in _ALLOWED_MARKET_SORTS:
+            raise HTTPException(status_code=422, detail="不支持的行情排序字段")
+
+        def sort_value(item: dict[str, Any]) -> Any:
+            if sort_field.startswith("return"):
+                return finite_number(item.get("dailyReturns", {}).get(sort_field[6:]))
+            return str(item.get(sort_field) or "").casefold() if sort_field in {"name", "symbol"} else finite_number(item.get(sort_field))
+
+        known = [item for item in decorated if sort_value(item) is not None]
+        missing = [item for item in decorated if sort_value(item) is None]
+        decorated = sorted(known, key=sort_value, reverse=sort_direction == "desc") + missing
+    payload = paginate(decorated, page, page_size)
+    if _response_data_version(data_root) != data_version:
+        raise HTTPException(status_code=409, detail="行情数据版本已更新，请重新加载列表")
     payload["dataVersion"] = data_version
     return clean(payload)
 
@@ -900,13 +1298,34 @@ def _resolve_period(data_root: Path, instrument_id: str, period: str | None) -> 
     instrument = _logical_instruments(data_root).get(instrument_id)
     if instrument is None:
         raise HTTPException(status_code=404, detail="instrument not found")
-    candidate_ids = [str(value) for value in instrument.get("sourceCandidates", []) if value]
-    if not candidate_ids and instrument.get("storageInstrumentId"):
+    candidate_ids = [str(value) for value in instrument.get("sourceCandidates", []) if value
+                     and (not is_actual_future(instrument) or is_tdx_futures_id(value))]
+    if not candidate_ids and instrument.get("storageInstrumentId") and (
+        not is_actual_future(instrument) or is_tdx_futures_id(instrument["storageInstrumentId"])
+    ):
         candidate_ids = [str(instrument["storageInstrumentId"])]
     if not candidate_ids:
         raise HTTPException(status_code=400, detail=str(instrument.get("unsupportedReason") or "该标的暂不支持K线"))
     physical = load_inventory(data_root).instruments
-    routes = [(candidate_id, _available_periods(data_root, candidate_id)) for candidate_id in candidate_ids]
+    route_key = (
+        str(data_root.resolve()), market_data_version(data_root),
+        tuple((candidate_id, str(physical.get(candidate_id, {}).get("period") or ""),
+               str(physical.get(candidate_id, {}).get("market") or ""),
+               str(physical.get(candidate_id, {}).get("assetType") or "")) for candidate_id in candidate_ids),
+    )
+    routes = _PERIOD_ROUTES_CACHE.get(route_key)
+    if routes is None:
+        period_map = get_kline_query_store(data_root).periods_many(candidate_ids)
+        routes = tuple(
+            (candidate_id, tuple(_available_periods(
+                data_root, candidate_id, raw_periods=period_map.get(candidate_id, []),
+                physical_item=physical.get(candidate_id),
+            )))
+            for candidate_id in candidate_ids
+        )
+        if len(_PERIOD_ROUTES_CACHE) >= 4096:
+            _PERIOD_ROUTES_CACHE.clear()
+        _PERIOD_ROUTES_CACHE[route_key] = routes
     available_set = {value for _candidate_id, values in routes for value in values}
     available = [value for value in _PERIOD_ORDER if value in available_set]
     selected = period or str(instrument.get("period") or "1d")
@@ -938,12 +1357,13 @@ def _history_window(
     # series exists; otherwise a 30m-only instrument advertises 1h yet returns
     # an empty chart.
     if total == 0:
-        derived = _derived_bars(data_root, storage_id, period)
+        derived = _derived_bars(data_root, storage_id, period, instrument)
         total = len(derived)
         raw = derived[max(0, start - 1) : start + size]
         lower = derived[0].get("bar_open_time") if derived else None
         upper = derived[-1].get("bar_open_time") if derived else None
-    enriched = _enrich_bars(raw, instrument)
+    enriched = _enrich_market_bars(data_root, raw, instrument, period)
+    enriched = enrich_continuous_bars(data_root, enriched, instrument, period)
     if start > 0 and enriched:
         enriched = enriched[1:]
     for bar in enriched:
@@ -959,11 +1379,22 @@ def _history_before(
     period: str,
     before: str | None,
     size: int,
+    *,
+    include_bounds: bool = True,
 ) -> tuple[list[dict[str, Any]], int, str | None, bool, str | None, str | None]:
     """Read a raw history page by indexed time cursor and enrich it once."""
 
     storage_id = str(instrument["storageInstrumentId"])
-    total, lower, upper = bar_bounds(data_root, storage_id, period)
+    needs_context = (period == "1d" and size < 5_000 and
+                     (is_actual_future(instrument) or is_continuous_future(instrument)))
+    window = read_bars_before(
+        data_root, storage_id, period=period, before=before,
+        limit=size + int(needs_context),
+    )
+    total = window.total
+    lower: str | None = None
+    upper: str | None = None
+    context: list[dict[str, Any]] = []
     if total == 0:
         raw, total, cursor, has_more, lower, upper = _derived_before(
             data_root,
@@ -971,11 +1402,28 @@ def _history_before(
             period,
             before=before,
             size=size,
+            instrument=instrument,
         )
+        if raw and period == "1d" and (is_actual_future(instrument) or is_continuous_future(instrument)):
+            context = read_bars_before(data_root, storage_id, period="1d",
+                                       before=str(raw[0].get("bar_open_time") or ""), limit=1).bars
     else:
-        window = read_bars_before(data_root, storage_id, period=period, before=before, limit=size)
-        raw, total, cursor, has_more = window.bars, window.total, window.before, window.has_more
-    enriched = _enrich_bars(raw, instrument)
+        raw = window.bars
+        if needs_context and len(raw) > size:
+            context, raw = raw[:1], raw[1:]
+        elif raw and period == "1d" and (is_actual_future(instrument) or is_continuous_future(instrument)):
+            # The maximum 5,000-bar page cannot ask the bounded query store
+            # for one extra bar; preserve its old explicit predecessor read.
+            context = read_bars_before(data_root, storage_id, period="1d",
+                                       before=str(raw[0].get("bar_open_time") or ""), limit=1).bars
+        cursor = str(raw[0].get("bar_open_time") or "") if raw else before
+        has_more = window.has_more or bool(context)
+        if include_bounds:
+            _bound_total, lower, upper = bar_bounds(data_root, storage_id, period)
+    enriched = _enrich_market_bars(data_root, [*context, *raw], instrument, period)
+    enriched = enrich_continuous_bars(data_root, enriched, instrument, period)
+    if context:
+        enriched = enriched[len(context):]
     for bar in enriched:
         bar["instrument_id"] = instrument["instrumentId"]
         bar["actual_source"] = instrument.get("actualSource")
@@ -993,8 +1441,10 @@ def market_bars_history(
     size: int = Query(default=60, ge=1, le=5_000),
 ) -> dict[str, Any]:
     """Fetch a logical history viewport; ``total`` covers all local bars."""
+    started = time.perf_counter()
     data_root = _data_root(request)
     instrument, selected_period, available = _resolve_period(data_root, instrument_id, period)
+    resolved = time.perf_counter()
     if before:
         bars, total, next_before, has_more, earliest, latest = _history_before(
             data_root, instrument, selected_period, before, size
@@ -1003,7 +1453,8 @@ def market_bars_history(
         bars, total, earliest, latest = _history_window(data_root, instrument, selected_period, start, size)
         next_before = str(bars[0].get("bar_open_time") or "") if bars else None
         has_more = start > 0
-    return clean({
+    read = time.perf_counter()
+    payload = clean({
         "instrumentId": instrument_id,
         "period": selected_period,
         "availablePeriods": available,
@@ -1017,6 +1468,12 @@ def market_bars_history(
         "dataVersion": _response_data_version(data_root),
         "bars": [{_camel_key(key): value for key, value in bar.items()} for bar in bars],
     })
+    request.state.market_timings = (
+        f"resolve;dur={(resolved - started) * 1000:.2f}, "
+        f"history;dur={(read - resolved) * 1000:.2f}, "
+        f"encode;dur={(time.perf_counter() - read) * 1000:.2f}"
+    )
+    return payload
 
 
 @router.get("/instruments/{instrument_id}/bars/meta")
@@ -1271,7 +1728,12 @@ def market_save_drawings(instrument_id: str, request: Request, body: ChartDrawin
             if not isinstance(price, (int, float)) or isinstance(price, bool) or not math.isfinite(price):
                 raise HTTPException(status_code=422, detail="笔刷点价格必须为有限数值")
     payload = {"schemaVersion": 1, "instrumentId": instrument_id, "updatedAt": datetime.now().astimezone().isoformat(timespec="seconds"), "items": body.items}
-    save_json(_drawings_path(_data_root(request), instrument_id), payload)
+    data_root = _data_root(request)
+    try:
+        with profile_write_gate(data_root):
+            save_json(_drawings_path(data_root, instrument_id), payload)
+    except ProfileGateBusy as error:
+        raise HTTPException(status_code=503, detail=str(error), headers={"Retry-After": "2"}) from error
     return clean(payload)
 
 
@@ -1320,12 +1782,16 @@ def market_delete_drawings(request: Request, body: DrawingsDeleteRequest) -> dic
     """Delete all drawings for the selected instruments."""
     data_root = _data_root(request)
     deleted = 0
-    for instrument_id in dict.fromkeys(value for value in body.instrument_ids if value.strip()):
-        try:
-            _drawings_path(data_root, instrument_id).unlink()
-            deleted += 1
-        except FileNotFoundError:
-            continue
+    try:
+        with profile_write_gate(data_root):
+            for instrument_id in dict.fromkeys(value for value in body.instrument_ids if value.strip()):
+                try:
+                    _drawings_path(data_root, instrument_id).unlink()
+                    deleted += 1
+                except FileNotFoundError:
+                    continue
+    except ProfileGateBusy as error:
+        raise HTTPException(status_code=503, detail=str(error), headers={"Retry-After": "2"}) from error
     return {"deleted": deleted}
 
 
@@ -1346,13 +1812,14 @@ def market_bars_batch(
     data_root = _data_root(request)
     logical = _logical_instruments(data_root)
     items: dict[str, list[dict[str, Any]]] = {}
-    if period in _RAW_PERIODS:
+    if period in _RAW_PERIODS and not any(is_continuous_future(logical.get(identifier, {})) for identifier in requested):
         try:
             candidate_ids = [
                 str(candidate_id)
                 for instrument_id in requested
                 for candidate_id in logical.get(instrument_id, {}).get("sourceCandidates", [])
-                if candidate_id
+                if candidate_id and (not is_actual_future(logical.get(instrument_id, {}))
+                                     or is_tdx_futures_id(candidate_id))
             ]
             store = get_kline_query_store(data_root)
             period_map = store.periods_many(candidate_ids)
@@ -1362,7 +1829,8 @@ def market_bars_batch(
                 instrument = logical.get(instrument_id)
                 if instrument is None:
                     continue
-                candidates = [str(value) for value in instrument.get("sourceCandidates", []) if value]
+                candidates = [str(value) for value in instrument.get("sourceCandidates", [])
+                              if value and (not is_actual_future(instrument) or is_tdx_futures_id(value))]
                 storage_id = next((value for value in candidates if period in period_map.get(value, [])), "")
                 if not storage_id:
                     continue
@@ -1378,7 +1846,9 @@ def market_bars_batch(
                 instrument = routed.get(instrument_id)
                 storage_id = str(instrument.get("storageInstrumentId") or "") if instrument else ""
                 raw = tails.get(storage_id, [])
-                enriched = _enrich_bars(raw, instrument) if instrument else []
+                enriched = _enrich_market_bars(data_root, raw, instrument, period) if instrument else []
+                if instrument:
+                    enriched = enrich_continuous_bars(data_root, enriched, instrument, period)
                 for bar in enriched:
                     bar["instrument_id"] = instrument_id
                     bar["actual_source"] = instrument.get("actualSource") if instrument else None
@@ -1387,6 +1857,8 @@ def market_bars_batch(
                     {_camel_key(key): value for key, value in bar.items()} for bar in enriched
                 ]
             return clean({"period": period, "limit": limit, "items": items, "dataVersion": _response_data_version(data_root)})
+        except KLineCacheUnavailable:
+            raise
         except Exception:
             # Keep the per-instrument path as a resilience fallback for a
             # missing/damaged query cache.
@@ -1402,7 +1874,7 @@ def market_bars_batch(
             items[instrument_id] = []
             continue
         bars, _total, _before, _has_more, _lower, _upper = _history_before(
-            data_root, instrument, selected_period, None, limit
+            data_root, instrument, selected_period, None, limit, include_bounds=False,
         )
         items[instrument_id] = [{_camel_key(key): value for key, value in bar.items()} for bar in bars]
     return clean({"period": period, "limit": limit, "items": items, "dataVersion": _response_data_version(data_root)})
@@ -1416,14 +1888,17 @@ def market_bars(
     limit: int = Query(default=1000, ge=1, le=MAX_BARS),
 ) -> dict[str, Any]:
     """Return ascending K-line bars for one local instrument."""
+    started = time.perf_counter()
     data_root = _data_root(request)
     instrument, selected_period, available_periods = _resolve_period(data_root, instrument_id, period)
+    resolved = time.perf_counter()
     bars, total, before, has_more, _earliest, _latest = _history_before(
-        data_root, instrument, selected_period, None, limit
+        data_root, instrument, selected_period, None, limit, include_bounds=False,
     )
+    read = time.perf_counter()
     start = max(0, total - len(bars))
     camel_bars = [{_camel_key(key): value for key, value in bar.items()} for bar in bars]
-    return clean(
+    payload = clean(
         {
             "instrumentId": instrument_id,
             "period": selected_period,
@@ -1441,6 +1916,12 @@ def market_bars(
             "dataVersion": _response_data_version(data_root),
         }
     )
+    request.state.market_timings = (
+        f"resolve;dur={(resolved - started) * 1000:.2f}, "
+        f"history;dur={(read - resolved) * 1000:.2f}, "
+        f"encode;dur={(time.perf_counter() - read) * 1000:.2f}"
+    )
+    return payload
 
 
 __all__ = ("router",)

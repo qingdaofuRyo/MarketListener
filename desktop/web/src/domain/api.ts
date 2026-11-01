@@ -3,6 +3,8 @@
  * 缺失值统一渲染为“暂无数据”，禁止 undefined/null/NaN/Invalid Date 出现在界面。
  */
 
+import { authorizedFetch, initializeLocalSession } from "./localSession";
+
 export type QueryParams = Record<string, string | number | undefined>;
 
 type CacheOptions = { ttlMs?: number; persist?: boolean; force?: boolean; signal?: AbortSignal };
@@ -106,9 +108,38 @@ export function invalidateQuery(path: string, params?: QueryParams): void {
   void deletePersistent(key);
 }
 
+/** Read a previously verified local response without starting a network request. */
+export async function peekCachedQuery<T>(path: string, params?: QueryParams): Promise<T | undefined> {
+  const key = queryKey(path, params);
+  const memory = memoryCache.get(key) as CachedValue<T> | undefined;
+  const entry = memory ?? await readPersistent<T>(key);
+  return entry?.value;
+}
+
+export class ApiRequestError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code?: string,
+    readonly retryAfterMs?: number,
+  ) { super(message); this.name = "ApiRequestError"; }
+}
+
 function fetchQuery<T>(url: URL, key: string, options: CacheOptions): Promise<T> {
-  const request: Promise<T> = fetch(url.toString(), { signal: options.signal }).then(async response => {
-    if (!response.ok) throw new Error(await errorMessage(response));
+  const request: Promise<T> = authorizedFetch(url.toString(), { signal: options.signal }).then(async response => {
+    if (!response.ok) {
+      const payload = await response.clone().json().catch(() => null) as
+        { code?: unknown; detail?: { code?: unknown } | null } | null;
+      const responseCode = payload?.code ?? payload?.detail?.code;
+      const rawRetry = Number(response.headers.get("Retry-After"));
+      const retryAfterMs = Number.isFinite(rawRetry) && rawRetry > 0
+        ? Math.min(30_000, Math.max(1_000, rawRetry * 1_000)) : undefined;
+      throw new ApiRequestError(
+        await errorMessage(response), response.status,
+        typeof responseCode === "string" ? responseCode : undefined,
+        retryAfterMs,
+      );
+    }
     const value = await response.json() as T; const entry = { value, savedAt: Date.now() }; memoryCache.set(key, entry);
     if (options.persist) void writePersistent(key, entry);
     return value;
@@ -135,6 +166,7 @@ async function errorMessage(response: Response): Promise<string> {
 }
 
 export async function apiGet<T>(path: string, params?: QueryParams, options: CacheOptions = {}): Promise<T> {
+  await initializeLocalSession();
   const url = new URL(path, window.location.origin);
   if (params) {
     for (const [key, value] of Object.entries(params)) {
@@ -143,7 +175,9 @@ export async function apiGet<T>(path: string, params?: QueryParams, options: Cac
   }
   const key = queryKey(path, params); const ttlMs = options.ttlMs ?? 30_000;
   let cached = memoryCache.get(key) as CachedValue<T> | undefined;
-  if (!cached && options.persist) cached = await readPersistent<T>(key);
+  // A forced refresh must start its network request without waiting for
+  // IndexedDB. Callers may prefill from peekCachedQuery independently.
+  if (!options.force && !cached && options.persist) cached = await readPersistent<T>(key);
   if (!options.force && cached) {
     memoryCache.set(key, cached);
     if (Date.now() - cached.savedAt < ttlMs) return cached.value;
@@ -156,7 +190,7 @@ export async function apiGet<T>(path: string, params?: QueryParams, options: Cac
 }
 
 export async function apiPost<T>(path: string, body?: unknown): Promise<T> {
-  const response = await fetch(path, {
+  const response = await authorizedFetch(path, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -166,7 +200,7 @@ export async function apiPost<T>(path: string, body?: unknown): Promise<T> {
 }
 
 export async function apiPut<T>(path: string, body?: unknown): Promise<T> {
-  const response = await fetch(path, {
+  const response = await authorizedFetch(path, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -176,7 +210,7 @@ export async function apiPut<T>(path: string, body?: unknown): Promise<T> {
 }
 
 export async function apiPatch<T>(path: string, body?: unknown): Promise<T> {
-  const response = await fetch(path, {
+  const response = await authorizedFetch(path, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -186,7 +220,7 @@ export async function apiPatch<T>(path: string, body?: unknown): Promise<T> {
 }
 
 export async function apiDelete<T>(path: string, body?: unknown): Promise<T> {
-  const response = await fetch(path, {
+  const response = await authorizedFetch(path, {
     method: "DELETE",
     headers: body === undefined ? undefined : { "Content-Type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -266,6 +300,8 @@ const OPERATION_LABELS: Record<string, string> = {
   TDX_LOCAL_IMPORT: "导入通达信并更新期货热度",
   FUTURES_HEAT_UPDATE: "更新期货热度",
   FUTURES_OFFICIAL_DAILY_UPDATE: "更新官方期货日行情",
+  FUTURES_CONTRACT_INFO_UPDATE: "更新期货合约信息",
+  FUTURES_SETTLEMENT_PARAMS_UPDATE: "更新期货结算参数",
   FUTURES_STRUCTURE_UPDATE: "重建期货品种与席位结构",
 };
 

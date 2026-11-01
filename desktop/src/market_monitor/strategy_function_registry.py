@@ -28,6 +28,8 @@ _CATEGORY_BY_ID = {
     "market_scope": ("universe", "标的范围"),
     "market_cap": ("fundamental", "基本面"),
     "period_return": ("return", "收益"),
+    "up_days": ("statistics", "统计"),
+    "sum_daily_returns": ("return", "收益"),
     "no_limit": ("limit", "涨跌停"),
     "close_breakout": ("price", "价格"),
     "limit_count": ("limit", "涨跌停"),

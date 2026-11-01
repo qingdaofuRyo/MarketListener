@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import base64
+import csv
 from datetime import datetime, timezone
 from hashlib import sha256
 from io import BytesIO
+from io import StringIO
 import json
 import re
 from typing import Any, Mapping
+from xml.etree import ElementTree
 import zipfile
 
 import pandas as pd
@@ -22,9 +25,28 @@ _RANK_URLS = {
     "DCE": "http://www.dce.com.cn/dcereport/publicweb/dailystat/memberDealPosi/batchDownload",
     "CZCE": "http://www.czce.com.cn/cn/DFSStaticFiles/Future/{year}/{day}/FutureDataHolding.xlsx",
     "GFEX": "http://www.gfex.com.cn/u/interfacesWebVariety/loadList",
-    "CFFEX": "http://www.cffex.com.cn/sj/ccpm/{month}/{day}/{product}_1.csv",
+    "CFFEX": "http://www.cffex.com.cn/sj/ccpm/{month}/{day}/{product}.xml?id=0",
 }
 _CFFEX_FUTURES_PRODUCTS = ("IF", "IH", "IC", "IM", "TS", "TF", "T", "TL")
+_CFFEX_TL_LISTING_DAY = "20230421"
+_CFFEX_XML_HEADERS = {
+    "Accept": "text/plain, */*; q=0.01",
+    "Referer": "http://www.cffex.com.cn/cn/ccpm.html",
+    "X-Requested-With": "XMLHttpRequest",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+}
+
+
+def cffex_rank_products(trading_day: str) -> tuple[str, ...]:
+    """Return CFFEX futures products listed by the requested day."""
+
+    if re.fullmatch(r"20\d{6}", trading_day) is None:
+        raise ValueError("CFFEX trading_day must be YYYYMMDD")
+    return tuple(
+        product for product in _CFFEX_FUTURES_PRODUCTS
+        if product != "TL" or trading_day >= _CFFEX_TL_LISTING_DAY
+    )
 
 
 class DirectOfficialRankApi:
@@ -54,6 +76,7 @@ class DirectOfficialRankApi:
         self, exchange: str, url: str, *, method: str = "GET",
         data: Mapping[str, Any] | None = None,
         json_body: Mapping[str, Any] | None = None,
+        headers: Mapping[str, str] | None = None,
         content_type: str = "application/octet-stream",
     ) -> bytes:
         adapter = f"official-{exchange.lower()}-rank-v1"
@@ -65,7 +88,7 @@ class DirectOfficialRankApi:
         }
         self.evidence[exchange] = evidence
         response = self.session.request(
-            method, url, data=data, json=json_body, timeout=15,
+            method, url, data=data, json=json_body, headers=headers, timeout=15,
         )
         raw = response.content
         evidence["retrieved_at"] = _now()
@@ -85,6 +108,8 @@ class DirectOfficialRankApi:
             raise ValueError(f"{exchange} official ranking response is not an XLSX file")
         if content_type == "text/csv" and "csv" not in response_type:
             raise ValueError(f"{exchange} official ranking response is not CSV ({response_type or 'unknown type'})")
+        if content_type == "application/xml" and "xml" not in response_type:
+            raise ValueError(f"{exchange} official ranking response is not XML ({response_type or 'unknown type'})")
         digest = str(evidence["payload_sha256"])
         # Valid source bytes are kept before the parser can reject a format.
         self.raw_artifacts.append({
@@ -148,11 +173,13 @@ class DirectOfficialRankApi:
         evidence_rows: list[dict[str, Any]] = []
         no_publication: list[str] = []
         errors: list[str] = []
-        for product in _CFFEX_FUTURES_PRODUCTS:
+        for product in cffex_rank_products(date):
             url = _RANK_URLS["CFFEX"].format(month=date[:6], day=date[6:], product=product)
             try:
-                raw = self._request("CFFEX", url, content_type="text/csv")
-                contract_frames = parse_cffex_rank_csv(raw)
+                raw = self._request(
+                    "CFFEX", url, headers=_CFFEX_XML_HEADERS, content_type="application/xml",
+                )
+                contract_frames = parse_cffex_rank_xml(raw, trading_day=date, product=product)
             except Exception as error:
                 evidence = self.evidence.get("CFFEX")
                 response = getattr(error, "response", None)
@@ -266,7 +293,7 @@ def parse_shfe_rank_json(raw: bytes) -> dict[str, pd.DataFrame]:
     for item in payload["o_cursor"]:
         if not isinstance(item, Mapping):
             continue
-        contract = str(item.get("INSTRUMENTID") or "").upper()
+        contract = str(item.get("INSTRUMENTID") or "").strip().upper()
         if not _DATED_CONTRACT.fullmatch(contract):
             continue
         try:
@@ -323,26 +350,31 @@ def parse_czce_rank_xlsx(raw: bytes) -> dict[str, pd.DataFrame]:
     return grouped
 
 
-def parse_cffex_rank_csv(raw: bytes) -> dict[str, pd.DataFrame]:
-    """Parse the official per-product CSV, preserving distinct long/short ranks."""
+def parse_cffex_rank_csv(raw: bytes, *, trading_day: str | None = None) -> dict[str, pd.DataFrame]:
+    """Parse current and legacy official product CSV layouts.
+
+    Legacy treasury CSVs have 9-column product-summary rows followed by a
+    12-column contract leaderboard. Read rows with ``csv`` so the mixed-width
+    preamble does not make a whole-file DataFrame parser fail before the rank
+    section is reached.
+    """
 
     text = raw.decode("gb18030", errors="strict")
-    table = pd.read_csv(BytesIO(text.encode("utf-8")), header=None, dtype=str)
-    first_column = table.iloc[:, 0].fillna("").astype(str)
-    header_rows = list(first_column[first_column.str.contains("交易日", regex=False)].index)
-    if len(header_rows) > 2:
-        table = table.iloc[header_rows[1]:, 0].str.split(",", expand=True).reset_index(drop=True)
-    if table.empty:
-        raise ValueError("CFFEX CSV has no rows")
-    # Current official files contain a two-line heading; older files begin
-    # with the column names. Validate the documented column count before use.
-    header = [str(value or "").strip() for value in table.iloc[0].tolist()]
-    if len(header) < 12 or "合约" not in header[1] or "排名" not in header[2]:
+    rows = [[cell.strip() for cell in row] for row in csv.reader(StringIO(text, newline=""))]
+    header_index = next((
+        index for index, row in enumerate(rows)
+        if len(row) >= 12 and row[:3] == ["交易日", "合约", "排名"]
+    ), None)
+    if header_index is None or header_index + 1 >= len(rows):
+        raise ValueError("CFFEX CSV has no contract ranking header")
+    section_header = rows[header_index + 1]
+    if (len(section_header) < 12 or section_header[3] != "会员简称"
+            or section_header[6] != "会员简称" or section_header[9] != "会员简称"):
         raise ValueError("CFFEX CSV does not match the official futures ranking layout")
     records: dict[str, list[dict[str, Any]]] = {}
-    for raw_row in table.iloc[2:].itertuples(index=False, name=None):
-        values = [str(value or "").strip() for value in raw_row]
-        if len(values) < 12:
+    report_days: set[str] = set()
+    for values in rows[header_index + 2:]:
+        if len(values) < 12 or re.fullmatch(r"\d{8}", values[0]) is None:
             continue
         contract = values[1].upper()
         if not _DATED_CONTRACT.fullmatch(contract):
@@ -353,6 +385,7 @@ def parse_cffex_rank_csv(raw: bytes) -> dict[str, pd.DataFrame]:
             continue
         if rank <= 0:
             continue
+        report_days.add(values[0])
         records.setdefault(contract, []).append({
             "rank": rank, "long_party_name": values[6] or None,
             "long_open_interest": values[7], "long_open_interest_chg": values[8],
@@ -360,7 +393,76 @@ def parse_cffex_rank_csv(raw: bytes) -> dict[str, pd.DataFrame]:
             "short_open_interest": values[10], "short_open_interest_chg": values[11],
             "vol_party_name": values[3] or None, "vol": values[4], "vol_chg": values[5],
         })
-    return {contract: pd.DataFrame(rows) for contract, rows in records.items()}
+    if trading_day is not None and report_days and report_days != {trading_day}:
+        raise ValueError("CFFEX CSV report date differs from the requested trading day")
+    return {contract: pd.DataFrame(contract_rows) for contract, contract_rows in records.items()}
+
+
+def parse_cffex_rank_xml(
+    raw: bytes, *, trading_day: str, product: str,
+) -> dict[str, pd.DataFrame]:
+    """Parse CFFEX's product XML response (datatype 0=volume, 1=long, 2=short)."""
+
+    if re.fullmatch(r"20\d{6}", trading_day) is None or not product.isalpha():
+        raise ValueError("CFFEX XML requires a compact trading day and product code")
+    try:
+        root = ElementTree.fromstring(raw)
+    except ElementTree.ParseError as error:
+        raise ValueError("CFFEX ranking response is not XML") from error
+    if root.tag != "positionRank":
+        raise ValueError("CFFEX XML does not contain positionRank")
+    column_map = {
+        "0": ("vol_party_name", "vol", "vol_chg"),
+        "1": ("long_party_name", "long_open_interest", "long_open_interest_chg"),
+        "2": ("short_party_name", "short_open_interest", "short_open_interest_chg"),
+    }
+    frame_columns = [
+        "rank", "vol_party_name", "vol", "vol_chg", "long_party_name",
+        "long_open_interest", "long_open_interest_chg", "short_party_name",
+        "short_open_interest", "short_open_interest_chg",
+    ]
+    grouped: dict[str, dict[int, dict[str, Any]]] = {}
+    seen: set[tuple[str, str, int]] = set()
+    counts: dict[tuple[str, str], list[int]] = {}
+    for item in root.findall("data"):
+        contract = (item.findtext("instrumentid") or "").strip().upper()
+        item_day = (item.findtext("tradingday") or "").strip()
+        data_type = (item.findtext("datatypeid") or "").strip()
+        member = (item.findtext("shortname") or "").strip()
+        try:
+            rank = int((item.findtext("rank") or "").strip())
+        except ValueError as error:
+            raise ValueError("CFFEX XML contains an invalid rank") from error
+        if (not _DATED_CONTRACT.fullmatch(contract) or not contract.startswith(product.upper())
+                or item_day != trading_day or data_type not in column_map
+                or not 1 <= rank <= 20 or not member):
+            raise ValueError("CFFEX XML row has an invalid contract, date, direction or rank")
+        key = contract, data_type, rank
+        if key in seen:
+            raise ValueError("CFFEX XML contains a duplicate contract/direction/rank")
+        seen.add(key)
+        quantity = (item.findtext("volume") or "").strip()
+        change = (item.findtext("varvolume") or "").strip()
+        if not quantity or not change:
+            raise ValueError("CFFEX XML row omits quantity or change")
+        target = grouped.setdefault(contract, {}).setdefault(rank, {"rank": rank})
+        name_column, quantity_column, change_column = column_map[data_type]
+        target[name_column] = member
+        target[quantity_column] = quantity
+        target[change_column] = change
+        counts.setdefault((contract, data_type), []).append(rank)
+    if not grouped:
+        raise ValueError("CFFEX XML contains no dated contract rank rows")
+    for ranks in counts.values():
+        if sorted(ranks) != list(range(1, len(ranks) + 1)):
+            raise ValueError("CFFEX XML ranks are not contiguous")
+    return {
+        contract: pd.DataFrame(
+            [grouped[contract][rank] for rank in sorted(grouped[contract])],
+            columns=frame_columns,
+        )
+        for contract in sorted(grouped)
+    }
 
 
 def parse_dce_rank_zip(raw: bytes, trading_day: str) -> dict[str, pd.DataFrame]:
@@ -427,5 +529,6 @@ def _now() -> str:
 
 __all__ = (
     "DirectOfficialRankApi", "parse_shfe_rank_json", "parse_czce_rank_xlsx",
-    "parse_dce_rank_zip",
+    "parse_dce_rank_zip", "parse_cffex_rank_csv", "parse_cffex_rank_xml",
+    "cffex_rank_products",
 )

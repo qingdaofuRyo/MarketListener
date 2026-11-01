@@ -13,6 +13,7 @@ import duckdb
 
 from .futures import contract_delivery_month, futures_product_name
 from .futures_heat_pipeline import _optional_day
+from .futures_member_rank_source import select_member_position_source_rows
 from .futures_official_multipliers import OfficialMultiplierRegistry, load_official_multiplier_registry
 from .futures_rule_sync import RuleBook, load_rule_book
 from .storage import MarketStore
@@ -359,6 +360,7 @@ def run_member_open_interest_structure_pipeline(
         store.register_default_datasets()
         ranks = store.list_futures_member_position_ranks(commodity_only=True)
         coverage_records = store.list_futures_member_position_coverage(commodity_only=True)
+        ranks = select_member_position_source_rows(ranks, coverage_records)
         result: dict[str, Any] = {
             "chartId": MEMBER_OPEN_INTEREST_CHART_ID,
             "formulaVersion": MEMBER_STRUCTURE_FORMULA_VERSION,

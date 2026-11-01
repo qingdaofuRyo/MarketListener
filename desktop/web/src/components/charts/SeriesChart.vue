@@ -6,6 +6,7 @@ import { useThemeStore } from "../../stores/theme";
 export interface SeriesPoint {
   t: string;
   value: number | null;
+  detail?: string;
 }
 
 export interface NamedSeries {
@@ -22,10 +23,15 @@ const props = withDefaults(
     area?: boolean;
     rangeDays?: number;
     color?: string;
+    colors?: string[];
+    initialWindowPoints?: number;
+    smooth?: boolean;
+    showSymbols?: boolean;
+    zeroBaseline?: boolean;
     chartType?: "line" | "bar";
     opacity?: number;
   }>(),
-  { title: "", unit: "", height: 280, area: true, rangeDays: 0, color: "", chartType: "line", opacity: 0.16, series: () => [] },
+  { title: "", unit: "", height: 280, area: true, rangeDays: 0, color: "", colors: () => [], initialWindowPoints: 0, smooth: true, showSymbols: false, zeroBaseline: false, chartType: "line", opacity: 0.16, series: () => [] },
 );
 
 const theme = useThemeStore();
@@ -52,6 +58,14 @@ const categories = computed(() => {
 const hasData = computed(() =>
   filteredSeries.value.some((item) => item.points.some((point) => typeof point.value === "number" && Number.isFinite(point.value))),
 );
+const accessibleSummary = computed(() => {
+  const details = filteredSeries.value.map(item => {
+    const latest = [...item.points].reverse().find(point => typeof point.value === "number" && Number.isFinite(point.value));
+    const gaps = item.points.some(point => point.value === null) ? "，缺报处断线" : "";
+    return latest ? `${item.name}最近观测 ${latest.t} ${latest.value}${props.unit}${gaps}` : `${item.name}暂无观测`;
+  });
+  return `${props.title || "历史走势"}：${details.join("；") || "暂无可用数据"}`;
+});
 
 const seriesColors = ["accent", "priceUp", "priceDown", "warning", "info", "highlight"] as const;
 
@@ -63,19 +77,47 @@ function seriesData(item: NamedSeries): Array<number | null> {
   });
 }
 
+interface AxisTooltipItem { axisValue?: string; name?: string; seriesIndex?: number }
+
+function escapeTooltip(value: string): string {
+  return value.replace(/[&<>"']/gu, character => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  })[character] || character);
+}
+
+function tooltipHtml(raw: unknown): string {
+  const items = (Array.isArray(raw) ? raw : [raw]) as AxisTooltipItem[];
+  const day = String(items[0]?.axisValue ?? items[0]?.name ?? "");
+  const rows = filteredSeries.value.flatMap(series => {
+    const point = series.points.find(candidate => candidate.t === day);
+    if (!point) return [];
+    if (typeof point.value !== "number" || !Number.isFinite(point.value)) {
+      return point.detail ? [`<div>${escapeTooltip(series.name)}：暂无可信值`
+        + `<br/><small>${escapeTooltip(point.detail)}</small></div>`] : [];
+    }
+    const value = point.value.toLocaleString("zh-CN", { maximumFractionDigits: 4 });
+    return [`<div>${escapeTooltip(series.name)}：<strong>${value}${escapeTooltip(props.unit)}</strong>`
+      + (point.detail ? `<br/><small>${escapeTooltip(point.detail)}</small>` : "") + "</div>"];
+  });
+  return `<div>${escapeTooltip(day)}</div>${rows.join("")}`;
+}
+
 function render(): void {
   if (!element.value || !hasData.value) return;
   chart ??= echarts.init(element.value);
   const palette = theme.palette;
   const colorOf = (index: number): string =>
     palette[seriesColors[index % seriesColors.length] as keyof typeof palette];
+  const initialStart = props.initialWindowPoints > 0 && categories.value.length > props.initialWindowPoints
+    ? 100 * (1 - props.initialWindowPoints / categories.value.length) : 0;
   chart.setOption(
     {
       backgroundColor: "transparent",
-      color: props.color ? [props.color] : seriesColors.map((_name, index) => colorOf(index)),
+      color: props.colors.length ? props.colors : props.color ? [props.color] : seriesColors.map((_name, index) => colorOf(index)),
       animationDuration: 320,
       tooltip: {
         trigger: "axis",
+        formatter: tooltipHtml,
         backgroundColor: palette.chartTooltip,
         borderColor: palette.chartTooltipBorder,
         textStyle: { color: palette.textPrimary, fontSize: 12 },
@@ -94,23 +136,25 @@ function render(): void {
       xAxis: {
         type: "category",
         data: categories.value,
-        boundaryGap: false,
+        boundaryGap: props.chartType === "bar",
         axisLine: { lineStyle: { color: palette.chartGrid } },
         axisLabel: { color: palette.chartAxis, fontSize: 11 },
         axisTick: { show: false },
       },
       yAxis: {
         type: "value",
-        scale: true,
+        scale: !props.zeroBaseline,
         axisLabel: { color: palette.chartAxis, fontSize: 11 },
         splitLine: { lineStyle: { color: palette.chartGrid } },
         name: props.unit,
         nameTextStyle: { color: palette.chartAxis, fontSize: 10, align: "right" },
       },
       dataZoom: [
-        { type: "inside", start: 0, end: 100 },
+        { type: "inside", start: initialStart, end: 100 },
         {
           type: "slider",
+          start: initialStart,
+          end: 100,
           bottom: 0,
           height: 14,
           borderColor: palette.divider,
@@ -124,8 +168,8 @@ function render(): void {
         name: item.name,
         type: props.chartType,
         data: seriesData(item),
-        smooth: props.chartType === "line",
-        showSymbol: false,
+        smooth: props.chartType === "line" && props.smooth,
+        showSymbol: props.chartType === "line" && props.showSymbols,
         connectNulls: false,
         lineStyle: { width: 1.6 },
         areaStyle: props.area && props.chartType === "line" && index === 0 ? { opacity: props.opacity } : undefined,
@@ -141,7 +185,7 @@ function resize(): void {
 }
 
 watch(
-  () => [filteredSeries.value, theme.palette, props.rangeDays, props.color, props.chartType, props.opacity],
+  () => [filteredSeries.value, theme.palette, props.rangeDays, props.color, props.colors, props.initialWindowPoints, props.smooth, props.showSymbols, props.zeroBaseline, props.chartType, props.area, props.opacity],
   () => void nextTick(render),
   { deep: true },
 );
@@ -161,7 +205,7 @@ onBeforeUnmount(() => {
 <template>
   <div class="series-chart chart-box" :style="{ height: `${height}px` }">
     <div v-if="title" class="chart-title">{{ title }}</div>
-    <div ref="element" class="chart-root" />
+    <div ref="element" class="chart-root" role="img" :aria-label="accessibleSummary" />
     <div v-if="!hasData" class="chart-empty">暂无该指标数据</div>
   </div>
 </template>

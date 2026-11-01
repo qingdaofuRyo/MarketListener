@@ -65,7 +65,7 @@ function render(): void {
       startAngle: 180,
       endAngle: 0,
       center: ["50%", "72%"],
-      radius: "112%",
+      radius: Math.max(0, Math.min(chart.getHeight() * 0.56, chart.getWidth() / 2 - 42)),
       splitNumber: 4,
       axisLine: {
         lineStyle: {
@@ -73,17 +73,10 @@ function render(): void {
           color: axisColors,
         },
       },
-      pointer: {
-        show: true,
-        length: "57%",
-        width: 5,
-        itemStyle: { color: palette.textPrimary },
-      },
-      anchor: {
-        show: true,
-        size: 8,
-        itemStyle: { color: palette.textPrimary, borderColor: palette.surface, borderWidth: 2 },
-      },
+      progress: { show: true, width: 5, roundCap: true,
+        itemStyle: { color: palette.textPrimary } },
+      pointer: { show: false },
+      anchor: { show: false },
       axisTick: { distance: -20, length: 4, lineStyle: { color: palette.surface, width: 1 } },
       splitLine: { distance: -21, length: 9, lineStyle: { color: palette.surface, width: 2 } },
       axisLabel: {
@@ -101,6 +94,7 @@ function render(): void {
 
 function resize(): void {
   chart?.resize();
+  render();
 }
 
 watch(

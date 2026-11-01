@@ -30,7 +30,14 @@ $ProgressPreference = "SilentlyContinue"
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $pythonExe = Join-Path $repoRoot "desktop\.venv\Scripts\python.exe"
 $requirementsLock = Join-Path $repoRoot "desktop\requirements.lock"
-$jdkHome = "C:\Users\qingd\.jdks\jbr-21.0.11"
+$profileJdk = Join-Path $env:USERPROFILE ".jdks\jbr-21.0.11"
+$jdkHome = if (Test-Path -LiteralPath (Join-Path $profileJdk "bin\java.exe")) {
+    $profileJdk
+} elseif ($env:JAVA_HOME) {
+    $env:JAVA_HOME
+} else {
+    $profileJdk
+}
 $javaExe = Join-Path $jdkHome "bin\java.exe"
 $originalJavaHome = $env:JAVA_HOME
 $originalPath = $env:PATH
@@ -72,6 +79,7 @@ import re
 import sys
 from importlib.metadata import distributions
 from pathlib import Path
+from packaging.requirements import Requirement
 
 
 def normalize(name: str) -> str:
@@ -84,12 +92,20 @@ def parse_lock(path: Path) -> dict[str, str]:
         line = raw_line.split("#", 1)[0].strip()
         if not line:
             continue
-        match = re.fullmatch(r"([A-Za-z0-9][A-Za-z0-9_.-]*)\s*==\s*([^\s;#]+)", line)
-        if not match:
+        try:
+            requirement = Requirement(line)
+        except ValueError:
             raise SystemExit(
                 f"requirements lock contains a non-exact or unparseable entry at line {line_number}: {raw_line!r}"
             )
-        name, version = normalize(match.group(1)), match.group(2)
+        specs = list(requirement.specifier)
+        if requirement.url or requirement.extras or len(specs) != 1 or specs[0].operator != "==" or "*" in specs[0].version:
+            raise SystemExit(
+                f"requirements lock contains a non-exact or unparseable entry at line {line_number}: {raw_line!r}"
+            )
+        if requirement.marker is not None and not requirement.marker.evaluate():
+            continue
+        name, version = normalize(requirement.name), specs[0].version
         previous = expected.get(name)
         if previous is not None and previous != version:
             raise SystemExit(f"requirements lock has conflicting versions for {name}: {previous} and {version}")

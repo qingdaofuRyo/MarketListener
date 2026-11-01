@@ -52,11 +52,12 @@ test('TV回放预览、前缀、空槽、跟随与恢复',async({page})=>{
   const root=page.locator('.workbench-chart .chart-root');
   const before=await option(page);
   await page.getByRole('button',{name:'回放',exact:true}).click();
+  await expect(page.getByText('点击图中一根 K 线开始')).toBeVisible();
   const box=(await root.boundingBox())!;
-  await page.mouse.move(box.x+box.width*.35,box.y+box.height*.3);
+  await root.hover({position:{x:box.width*.4,y:box.height*.35}});
   await expect(page.locator('.replay-preview')).toBeVisible();
   await expect(page.locator('.replay-preview')).toContainText(/2026-.*周/);
-  await page.mouse.click(box.x+box.width*.35,box.y+box.height*.3);
+  await page.mouse.click(box.x+box.width*.4,box.y+box.height*.35);
   await expect(page.getByRole('button',{name:'播放',exact:true})).toBeEnabled();
   const picked=await option(page);
   const length=picked.series[0].data.length;

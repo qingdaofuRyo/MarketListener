@@ -1,16 +1,17 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
-import { useRoute, useRouter } from "vue-router";
+import { onBeforeRouteLeave, useRoute, useRouter } from "vue-router";
 import {
   apiDelete,
   apiGet,
-  apiPatch,
   apiPost,
   apiPut,
   formatTime,
 } from "../domain/api";
 import CompositeStrategyManager from "../components/strategy/CompositeStrategyManager.vue";
+import StockScreener from "../components/strategy/StockScreener.vue";
 const signalManager = ref<InstanceType<typeof CompositeStrategyManager>>();
+const stockScreener = ref<InstanceType<typeof StockScreener>>();
 import StrategyRuleTreeEditor from "../components/strategy/StrategyRuleTreeEditor.vue";
 import type { StrategyFunctionOption } from "../components/strategy/StrategyOperandEditor.vue";
 import type {
@@ -19,6 +20,7 @@ import type {
   StrategyRule,
   VersionedStrategyDefinition,
 } from "../domain/strategyTypes";
+import ResearchLoadingSkeleton from "./ResearchLoadingSkeleton.vue";
 
 interface CatalogItem {
   resourceKind?: "indicator" | "drawing_tool" | "strategy_function";
@@ -129,19 +131,8 @@ interface StrategyTemplate {
     stopLoss: { enabled?: boolean; kind?: string; value?: number };
   };
 }
-interface ExecutionCapabilityMode {
-  runMode: "backtest" | "paper" | "live";
-  enabled: boolean;
-  executionStatus: string;
-  adapterId: string | null;
-  reason: string;
-}
-interface ExecutionCapabilities {
-  capability: string;
-  platform: string;
-  androidOrderIntentEnabled: boolean;
-  modes: ExecutionCapabilityMode[];
-}
+
+
 interface Condition {
   functionId: string;
   period: string;
@@ -156,8 +147,8 @@ interface Group {
 
 const indicators = ref<CatalogItem[]>([]);
 const functions = ref<CatalogItem[]>([]);
-const definitions = ref<Strategy[]>([]);
-const executionCapabilities = ref<ExecutionCapabilities | null>(null);
+
+
 const loading = ref(false);
 const error = ref("");
 const route = useRoute();
@@ -179,12 +170,17 @@ const search = ref("");
 const category = ref("");
 const assetType = ref("");
 const sourceFilter = ref("");
-const strategySearch = ref("");
-const strategyStatus = ref("");
-const strategyCategory = ref("");
-const strategyAssetType = ref("");
-const strategySourceFilter = ref("");
-const strategyRunMode = ref("");
+const includeInactive = ref(false);
+const catalogLayout = ref<"cards" | "list">("cards");
+const catalogLoading = ref<Record<ResourceTab, boolean>>({ indicator: false, function: false, strategy: false });
+const catalogSearchInput = ref<{ focus: () => void }>();
+const assetLabels: Record<string, string> = { STOCK: "A股", B_SHARE: "B股", INDEX: "指数", FUTURE: "期货", ETF: "ETF", LOF: "LOF", REIT: "REIT", FUND: "基金" };
+
+
+
+
+
+
 const selected = ref<CatalogItem | null>(null);
 const detailOpen = ref(false);
 const customIndicatorEditorOpen = ref(false);
@@ -376,52 +372,46 @@ const categories = computed<Array<[string, string]>>(() =>
     ).entries(),
   ),
 );
-const strategyCategories = computed(() =>
-  Array.from(
-    new Set(
-      definitions.value
-        .map((item) => item.category)
-        .filter((value): value is string => Boolean(value)),
-    ),
-  ).sort(),
-);
+
 const filteredCatalog = computed(() =>
   activeCatalog.value.filter((item) => {
     const term = search.value.trim().toLocaleLowerCase();
     return (
       (!term ||
-        `${item.name} ${item.englishName || ""} ${item.description || item.definition || ""}`
+        `${item.name} ${item.id} ${item.englishName || ""} ${item.description || item.definition || ""} ${item.mathFormula || ""}`
           .toLocaleLowerCase()
           .includes(term)) &&
       (!category.value || item.category === category.value) &&
       (!assetType.value ||
         item.supportedAssetTypes?.includes(assetType.value)) &&
+      (includeInactive.value || !item.status || item.status === "active") &&
       (!sourceFilter.value ||
         sourceFilter.value === "favorite" ||
         item.origin === sourceFilter.value)
     );
   }),
 );
-const filteredDefinitions = computed(() =>
-  definitions.value.filter((item) => {
-    const term = strategySearch.value.trim().toLocaleLowerCase();
-    return (
-      (!term ||
-        `${item.displayName} ${item.description || ""}`
-          .toLocaleLowerCase()
-          .includes(term)) &&
-      (!strategyStatus.value || item.status === strategyStatus.value) &&
-      (!strategyCategory.value || item.category === strategyCategory.value) &&
-      (!strategyAssetType.value ||
-        item.supportedAssetTypes?.includes(strategyAssetType.value)) &&
-      (!strategyRunMode.value || item.runMode === strategyRunMode.value) &&
-      (!strategySourceFilter.value ||
-        (strategySourceFilter.value === "favorite"
-          ? isFavorite(item)
-          : item.origin === strategySourceFilter.value))
-    );
-  }),
-);
+const visibleCatalog = computed(() => sourceFilter.value === "favorite" ? filteredCatalog.value.filter(isFavorite) : filteredCatalog.value);
+const catalogStats = computed(() => ({
+  total: activeCatalog.value.length,
+  active: activeCatalog.value.filter(item => !item.status || item.status === "active").length,
+  custom: activeCatalog.value.filter(item => item.origin === "custom").length,
+  favorite: activeCatalog.value.filter(isFavorite).length,
+}));
+function clearCatalogFilters(): void {
+  search.value = ""; category.value = ""; assetType.value = ""; sourceFilter.value = ""; includeInactive.value = false;
+}
+function catalogStatusLabel(status?: string): string {
+  return status === "deprecated" ? "历史版本" : status === "disabled" ? "已停用" : status === "active" ? "已启用" : "待确认";
+}
+function focusCatalogShortcut(event: KeyboardEvent): void {
+  if (event.key !== "/" || activeTab.value === "strategy") return;
+  const target = event.target as HTMLElement | null;
+  if (target?.closest("input, textarea, select, [contenteditable='true']")) return;
+  event.preventDefault();
+  catalogSearchInput.value?.focus();
+}
+
 
 function reset(): void {
   name.value = "";
@@ -500,22 +490,8 @@ function updateFunction(row: Condition): void {
 function addGroup(): void {
   groups.value.push({ operator: "and", conditions: [condition()] });
 }
-async function openCreate(): Promise<void> {
-  mode.value = "create";
-  reset();
-  await loadTab("function");
-  dialog.value = true;
-}
-async function openTemplateWizard(): Promise<void> {
-  templateCreating.value = "";
-  templateDisplayName.value = "";
-  try {
-    templates.value = (await apiGet<{ items: StrategyTemplate[] }>("/api/strategy/templates", undefined, { force: true })).items;
-    templateWizardOpen.value = true;
-  } catch (reason) {
-    error.value = reason instanceof Error ? reason.message : "策略模板加载失败";
-  }
-}
+
+
 async function createFromTemplate(template: StrategyTemplate): Promise<void> {
   templateCreating.value = template.templateId;
   error.value = "";
@@ -664,24 +640,8 @@ async function openEdit(item: Strategy): Promise<void> {
   }
   dialog.value = true;
 }
-async function openVersionHistory(item: Strategy): Promise<void> {
-  if (item.scriptKind !== "structured_v1") return;
-  try {
-    const result = await apiGet<{ items: StrategyVersionHistory[] }>(
-      `/api/strategy/definition-resources/${encodeURIComponent(item.strategyId)}/versions`,
-      undefined,
-      { force: true },
-    );
-    versionHistoryStrategy.value = item;
-    versionHistory.value = result.items;
-    versionHistoryOpen.value = true;
-  } catch (reason) {
-    error.value = reason instanceof Error ? reason.message : "历史版本加载失败";
-  }
-}
-function openPackageChooser(): void {
-  strategyPackageInput.value?.click();
-}
+
+
 function readPackageBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -748,15 +708,7 @@ async function importStrategyPackage(): Promise<void> {
     packageImportBusy.value = false;
   }
 }
-function exportStrategyPackage(item: Strategy): void {
-  const version = item.version || Number(item.strategyVersion || 1);
-  const link = document.createElement("a");
-  link.href = `/api/strategy/definition-resources/${encodeURIComponent(item.strategyId)}/export?version=${encodeURIComponent(String(version))}`;
-  link.download = `${item.strategyId}@${version}.strategy.zip`;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-}
+
 function historyStrategy(version: StrategyVersionHistory): Strategy | null {
   const base = versionHistoryStrategy.value;
   if (!base) return null;
@@ -1091,52 +1043,16 @@ async function save(): Promise<void> {
     submitting.value = false;
   }
 }
-async function remove(item: Strategy): Promise<void> {
-  const action = item.scriptKind === "structured_v1" ? "归档" : "删除";
-  if (!window.confirm(`${action}策略“${item.displayName}”？`)) return;
-  try {
-    await apiDelete(
-      item.scriptKind === "structured_v1"
-        ? `/api/strategy/definition-resources/${encodeURIComponent(item.strategyId)}`
-        : `/api/strategy/definitions/${encodeURIComponent(item.strategyId)}`,
-      { confirmDisplayName: item.displayName },
-    );
-    await load();
-  } catch (reason) {
-    error.value = reason instanceof Error ? reason.message : `策略${action}失败`;
-  }
-}
-async function copyStrategy(item: Strategy): Promise<void> {
-  try {
-    await apiPost(
-      item.scriptKind === "structured_v1"
-        ? `/api/strategy/definition-resources/${encodeURIComponent(item.strategyId)}/copy`
-        : `/api/strategy/definitions/${encodeURIComponent(item.strategyId)}/copy`,
-      {},
-    );
-    await load();
-  } catch (reason) {
-    error.value = reason instanceof Error ? reason.message : "策略复制失败";
-  }
-}
-async function toggleStrategy(item: Strategy): Promise<void> {
-  try {
-    await apiPatch(
-      item.scriptKind === "structured_v1"
-        ? `/api/strategy/definition-resources/${encodeURIComponent(item.strategyId)}/status`
-        : `/api/strategy/definitions/${encodeURIComponent(item.strategyId)}/status`,
-      { status: item.status === "disabled" ? "active" : "disabled" },
-    );
-    await load();
-  } catch (reason) {
-    error.value = reason instanceof Error ? reason.message : "策略状态更新失败";
-  }
-}
+
+
+
 async function load(force = true): Promise<void> {
   await loadTab("strategy", force);
 }
 async function loadTab(tab: ResourceTab, force = false): Promise<void> {
   if (loaded.value[tab] && !force) return;
+  if (catalogLoading.value[tab]) return;
+  catalogLoading.value[tab] = true;
   loading.value = true;
   error.value = "";
   try {
@@ -1163,7 +1079,8 @@ async function loadTab(tab: ResourceTab, force = false): Promise<void> {
   } catch (reason) {
     error.value = reason instanceof Error ? reason.message : "策略目录加载失败";
   } finally {
-    loading.value = false;
+    catalogLoading.value[tab] = false;
+    loading.value = Object.values(catalogLoading.value).some(Boolean);
   }
 }
 function openDetail(item: CatalogItem): void {
@@ -1339,11 +1256,13 @@ function toggleFavorite(item: FavoriteResource): void {
   );
 }
 function addToCurrentChart(item: CatalogItem): void {
+  const transferId = crypto.randomUUID();
   localStorage.setItem(
     "marketlistener.pendingIndicator",
     JSON.stringify({
       definitionId: item.id,
       version: item.version || 1,
+      transferId,
       placement: item.placement || "overlay",
       parameters: Object.fromEntries(
         (item.parameters || [])
@@ -1357,7 +1276,7 @@ function addToCurrentChart(item: CatalogItem): void {
   detailOpen.value = false;
   void router.push({
     path: "/market/",
-    query: { indicator: item.id, version: String(item.version || 1) },
+    query: { indicator: item.id, version: String(item.version || 1), transferId },
   });
 }
 function openDrawingTool(item: CatalogItem): void {
@@ -1395,16 +1314,22 @@ function loadStrategyToCurrentChart(item: Strategy): void {
     query: { strategy: item.strategyId, version: String(item.version || 1) },
   });
 }
-function isUntrustedStrategy(item: Strategy): boolean {
-  return item.origin === "community" || item.origin === "plugin";
+
+
+async function selectResourceTab(value: string): Promise<void> {
+  if (!tabs.includes(value as ResourceTab) || value === activeTab.value) return;
+  if (activeTab.value === "strategy" && signalManager.value && !(await signalManager.value.confirmLeave())) return;
+  if (activeTab.value === "strategy" && stockScreener.value && !stockScreener.value.confirmLeave()) return;
+  activeTab.value = value as ResourceTab;
 }
-function strategyOriginLabel(origin?: string): string {
-  if (origin === "builtin") return "内置";
-  if (origin === "community") return "社区 · 待审核";
-  if (origin === "plugin") return "插件 · 待审核";
-  return "自定义";
-}
+
+onBeforeRouteLeave(async () => {
+  if (signalManager.value && !(await signalManager.value.confirmLeave())) return false;
+  return stockScreener.value ? stockScreener.value.confirmLeave() : true;
+});
+
 watch(activeTab, (tab) => {
+  detailOpen.value = false;
   search.value = "";
   category.value = "";
   assetType.value = "";
@@ -1416,13 +1341,15 @@ onMounted(() => void loadTab(activeTab.value));
 </script>
 
 <template>
-  <main class="strategy-page">
+  <main class="strategy-page" @keydown="focusCatalogShortcut">
     <header class="page-heading">
       <div>
+        <span class="workspace-eyebrow">研究工作台 / 策略研究</span>
         <h1 class="page-title">策略</h1>
-        <p>组合策略包含关注、仓位、择时；预定义策略函数提供计算，指标负责图表显示。</p>
+        <p>从指标研究到规则组合，管理自己的观察策略。</p>
       </div>
       <div class="page-actions">
+        <el-button v-if="activeTab !== 'strategy'" :disabled="catalogLoading[activeTab]" @click="void loadTab(activeTab, true)">刷新目录</el-button>
         <input
           ref="strategyPackageInput"
           class="sr-only"
@@ -1446,18 +1373,26 @@ onMounted(() => void loadTab(activeTab.value));
       class="page-alert"
     />
     <section class="panel resource-shell">
-      <el-tabs v-model="activeTab" class="resource-tabs">
-        <el-tab-pane label="指标" name="indicator" />
-        <el-tab-pane label="策略函数" name="function" />
-        <el-tab-pane label="策略" name="strategy" />
+      <el-tabs :model-value="activeTab" class="resource-tabs" @update:model-value="void selectResourceTab(String($event))">
+        <el-tab-pane label="指标库" name="indicator" />
+        <el-tab-pane label="函数库" name="function" />
+        <el-tab-pane label="我的策略" name="strategy" />
       </el-tabs>
       <template v-if="activeTab !== 'strategy'">
+        <div class="catalog-summary" aria-label="资源目录概览">
+          <div><span>可用{{ activeTab === 'indicator' ? '指标' : '函数' }}</span><strong>{{ loaded[activeTab] ? catalogStats.active : '—' }}</strong></div>
+          <div><span>我的收藏</span><strong>{{ loaded[activeTab] ? catalogStats.favorite : '—' }}</strong></div>
+          <div><span>自定义</span><strong>{{ loaded[activeTab] ? catalogStats.custom : '—' }}</strong></div>
+          <div class="catalog-summary-context"><span>{{ activeTab === 'indicator' ? '添加到行情图表' : '用于组合策略规则' }}</span><small>查看详情可核对公式、参数与适用范围</small></div>
+        </div>
         <div class="catalog-toolbar">
           <el-input
+            ref="catalogSearchInput"
             v-model="search"
+            aria-label="搜索资源名称或说明"
             clearable
             :placeholder="
-              activeTab === 'indicator' ? '搜索指标……' : '搜索策略函数……'
+              activeTab === 'indicator' ? '搜索指标名称、公式说明' : '搜索函数名称、用途'
             "
           />
           <el-select v-model="category" clearable placeholder="全部分类"
@@ -1471,7 +1406,7 @@ onMounted(() => void loadTab(activeTab.value));
             ><el-option
               v-for="asset in supportedAssetTypes"
               :key="asset"
-              :label="asset"
+              :label="assetLabels[asset] || asset"
               :value="asset"
           /></el-select>
           <el-select v-model="sourceFilter" clearable placeholder="全部来源"
@@ -1480,8 +1415,13 @@ onMounted(() => void loadTab(activeTab.value));
               value="custom"
           /></el-select>
         </div>
-        <div class="resource-layout" v-loading="loading">
+        <div class="catalog-result-toolbar">
+          <span>{{ visibleCatalog.length }} / {{ catalogStats.total }} 个资源 <small v-if="catalogLoading[activeTab]">正在更新</small></span>
+          <div><el-checkbox v-model="includeInactive">包含停用与历史版本</el-checkbox><el-radio-group v-model="catalogLayout" size="small" aria-label="目录布局"><el-radio-button value="cards">卡片</el-radio-button><el-radio-button value="list">紧凑</el-radio-button></el-radio-group></div>
+        </div>
+        <div class="resource-layout" :aria-busy="catalogLoading[activeTab]">
           <aside class="category-nav">
+            <span class="category-nav-label">资源分类</span>
             <button :class="{ active: !category }" @click="category = ''">
               全部</button
             ><button
@@ -1500,15 +1440,15 @@ onMounted(() => void loadTab(activeTab.value));
               收藏
             </button>
           </aside>
-          <div class="catalog-grid">
+          <ResearchLoadingSkeleton v-if="catalogLoading[activeTab] && !loaded[activeTab]" kind="cards" :rows="6" />
+          <div v-else class="catalog-grid" :class="{ 'catalog-list': catalogLayout === 'list' }">
             <article
-              v-for="item in sourceFilter === 'favorite'
-                ? filteredCatalog.filter(isFavorite)
-                : filteredCatalog"
+              v-for="item in visibleCatalog"
               :key="item.versionedId || item.id"
               tabindex="0"
               @click="openDetail(item)"
-              @keydown.enter="openDetail(item)"
+              @keydown.enter.self="openDetail(item)"
+              @keydown.space.self.prevent="openDetail(item)"
             >
               <header>
                 <div>
@@ -1541,7 +1481,7 @@ onMounted(() => void loadTab(activeTab.value));
                   v-if="item.status && item.status !== 'active'"
                   size="small"
                   :type="item.status === 'disabled' ? 'warning' : 'info'"
-                  >{{ item.status }}</el-tag
+                  >{{ catalogStatusLabel(item.status) }}</el-tag
                 >
               </div>
               <small
@@ -1549,15 +1489,22 @@ onMounted(() => void loadTab(activeTab.value));
                 {{ item.origin === "custom" ? "自定义" : "内置" }}</small
               >
             </article>
-            <el-empty
-              v-if="!filteredCatalog.length"
-              description="没有匹配资源"
-            />
+            <div v-if="!visibleCatalog.length" class="catalog-empty">
+              <span class="empty-symbol" aria-hidden="true">⌕</span>
+              <h3>{{ error ? '目录暂时无法读取' : '没有匹配的资源' }}</h3>
+              <p>{{ error ? '保留现有配置，可重新读取目录。' : '试试其他关键词，或清除分类、资产和来源筛选。' }}</p>
+              <el-button v-if="error" type="primary" @click="void loadTab(activeTab, true)">重新读取</el-button>
+              <el-button v-else @click="clearCatalogFilters">清除筛选</el-button>
+            </div>
           </div>
         </div>
       </template>
-      <template v-else><CompositeStrategyManager ref="signalManager"/></template>
+      <template v-else><CompositeStrategyManager ref="signalManager"/><StockScreener ref="stockScreener"/></template>
     </section>
+    <details class="strategy-help">
+      <summary>策略研究使用说明</summary>
+      <div><p>指标负责图表展示，函数提供计算，组合策略包含关注、仓位和择时三类规则。先在行情页核对指标，再保存规则并在目标行情中观察结果。</p><p>目录默认显示已启用资源；停用和历史版本可用工具栏开关查看。规则与函数保留独立版本，数据缺失时保持不可用。</p><p>页面展示观察与研究结果。是否能够执行交易由独立的权限、风控与执行适配器决定。</p></div>
+    </details>
     <el-dialog
       v-model="customIndicatorEditorOpen"
       :title="customIndicatorEditorMode === 'create' ? '新建自定义指标' : '编辑自定义指标（新版本）'"
@@ -1634,7 +1581,7 @@ onMounted(() => void loadTab(activeTab.value));
           {{ selected.description || selected.definition }}
         </p>
         <el-descriptions :column="1" border
-          ><el-descriptions-item label="稳定 ID">{{
+          ><el-descriptions-item label="资源版本">{{
             selected.versionedId || `${selected.id}@${selected.version || 1}`
           }}</el-descriptions-item
           ><el-descriptions-item label="分类">{{
@@ -1650,10 +1597,10 @@ onMounted(() => void loadTab(activeTab.value));
                 : "不绘图"
           }}</el-descriptions-item
           ><el-descriptions-item label="资产类型">{{
-            selected.supportedAssetTypes?.join("、") || "—"
+            selected.supportedAssetTypes?.map(asset => assetLabels[asset] || asset).join("、") || "—"
           }}</el-descriptions-item
           ><el-descriptions-item label="状态"
-            >{{ selected.status || "active"
+            >{{ catalogStatusLabel(selected.status || "active")
             }}<span v-if="selected.unavailableReason"
               >：{{ selected.unavailableReason }}</span
             ></el-descriptions-item
@@ -1663,7 +1610,7 @@ onMounted(() => void loadTab(activeTab.value));
           ><el-descriptions-item v-if="selected.requiredFields?.length" label="所需字段">
             {{ selected.requiredFields.join("、") }}
           </el-descriptions-item
-          ><el-descriptions-item v-if="selected.warmupBars" label="暖机长度">
+          ><el-descriptions-item v-if="selected.warmupBars" label="所需预热数据">
             {{ selected.warmupBars }}
           </el-descriptions-item
           ></el-descriptions
@@ -2188,6 +2135,38 @@ onMounted(() => void loadTab(activeTab.value));
 </template>
 
 <style scoped>
+.workspace-eyebrow { display: block; margin-bottom: 6px; color: var(--ml-text-disabled); font-size: 11px; letter-spacing: .06em; }
+.catalog-summary { display: grid; grid-template-columns: repeat(3, minmax(90px, 1fr)) minmax(240px, 2fr); margin-bottom: 18px; background: var(--ml-surface-elevated); border: 1px solid var(--ml-divider); border-radius: 10px; overflow: hidden; }
+.catalog-summary > div { display: grid; gap: 6px; padding: 15px 20px; border-right: 1px solid var(--ml-divider); }
+.catalog-summary > div:last-child { border: 0; }
+.catalog-summary span { color: var(--ml-text-secondary); font-size: 12px; }
+.catalog-summary strong { font-size: 25px; font-weight: 650; font-variant-numeric: tabular-nums; line-height: 1.2; }
+.catalog-summary-context { align-content: center; }
+.catalog-summary-context span { color: var(--ml-text-primary); font-weight: 600; }
+.catalog-summary-context small { color: var(--ml-text-disabled); font-size: 11px; }
+.catalog-result-toolbar, .catalog-result-toolbar > div { display: flex; align-items: center; justify-content: space-between; gap: 15px; flex-wrap: wrap; }
+.catalog-result-toolbar { min-height: 44px; margin-top: 12px; color: var(--ml-text-secondary); font-size: 12px; }
+.catalog-result-toolbar small { color: var(--ml-accent); margin-left: 8px; }
+.category-nav-label { padding: 8px 10px; color: var(--ml-text-disabled); font-size: 11px; }
+.catalog-grid article { background: var(--ml-surface); transition: border-color .18s, background .18s, box-shadow .18s, transform .18s; position: relative; }
+.catalog-grid article:hover { background: var(--ml-surface-elevated); box-shadow: 0 5px 18px color-mix(in srgb, var(--ml-accent) 9%, transparent); transform: translateY(-2px); }
+.catalog-grid article:focus-visible, .category-nav button:focus-visible { outline: 2px solid var(--ml-accent); outline-offset: 3px; }
+.catalog-grid article > p { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; min-height: 3em; }
+.catalog-grid article > small { margin-top: auto; font-size: 11px; padding-top: 7px; border-top: 1px solid var(--ml-divider); }
+.catalog-grid h3 { font-size: 14px; line-height: 1.4; }
+.catalog-grid header > div { min-width: 0; }
+.catalog-grid header small { font-size: 11px; }
+.catalog-list { grid-template-columns: minmax(0, 1fr) !important; gap: 6px !important; }
+.catalog-list article { display: grid !important; grid-template-columns: minmax(210px, 1.2fr) minmax(220px, 2fr) minmax(110px, 1fr) 100px; align-items: center; gap: 16px !important; padding: 12px 16px !important; }
+.catalog-list article > p { min-height: 0; -webkit-line-clamp: 2; font-size: 12px; }
+.catalog-list article > small { margin: 0; padding: 0; border: 0; }
+.catalog-empty { grid-column: 1 / -1; min-height: 280px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; border: 1px dashed var(--ml-divider); border-radius: 10px; }
+.catalog-empty h3, .catalog-empty p { margin: 0; }
+.catalog-empty p { color: var(--ml-text-secondary); }
+.empty-symbol { font-size: 38px; color: var(--ml-text-disabled); }
+.strategy-help { margin: 18px 0; border: 1px solid var(--ml-divider); border-radius: 9px; padding: 14px 18px; font-size: 12px; }
+.strategy-help summary { cursor: pointer; color: var(--ml-text-secondary); font-weight: 600; }
+.strategy-help div { padding-top: 5px; color: var(--ml-text-secondary); line-height: 1.8; max-width: 980px; }
 .resource-shell {
   min-height: 520px;
 }
@@ -2481,6 +2460,17 @@ onMounted(() => void loadTab(activeTab.value));
   line-height: 1.55;
 }
 @media (max-width: 760px) {
+  .catalog-toolbar { grid-template-columns: 1fr 1fr; }
+  .catalog-toolbar > :first-child { grid-column: 1 / -1; }
+  .catalog-summary { grid-template-columns: repeat(3, 1fr); }
+  .catalog-summary-context { grid-column: 1 / -1; border-top: 1px solid var(--ml-divider) !important; }
+  .resource-layout { grid-template-columns: minmax(0, 1fr); }
+  .category-nav { flex-direction: row; flex-wrap: wrap; gap: 4px; }
+  .category-nav-label { display: none; }
+  .catalog-grid { grid-template-columns: minmax(0, 1fr); }
+  .catalog-list article { grid-template-columns: minmax(0, 1fr) 100px; }
+  .catalog-list article > p { grid-column: 1 / -1; }
+  .catalog-list article > small { text-align: right; }
   .page-heading {
     flex-direction: column;
   }
@@ -2495,4 +2485,5 @@ onMounted(() => void loadTab(activeTab.value));
     flex-direction: column;
   }
 }
+@media (prefers-reduced-motion: reduce) { .catalog-grid article { transition: none; transform: none !important; } }
 </style>

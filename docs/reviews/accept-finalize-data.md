@@ -1,6 +1,6 @@
 # accept_data2 数据链验收落盘指令（第二轮，2026-08-06）
 
-你是独立验收 Agent（accept_data2）。项目根目录：C:\Users\qingd\Documents\阅读行情监控和产业链图谱项目。
+你是独立验收 Agent（accept_data2）。项目根目录：C:\Users\<user>\Documents\阅读行情监控和产业链图谱项目。
 只做验收记录与 STATUS 更新，不修改实现代码。
 
 ## BaoStock 分类核实结论（本轮已由 root 复核，请直接采信并落盘）

@@ -11,21 +11,27 @@ import concurrent.futures
 import csv
 from io import BytesIO, StringIO
 import json
+import logging
+import math
 import os
 import re
+import struct
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import requests
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Sequence
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from openpyxl import load_workbook
 
+from .a_share_calendar import is_verified_a_share_trading_day
 from .futures_dashboard import (
     MemberPositionRow,
     build_open_interest_leaderboard,
@@ -137,6 +143,7 @@ def run_fetch_session(
     limit_futures: int = 15,
     limit_cn_stocks: int = 5,
     now: datetime | None = None,
+    isolate_akshare: bool = False,
 ) -> dict[str, Any]:
     """运行一次真实数据采集会话，落库并生成 control_summary.json。"""
 
@@ -148,14 +155,17 @@ def run_fetch_session(
     started_at = (now or datetime.now(timezone.utc)).isoformat(timespec="seconds")
     if tasks is None:
         tasks = build_collection_tasks(limit_futures=limit_futures, limit_cn_stocks=limit_cn_stocks)
-    results = _run_tasks(tasks, max_workers=max_workers, task_timeout_seconds=task_timeout_seconds)
+    results = _run_tasks(
+        tasks, max_workers=max_workers, task_timeout_seconds=task_timeout_seconds,
+        isolate_akshare=isolate_akshare, limit_futures=limit_futures, limit_cn_stocks=limit_cn_stocks,
+    )
     results.sort(key=lambda result: (result.dataset_id, result.started_at))
     _persist_results(data_root, results)
 
     statuses = [result.status for result in results]
     if not statuses:
         session_status = "PASS"
-    elif all(status == "PASS" for status in statuses):
+    elif all(status in {"PASS", "SKIPPED"} for status in statuses):
         session_status = "PASS"
     elif all(status == "BLOCKED" for status in statuses):
         session_status = "BLOCKED"
@@ -168,12 +178,21 @@ def run_fetch_session(
         "status": session_status,
         "task_count": len(results),
         "passed": statuses.count("PASS"),
+        "skipped": statuses.count("SKIPPED"),
         "partial_failure": statuses.count("PARTIAL_FAILURE"),
         "failed": statuses.count("FAILED"),
         "blocked": statuses.count("BLOCKED"),
         "total_rows": sum(int(result.rows or 0) for result in results),
         "tasks": [result.to_dict() for result in results],
     }
+    from .collector_history import save_collector_history
+
+    try:
+        save_collector_history(data_root, summary)
+        summary["source_history_saved"] = True
+    except (OSError, ValueError, TypeError):
+        logging.getLogger(__name__).warning("collector status history could not be saved")
+        summary["source_history_saved"] = False
     target = data_root / "control_summary.json"
     target.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return summary
@@ -212,6 +231,9 @@ def build_collection_tasks(*, limit_futures: int, limit_cn_stocks: int) -> list[
         CollectionTask("A_SHARE_BREADTH", "A股涨跌/市值快照", "akshare", _collect_a_share_breadth),
         CollectionTask("HSGT_FLOW", "北向南向资金", "akshare", _collect_hsgt),
         CollectionTask("CN_ZT_POOL", "涨停/跌停池与连板高度", "akshare", _collect_zt_pool),
+        CollectionTask("CN_ZT_OPEN_RETURN", "昨日涨停今日开盘至收盘收益", "akshare", _collect_zt_open_return),
+        CollectionTask("THS_CPI", "同花顺公开月度CPI", "ths-web", _collect_ths_cpi),
+        CollectionTask("BLS_PAYROLL_CHANGE", "BLS非农就业月度变化", "bls-public", _collect_bls_payroll),
         CollectionTask("FUTURE_GLOBAL_BAR", "外盘期货/金银比/金油比", "akshare", _collect_foreign_futures),
         CollectionTask("USD_INDEX_VIX", "美元指数/VIX", "eastmoney+cboe", _collect_usd_vix),
     ]
@@ -222,10 +244,24 @@ def _run_tasks(
     *,
     max_workers: int,
     task_timeout_seconds: float,
+    isolate_akshare: bool = False,
+    limit_futures: int = 15,
+    limit_cn_stocks: int = 5,
 ) -> list[CollectionTaskResult]:
     results: list[CollectionTaskResult] = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="collector") as pool:
-        futures = {pool.submit(_execute_task, task): task for task in tasks}
+    from .collector_isolation import execute_isolated_task
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="collector") as pool, concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="collector-native-child") as isolated_pool:
+        futures = {}
+        for task in tasks:
+            if isolate_akshare and task.source == "akshare":
+                future = isolated_pool.submit(
+                    execute_isolated_task, task, timeout_seconds=task_timeout_seconds,
+                    limit_futures=limit_futures, limit_cn_stocks=limit_cn_stocks,
+                )
+            else:
+                future = pool.submit(_execute_task, task)
+            futures[future] = task
         for future in concurrent.futures.as_completed(futures):
             task = futures[future]
             try:
@@ -354,6 +390,57 @@ def _last_trading_day_compact() -> str:
     return day.isoformat().replace("-", "")
 
 
+def _a_share_collection_day(now: datetime | None = None) -> str | None:
+    """Publish a final daily aggregate only on a verified stock trading day."""
+
+    now = now or datetime.now(ZoneInfo("Asia/Shanghai"))
+    if not is_verified_a_share_trading_day(now.date()) or (now.hour, now.minute) < (15, 30):
+        return None
+    return now.strftime("%Y%m%d")
+
+
+def _a_share_pool_target_day(now: datetime | None = None) -> str | None:
+    """A dated pool can be recovered after the close, including next morning."""
+
+    now = now or datetime.now(ZoneInfo("Asia/Shanghai"))
+    candidate = now.date() if (now.hour, now.minute) >= (15, 30) else now.date() - timedelta(days=1)
+    for _ in range(10):
+        if is_verified_a_share_trading_day(candidate):
+            return candidate.strftime("%Y%m%d")
+        candidate -= timedelta(days=1)
+    return None
+
+
+def _a_share_unpublished_status() -> str:
+    return "BLOCKED" if datetime.now(ZoneInfo("Asia/Shanghai")).year != 2026 else "SKIPPED"
+
+
+def _a_share_snapshot_source_verified(api: Any, records: Sequence[Mapping[str, Any]], day: str) -> bool:
+    """Require dated Tencent daily closes to corroborate two spot sentinels."""
+
+    spot_by_code = {str(row.get("code", "")).lower(): row for row in records}
+    for code in ("sh600519", "sz000001"):
+        spot_close = _num(spot_by_code.get(code, {}).get("zxj"))
+        if spot_close is None or spot_close <= 0:
+            return False
+        try:
+            dated_rows = api.stock_zh_a_hist_tx(
+                symbol=code, start_date=day, end_date=day, timeout=8,
+            ).to_dict(orient="records")
+        except Exception:  # noqa: BLE001 - a failed source check must not publish a false day
+            return False
+        matching_closes = [
+            _num(row.get("close"))
+            for row in dated_rows
+            if str(row.get("date", "")).replace("-", "")[:8] == day
+        ]
+        if len(matching_closes) != 1 or matching_closes[0] is None:
+            return False
+        if abs(spot_close - matching_closes[0]) > max(0.01, matching_closes[0] * 0.0001):
+            return False
+    return True
+
+
 def _num(value: Any, default: float | None = None) -> float | None:
     if value is None:
         return default
@@ -441,6 +528,8 @@ def _daily_bar(
     currency: str | None = None,
     adjustment: str = "",
 ) -> dict[str, Any]:
+    if period != "1d":
+        raise ValueError("intraday bar timestamp semantics are not verified")
     trading_date = str(trading_date)[:10]
     close = _num(close, 0.0) or 0.0
     open_price = _num(open_, close) or close
@@ -732,6 +821,16 @@ def _fetch_bea_core_pce_final_rows() -> list[tuple[str, float]]:
             )
 
 
+def _configured_tdx_servers() -> tuple[tuple[str, int], ...]:
+    from .providers.pytdx import _parse_servers
+    return _parse_servers(os.getenv("TDX_SERVERS")) or _TDX_SERVERS
+
+
+def _tdx_error_type(error: Exception) -> str:
+    original = getattr(error, "original_exception", None)
+    return "TDX_INVALID_BINARY_RESPONSE" if isinstance(original, struct.error) else type(error).__name__
+
+
 def _tdx_bars(
     period: str,
     specs: Sequence[tuple[str, int, str]],
@@ -743,37 +842,37 @@ def _tdx_bars(
 
     category = {"1d": 4, "30m": 2}[period]
     all_errors: list[str] = []
-    for host, port in _TDX_SERVERS:
-        api = TdxHq_API()
-        server_errors: list[str] = []
+    pending = {(market, code): name for code, market, name in specs}
+    collected: dict[tuple[int, str], list[dict[str, Any]]] = {}
+    last_errors: dict[tuple[int, str], str] = {}
+    servers = _configured_tdx_servers()
+    for host, port in servers:
+        api = TdxHq_API(raise_exception=True)
+        server_error_types: set[str] = set()
         try:
             if not api.connect(host, port, time_out=8):
                 all_errors.append(f"{host}:{port} refused")
                 continue
-            bars: list[dict[str, Any]] = []
-            for code, market, name in specs:
+            for (market, code), name in list(pending.items()):
                 try:
                     fetch = api.get_index_bars if asset_type == "INDEX" else api.get_security_bars
                     rows = fetch(category, market, code, 0, count) or []
+                    if not rows:
+                        last_errors[(market, code)] = "empty"
+                        continue
+                    exchange = "SSE" if market == 1 else "SZSE"
+                    bars = [_tdx_bar(row, f"CN.{exchange}.{asset_type}.{code}", name, period) for row in rows]
                 except Exception as error:
-                    server_errors.append(f"{code}:{type(error).__name__}")
+                    last_errors[(market, code)] = _tdx_error_type(error)
+                    server_error_types.add(_tdx_error_type(error))
                     continue
-                if not rows:
-                    server_errors.append(f"{code}:empty")
-                    continue
-                exchange = "SSE" if market == 1 else "SZSE"
-                for row in rows:
-                    bars.append(
-                        _tdx_bar(
-                            row,
-                            f"CN.{exchange}.{asset_type}.{code}",
-                            name,
-                            period,
-                        )
-                    )
-            if bars:
-                return bars, server_errors
-            all_errors.append(f"{host}:{port}:all-empty")
+                collected[(market, code)] = bars
+                del pending[(market, code)]
+            if not pending:
+                break
+            if not collected:
+                reason = ",".join(sorted(server_error_types)) if server_error_types else "all-empty"
+                all_errors.append(f"{host}:{port}:{reason}")
         except Exception as error:
             all_errors.append(f"{host}:{port}:{type(error).__name__}")
         finally:
@@ -781,17 +880,17 @@ def _tdx_bars(
                 api.disconnect()
             except Exception:
                 pass
+    bars = [bar for code, market, _name in specs for bar in collected.pop((market, code), [])]
+    if bars:
+        return bars, [f"{code}:{last_errors.get((market, code), 'unavailable')}" for market, code in pending]
     return [], all_errors
 
 
 def _tdx_bar(row: Mapping[str, Any], instrument_id: str, name: str, period: str) -> dict[str, Any]:
+    if period != "1d":
+        raise ValueError("pytdx intraday timestamp semantics are not verified")
     year, month, day = int(row["year"]), int(row["month"]), int(row["day"])
-    if period == "1d":
-        bar_open_time = f"{year:04d}-{month:02d}-{day:02d}T00:00:00+08:00"
-    else:
-        hour = int(row.get("hour") or 0)
-        minute = int(row.get("minute") or 0)
-        bar_open_time = f"{year:04d}-{month:02d}-{day:02d}T{hour:02d}:{minute:02d}:00+08:00"
+    bar_open_time = f"{year:04d}-{month:02d}-{day:02d}T00:00:00+08:00"
     return _daily_bar(
         instrument_id,
         name,
@@ -819,7 +918,8 @@ def _collect_cn_stock_bars(max_stocks: int) -> CollectionTaskResult:
     if not specs:
         raise ValueError("at least one CN stock is required")
     bars_1d, errors_1d = _tdx_bars("1d", specs, 300, asset_type="STOCK")
-    bars_30m, errors_30m = _tdx_bars("30m", specs[:1], 120, asset_type="STOCK")
+    bars_30m: list[dict[str, Any]] = []
+    errors_30m = ["pytdx:30m:INTRADAY_TIME_UNVERIFIED"]
     plan = PersistPlan()
     if bars_1d:
         plan.bar_writes.extend(_bar_partitions("CN", "STOCK", "1d", bars_1d, "CN-STOCK-1d"))
@@ -1622,10 +1722,58 @@ def _collect_margin() -> CollectionTaskResult:
     )
 
 
+def _collect_bls_payroll() -> CollectionTaskResult:
+    from .bls_payroll import fetch_payroll_changes
+
+    try:
+        changes, digest = fetch_payroll_changes()
+        definition = macro_series_index()["US_NONFARM_BLS_LATEST"]
+        captured_at = _now()
+        metrics = [_metric("US_NONFARM_BLS_LATEST", "US_NONFARM_BLS_LATEST", month, "MONTHLY",
+                           definition.name, value, definition.definition,
+                           f"{definition.calculation_method}; source=BLS CES0000000001; payload_sha256={digest}",
+                           timestamp=captured_at) for month, value in changes]
+        return _result("BLS_PAYROLL_CHANGE", "BLS非农就业月度变化", "bls-public", "PASS", len(metrics),
+                       f"BLS 最新修订观测 {len(metrics)} 月，最新统计月 {changes[-1][0]}", None,
+                       PersistPlan(gold_metrics=metrics))
+    except (OSError, ValueError, TypeError, KeyError, requests.RequestException) as error:
+        return _result("BLS_PAYROLL_CHANGE", "BLS非农就业月度变化", "bls-public", "FAILED", 0,
+                       f"BLS 公开接口不可用或未通过验证：{type(error).__name__}", type(error).__name__, PersistPlan())
+
+
+def _macro_freshness_warnings(points: Sequence[MacroPoint], today: date) -> list[str]:
+    """Flag unusually old observations without inferring a missed publication."""
+    warnings = []
+    for series in ("US_NONFARM_PAYROLLS_SA", "PMI_CAIXIN_MANUFACTURING", "PMI_CAIXIN_SERVICES"):
+        days = []
+        for point in points:
+            if point.series_id != series:
+                continue
+            try:
+                text = point.available_time
+                days.append(date.fromisoformat(text + "-01") if len(text) == 7
+                            else datetime.fromisoformat(text).date())
+            except (ValueError, TypeError):
+                continue
+        if not days:
+            warnings.append(f"{series}:NO_OBSERVATIONS")
+        elif (today - max(days)).days > 180:
+            warnings.append(f"{series}:STALE_OVER_180_DAYS")
+    return warnings
+
+
 def _collect_macro() -> CollectionTaskResult:
     api = _ak()
     points: list[MacroPoint] = []
     errors: list[str] = []
+
+    def _append_point(series_id: str, available: Any, value: float) -> None:
+        try:
+            points.append(normalise_macro_point(series_id, available_time=available, value=value))
+        except (ValueError, TypeError, OverflowError):
+            marker = f"{series_id}:INVALID_ROW"
+            if marker not in errors:
+                errors.append(marker)
 
     def _fetch_rows(fetcher: Callable[[], Any], label: str) -> list[dict[str, Any]]:
         last_error: Exception | None = None
@@ -1642,16 +1790,16 @@ def _collect_macro() -> CollectionTaskResult:
     try:
         money = api.macro_china_money_supply().to_dict(orient="records")
         for row in money:
-            month = _parse_cn_month(row["\u6708\u4efd"])
+            month = _parse_cn_month(row.get("\u6708\u4efd"))
             m0 = _num(row.get("\u6d41\u901a\u4e2d\u7684\u73b0\u91d1(M0)-\u540c\u6bd4\u589e\u957f"))
             m1 = _num(row.get("\u8d27\u5e01(M1)-\u540c\u6bd4\u589e\u957f"))
             m2 = _num(row.get("\u8d27\u5e01\u548c\u51c6\u8d27\u5e01(M2)-\u540c\u6bd4\u589e\u957f"))
             if m0 is not None:
-                points.append(normalise_macro_point("M0_MONEY_SUPPLY", available_time=month, value=m0))
+                _append_point("M0_MONEY_SUPPLY", month, m0)
             if m1 is not None:
-                points.append(normalise_macro_point("M1_MONEY_SUPPLY", available_time=month, value=m1))
+                _append_point("M1_MONEY_SUPPLY", month, m1)
             if m2 is not None:
-                points.append(normalise_macro_point("M2_MONEY_SUPPLY", available_time=month, value=m2))
+                _append_point("M2_MONEY_SUPPLY", month, m2)
     except Exception as error:
         errors.append(f"money_supply:{type(error).__name__}")
 
@@ -1664,7 +1812,7 @@ def _collect_macro() -> CollectionTaskResult:
         for row in _fetch_rows(fetcher, label):
             value = _num(row.get("今值"))
             if value is not None and row.get("日期") is not None:
-                points.append(normalise_macro_point(series_id, available_time=row["日期"], value=value))
+                _append_point(series_id, row["日期"], value)
 
     for row in _fetch_rows(
         lambda: api.macro_china_consumer_goods_retail(),
@@ -1674,71 +1822,63 @@ def _collect_macro() -> CollectionTaskResult:
         yoy = _num(row.get("同比增长"))
         mom = _num(row.get("环比增长"))
         if yoy is not None:
-            points.append(normalise_macro_point("CN_RETAIL_SALES_YOY", available_time=month, value=yoy))
+            _append_point("CN_RETAIL_SALES_YOY", month, yoy)
         if mom is not None:
-            points.append(normalise_macro_point("CN_RETAIL_SALES_MOM", available_time=month, value=mom))
+            _append_point("CN_RETAIL_SALES_MOM", month, mom)
 
-    for row in _fetch_rows(api.macro_china_society_electricity, "cn_society_electricity"):
+    for row in _fetch_rows(lambda: api.macro_china_society_electricity(), "cn_society_electricity"):
         month = _parse_cn_month(row.get("统计时间"))
         raw_total = _num(row.get("全社会用电量"))
         if raw_total is not None and month:
             # The local AkShare adapter relays Sina's table in 10,000 kWh.
             # NEA's 2026-07 bulletin gives the independent scale check:
             # 613,990,000 / 10,000 = 61,399 亿千瓦时 (January–July cumulative).
-            points.append(
-                normalise_macro_point(
-                    "CN_ELECTRICITY_CONSUMPTION",
-                    available_time=month,
-                    value=raw_total / 10_000.0,
-                )
-            )
+            _append_point("CN_ELECTRICITY_CONSUMPTION", month, raw_total / 10_000.0)
 
     try:
         for row in api.macro_china_cpi_yearly().to_dict(orient="records"):
             value = _num(row.get("\u4eca\u503c"))
             if value is not None:
-                points.append(normalise_macro_point("CPI", available_time=row["\u65e5\u671f"], value=value))
+                _append_point("CPI", row.get("\u65e5\u671f"), value)
     except Exception as error:
         errors.append(f"cpi:{type(error).__name__}")
     try:
         for row in api.macro_china_ppi_yearly().to_dict(orient="records"):
             value = _num(row.get("\u4eca\u503c"))
             if value is not None:
-                points.append(normalise_macro_point("PPI", available_time=row["\u65e5\u671f"], value=value))
+                _append_point("PPI", row.get("\u65e5\u671f"), value)
     except Exception as error:
         errors.append(f"ppi:{type(error).__name__}")
 
     try:
         for row in api.macro_china_pmi().to_dict(orient="records"):
-            month = _parse_cn_month(row["\u6708\u4efd"])
+            month = _parse_cn_month(row.get("\u6708\u4efd"))
             manufacturing = _num(row.get("\u5236\u9020\u4e1a-\u6307\u6570"))
             services = _num(row.get("\u975e\u5236\u9020\u4e1a-\u6307\u6570"))
             if manufacturing is not None:
-                points.append(normalise_macro_point("PMI_MANUFACTURING", available_time=month, value=manufacturing))
+                _append_point("PMI_MANUFACTURING", month, manufacturing)
             if services is not None:
-                points.append(normalise_macro_point("PMI_SERVICES", available_time=month, value=services))
+                _append_point("PMI_SERVICES", month, services)
     except Exception as error:
         errors.append(f"pmi:{type(error).__name__}")
-    for row in _fetch_rows(api.macro_china_cx_pmi_yearly, "cx_pmi"):
+    for row in _fetch_rows(lambda: api.macro_china_cx_pmi_yearly(), "cx_pmi"):
         value = _num(row.get("\u4eca\u503c"))
         if value is not None:
-            points.append(
-                normalise_macro_point("PMI_CAIXIN_MANUFACTURING", available_time=row["\u65e5\u671f"], value=value)
-            )
-    for row in _fetch_rows(api.macro_china_cx_services_pmi_yearly, "cx_services"):
+            _append_point("PMI_CAIXIN_MANUFACTURING", row.get("日期"), value)
+    for row in _fetch_rows(lambda: api.macro_china_cx_services_pmi_yearly(), "cx_services"):
         value = _num(row.get("\u4eca\u503c"))
         if value is not None:
-            points.append(
-                normalise_macro_point("PMI_CAIXIN_SERVICES", available_time=row["\u65e5\u671f"], value=value)
-            )
+            _append_point("PMI_CAIXIN_SERVICES", row.get("日期"), value)
 
     try:
         for row in api.repo_rate_query(
             symbol="\u94f6\u94f6\u95f4\u56de\u8d2d\u5b9a\u76d8\u5229\u7387"
         ).to_dict(orient="records"):
-            value = _num(row.get("FDR007")) or _num(row.get("FR007"))
+            value = _num(row.get("FDR007"))
+            if value is None:
+                value = _num(row.get("FR007"))
             if value is not None:
-                points.append(normalise_macro_point("DR007", available_time=row["date"], value=value))
+                _append_point("DR007", row.get("date"), value)
     except Exception as error:
         errors.append(f"repo_rate:{type(error).__name__}")
 
@@ -1747,9 +1887,9 @@ def _collect_macro() -> CollectionTaskResult:
             cn = _num(row.get("\u4e2d\u56fd\u56fd\u503a\u6536\u76ca\u738710\u5e74"))
             us = _num(row.get("\u7f8e\u56fd\u56fd\u503a\u6536\u76ca\u738710\u5e74"))
             if cn is not None:
-                points.append(normalise_macro_point("CN10Y_YIELD", available_time=row["\u65e5\u671f"], value=cn))
+                _append_point("CN10Y_YIELD", row.get("\u65e5\u671f"), cn)
             if us is not None:
-                points.append(normalise_macro_point("US10Y_YIELD", available_time=row["\u65e5\u671f"], value=us))
+                _append_point("US10Y_YIELD", row.get("\u65e5\u671f"), us)
     except Exception as error:
         errors.append(f"bond_rate:{type(error).__name__}")
 
@@ -1757,20 +1897,14 @@ def _collect_macro() -> CollectionTaskResult:
         for row in api.macro_bank_usa_interest_rate().to_dict(orient="records"):
             value = _num(row.get("\u4eca\u503c"))
             if value is not None:
-                points.append(normalise_macro_point("FED_FUNDS_RATE", available_time=row["\u65e5\u671f"], value=value))
+                _append_point("FED_FUNDS_RATE", row.get("\u65e5\u671f"), value)
     except Exception as error:
         errors.append(f"fed_rate:{type(error).__name__}")
 
     for row in _fetch_rows(lambda: api.macro_usa_non_farm(), "us_nonfarm_payrolls"):
         value = _num(row.get("今值"))
         if value is not None and row.get("日期") is not None:
-            points.append(
-                normalise_macro_point(
-                    "US_NONFARM_PAYROLLS_SA",
-                    available_time=row["日期"],
-                    value=value * 10.0,
-                )
-            )
+            _append_point("US_NONFARM_PAYROLLS_SA", row["日期"], value * 10.0)
 
     try:
         for month, value in _fetch_bea_us_imports_rows():
@@ -1809,6 +1943,7 @@ def _collect_macro() -> CollectionTaskResult:
             )
         )
     metrics = _macro_metrics(points)
+    freshness = _macro_freshness_warnings(points, datetime.now(ZoneInfo("Asia/Shanghai")).date())
     plan = PersistPlan(gold_metrics=metrics)
     return _result(
         "MACRO_SERIES",
@@ -1816,13 +1951,21 @@ def _collect_macro() -> CollectionTaskResult:
         "akshare",
         "PASS" if metrics and not errors else "PARTIAL_FAILURE",
         len(metrics),
-        f"M0/M1/M2/CPI/PPI/PMI/DR007/\u4e2d\u7f8e10Y/\u7f8e\u8054\u50a8\u5229\u7387\uff0c\u5171{len(metrics)}\u6761\uff1b\u9519\u8bef={'; '.join(errors) or '无'}",
+        f"M0/M1/M2/CPI/PPI/PMI/DR007/\u4e2d\u7f8e10Y/\u7f8e\u8054\u50a8\u5229\u7387\uff0c\u5171{len(metrics)}\u6761\uff1b"
+        f"观测提示={'; '.join(freshness) or '无'}；\u9519\u8bef={'; '.join(errors) or '无'}",
         "; ".join(errors) or None,
         plan,
     )
 
 
 def _collect_a_share_breadth() -> CollectionTaskResult:
+    day = _a_share_collection_day()
+    if day is None:
+        return _result(
+            "A_SHARE_BREADTH", "A股涨跌/市值快照", "akshare", _a_share_unpublished_status(), 0,
+            "非已核验A股交易日、2026年日历范围外，或北京时间15:30前；不写日度数据",
+            None, PersistPlan(),
+        )
     api = _ak()
     try:
         records = api.stock_zh_a_spot_tx().to_dict(orient="records")
@@ -1837,13 +1980,18 @@ def _collect_a_share_breadth() -> CollectionTaskResult:
             str(error),
             PersistPlan(),
         )
+    if not records or not _a_share_snapshot_source_verified(api, records, day):
+        return _result(
+            "A_SHARE_BREADTH", "A股涨跌/市值快照", "akshare", "FAILED", 0,
+            f"{day} 腾讯快照无自身日期字段，同源沪深样本日线日期/收盘价核验失败；不写日度数据",
+            "SOURCE_DATE_UNVERIFIED", PersistPlan(),
+        )
     changes = [_num(row.get("zdf")) for row in records if _num(row.get("zdf")) is not None]
     advances = sum(1 for change in changes if change > 0)
     declines = sum(1 for change in changes if change < 0)
     unchanged = len(changes) - advances - declines
     total_cap_yi = sum(_num(row.get("zsz"), 0.0) or 0.0 for row in records)
     total_amount_yi = sum(_num(row.get("turnover"), 0.0) or 0.0 for row in records) / 10000.0
-    day = _last_trading_day_compact()
     day = f"{day[:4]}-{day[4:6]}-{day[6:]}"
     plan = PersistPlan(
         gold_metrics=[
@@ -1916,9 +2064,24 @@ def _collect_a_share_breadth() -> CollectionTaskResult:
     )
 
 
-def _collect_zt_pool() -> CollectionTaskResult:
+def _collect_zt_pool(day: str | None = None) -> CollectionTaskResult:
+    if day is not None:
+        from .a_share_calendar import is_verified_a_share_trading_day
+
+        if (not re.fullmatch(r"20\d{6}", day)
+                or not is_verified_a_share_trading_day(date.fromisoformat(
+                    f"{day[:4]}-{day[4:6]}-{day[6:]}"))
+                or day >= datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y%m%d")):
+            raise ValueError("historical pool day must be a completed, verified A-share trading day")
+    else:
+        day = _a_share_pool_target_day()
+    if day is None:
+        return _result(
+            "CN_ZT_POOL", "涨停/跌停池与连板高度", "akshare", _a_share_unpublished_status(), 0,
+            "非已核验A股交易日、2026年日历范围外，或北京时间15:30前；不写日度数据",
+            None, PersistPlan(),
+        )
     api = _ak()
-    day = _last_trading_day_compact()
     metrics: list[dict[str, Any]] = []
     errors: list[str] = []
     for function_name, metric_prefix, level_field in (
@@ -1931,6 +2094,9 @@ def _collect_zt_pool() -> CollectionTaskResult:
             errors.append(f"{function_name}:{type(error).__name__}")
             continue
         records = frame.to_dict(orient="records")
+        if not records:
+            errors.append(f"{function_name}:EMPTY_UNVERIFIED_NOT_ZERO")
+            continue
         metrics.append(
             _metric(
                 "CN_ZT_POOL",
@@ -1944,11 +2110,11 @@ def _collect_zt_pool() -> CollectionTaskResult:
                 metric_key=f"{metric_prefix}_COUNT",
             )
         )
-        if records:
-            level_values = [
-                _num(row.get(level_field)) or _num(row.get("\u8fde\u677f\u6570")) or 0.0
-                for row in records
-            ]
+        level_values = [_num(row.get(level_field)) for row in records]
+        if all(
+            level is not None and math.isfinite(level) and level >= 1 and level.is_integer()
+            for level in level_values
+        ):
             max_level = max(level_values)
             metrics.append(
                 _metric(
@@ -1963,54 +2129,153 @@ def _collect_zt_pool() -> CollectionTaskResult:
                     metric_key=f"{metric_prefix}_MAX_LIANBAN",
                 )
             )
+        else:
+            errors.append(f"{function_name}:LIANBAN_UNVERIFIED")
+    try:
+        broken_frame = api.stock_zt_pool_zbgc_em(date=day)
+        broken_records = broken_frame.to_dict(orient="records")
+        if {"代码", "最新价", "涨停价", "炸板次数"}.issubset(set(broken_frame.columns)):
+            broken_codes: set[str] = set()
+            for row in broken_records:
+                code = str(row.get("代码") or "")
+                close = _num(row.get("最新价"))
+                limit = _num(row.get("涨停价"))
+                bursts = _num(row.get("炸板次数"))
+                if (not re.fullmatch(r"\d{6}", code) or code in broken_codes or
+                        close is None or limit is None or bursts is None or
+                        not all(math.isfinite(value) for value in (close, limit, bursts)) or
+                        close <= 0 or close > limit or bursts < 1):
+                    raise ValueError("broken-board row does not prove an intraday touch and unsealed close")
+                if close == limit:
+                    # The upstream burst pool can retain a stock that resealed
+                    # by the close; it is not an unsealed close for this metric.
+                    continue
+                broken_codes.add(code)
+            if broken_codes:
+                metrics.append(_metric(
+                    "CN_ZT_POOL", "CN.A_SHARE.炸板", day, "1d", "炸板股票数", len(broken_codes),
+                    "盘中触及涨停价且收盘价低于涨停价的不同股票数量",
+                    "source=stock_zt_pool_zbgc_em; unique=code; close<limit_up; bursts>=1",
+                    metric_key="炸板_COUNT",
+                ))
+            else:
+                errors.append("stock_zt_pool_zbgc_em:EMPTY_UNVERIFIED_NOT_ZERO")
+        else:
+            errors.append("stock_zt_pool_zbgc_em:SCHEMA_CHANGED")
+    except Exception as error:
+        errors.append(f"stock_zt_pool_zbgc_em:{type(error).__name__}")
+    plan = PersistPlan(gold_metrics=metrics)
+    return _result(
+        "CN_ZT_POOL",
+        "涨停/跌停池与连板高度",
+        "akshare",
+        "PASS" if metrics and not errors else "PARTIAL_FAILURE",
+        len(metrics),
+        f"{day} 涨停/跌停池；错误={'; '.join(errors) or '无'}",
+        "; ".join(errors) or None,
+        plan,
+    )
+
+
+def _tencent_dated_open_close(symbol: str, day: str) -> tuple[float, float] | None:
+    """Read one unadjusted bar directly, avoiding AkShare's untimed start-year probe."""
+
+    date_text = f"{day[:4]}-{day[4:6]}-{day[6:]}"
+    params = {
+        "_var": f"kline_day{day[:4]}",
+        "param": f"{symbol},day,{date_text},{date_text},2,",
+    }
+    response = requests.get(
+        "https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get",
+        params=params, timeout=(2, 4),
+    )
+    response.raise_for_status()
+    if len(response.content) > 1_000_000:
+        raise ValueError("Tencent dated bar response is oversized")
+    prefix = params["_var"] + "="
+    if not response.text.startswith(prefix):
+        raise ValueError("Tencent dated bar response is not expected JSONP")
+    payload = json.loads(response.text[len(prefix):])
+    if not isinstance(payload, dict) or payload.get("code") != 0:
+        raise ValueError("Tencent dated bar response failed")
+    data = payload.get("data")
+    symbol_data = data.get(symbol) if isinstance(data, dict) else None
+    rows = symbol_data.get("day") if isinstance(symbol_data, dict) else None
+    if not isinstance(rows, list):
+        return None
+    matching = [row for row in rows if isinstance(row, list) and row and row[0] == date_text]
+    if len(matching) != 1 or len(matching[0]) < 3:
+        return None
+    open_price, close = _num(matching[0][1]), _num(matching[0][2])
+    if (open_price is None or close is None or
+            not all(math.isfinite(value) and value > 0 for value in (open_price, close))):
+        return None
+    return open_price, close
+
+
+def _collect_zt_open_return(day: str | None = None) -> CollectionTaskResult:
+    if day is not None:
+        if (not re.fullmatch(r"20\d{6}", day)
+                or not is_verified_a_share_trading_day(date.fromisoformat(
+                    f"{day[:4]}-{day[4:6]}-{day[6:]}"))
+                or day >= datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y%m%d")):
+            raise ValueError("historical open-return day must be a completed, verified A-share trading day")
+    else:
+        day = _a_share_pool_target_day()
+    if day is None:
+        return _result(
+            "CN_ZT_OPEN_RETURN", "昨日涨停今日开盘至收盘收益", "akshare",
+            _a_share_unpublished_status(), 0,
+            "非已核验A股交易日或北京时间15:30前；不写日度数据", None, PersistPlan(),
+        )
+    api = _ak()
+    errors: list[str] = []
+    metrics: list[dict[str, Any]] = []
     prev_records: list[dict[str, Any]] = []
     try:
         prev_records = api.stock_zt_pool_previous_em(date=day).to_dict(orient="records")
     except Exception as error:
         errors.append(f"previous_pool:{type(error).__name__}")
     if prev_records:
-        specs: list[tuple[str, int, str]] = []
+        unique_pool: dict[str, dict[str, Any]] = {}
         for row in prev_records:
-            code = str(row.get("\u4ee3\u7801", "")).zfill(6)
-            market = 1 if code.startswith(("6", "9")) else 2 if code.startswith(("4", "8")) else 0
-            specs.append((code, market, str(row.get("\u540d\u79f0", ""))))
-        bars, _bar_errors = _tdx_bars("1d", specs, 2, asset_type="STOCK")
-        target_day = f"{day[:4]}-{day[4:6]}-{day[6:]}"
-        bars_by_code: dict[str, dict[str, Any]] = {}
-        for bar in bars:
-            if str(bar.get("trading_date", "")) == target_day:
-                bars_by_code.setdefault(str(bar.get("symbol", "")), bar)
-        returns: list[float] = []
-        for code, _, _ in specs:
-            bar = bars_by_code.get(code)
-            if not bar:
-                continue
-            open_price = _num(bar.get("open"))
-            close = _num(bar.get("close"))
-            if open_price and close:
-                returns.append((close - open_price) / open_price * 100.0)
+            code = str(row.get("代码") or "")
+            if re.fullmatch(r"\d{6}", code):
+                unique_pool.setdefault(code, row)
+        def priced_return(item: tuple[str, dict[str, Any]]) -> float | None:
+            code, pool_row = item
+            prefix = "sh" if code.startswith(("6", "9")) else "bj" if code.startswith(("4", "8")) else "sz"
+            try:
+                bar = _tencent_dated_open_close(prefix + code, day)
+            except (OSError, ValueError, requests.RequestException):
+                return None
+            if bar is None:
+                return None
+            open_price, close = bar
+            pool_close = _num(pool_row.get("最新价"))
+            if (open_price is None or close is None or pool_close is None or
+                    not all(math.isfinite(value) for value in (open_price, close, pool_close)) or
+                    open_price <= 0 or close <= 0 or
+                    abs(close - pool_close) > max(.01, pool_close * .0002)):
+                return None
+            return (close - open_price) / open_price * 100.0
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=6, thread_name_prefix="zt-open-return") as pool:
+            prices = list(pool.map(priced_return, unique_pool.items()))
+        returns = [value for value in prices if value is not None]
         return_value: float | None = None
         return_detail = ""
-        if len(returns) >= max(3, len(specs) // 2):
+        if len(returns) >= max(3, math.ceil(len(unique_pool) * .8)):
             return_value = sum(returns) / len(returns)
             return_detail = (
-                f"pytdx 昨日涨停池{len(specs)}只中{len(returns)}只有当日K线，按(收盘-开盘)/开盘取均值；单位%"
+                "source=eastmoney-previous-pool+tencent-dated-daily; metric=open_to_close_mean; "
+                f"pool_count={len(unique_pool)}; priced_count={len(returns)}; "
+                "formula=(close-open)/open*100; unit=%; same_day_close_checked=true"
             )
-        else:
-            changes = [
-                _num(row.get("\u6da8\u8dcc\u5e45"))
-                for row in prev_records
-                if _num(row.get("\u6da8\u8dcc\u5e45")) is not None
-            ]
-            if changes:
-                return_value = sum(changes) / len(changes)
-                return_detail = (
-                    f"K线覆盖不足({len(returns)}/{len(specs)})，回退用东财昨日涨停池涨跌幅(今收/昨收-1)均值；单位%"
-                )
         if return_value is not None:
-            metrics.append(
+            metrics = [
                 _metric(
-                    "CN_ZT_POOL",
+                    "CN_ZT_POOL_OPEN_RETURN_V2",
                     "CN.A_SHARE.YESTERDAY_LIMIT_UP",
                     day,
                     "1d",
@@ -2020,18 +2285,72 @@ def _collect_zt_pool() -> CollectionTaskResult:
                     return_detail,
                     metric_key="YESTERDAY_LIMIT_UP_OPEN_RETURN",
                 )
-            )
+            ]
+        else:
+            errors.append(f"previous_pool:OPEN_CLOSE_COVERAGE_{len(returns)}/{len(unique_pool)}")
+    elif not any(item.startswith("previous_pool:") for item in errors):
+        errors.append("previous_pool:EMPTY_UNVERIFIED")
     plan = PersistPlan(gold_metrics=metrics)
     return _result(
-        "CN_ZT_POOL",
-        "\u6da8\u505c/\u8dcc\u505c\u6c60\u4e0e\u8fde\u677f\u9ad8\u5ea6",
+        "CN_ZT_OPEN_RETURN",
+        "昨日涨停今日开盘至收盘收益",
         "akshare",
         "PASS" if metrics and not errors else "PARTIAL_FAILURE",
         len(metrics),
-        f"{day} \u6da8\u505c/\u8dcc\u505c\u6c60\uff1b\u9519\u8bef={'; '.join(errors) or '无'}",
+        f"{day} 昨日涨停池开盘至收盘；错误={'; '.join(errors) or '无'}",
         "; ".join(errors) or None,
         plan,
     )
+
+
+def _collect_hk_market_cap() -> CollectionTaskResult:
+    from .hkex_market_cap import fetch_hkex_market_cap
+
+    try:
+        archive = fetch_hkex_market_cap()
+    except (OSError, ValueError, requests.RequestException) as error:
+        return _result("HKEX_MARKET_CAP", "港交所主板及GEM每日市价总值", "hkex", "FAILED", 0,
+                       f"港交所公开档案不可用：{type(error).__name__}", type(error).__name__, PersistPlan())
+    method = ("source=HKEX Securities Statistics Archive; scope=MAIN+GEM; currency=HKD; "
+              f"main_sha256={archive.main_sha256}; gem_sha256={archive.gem_sha256}; "
+              "formula=(main_board_hkd+gem_hkd)/100000000")
+    metrics = [_metric("HKEX_MARKET_CAP", "HK.HKEX.EQUITY.ALL", day, "1d",
+                       "港股主板及GEM总市值(亿港元)", total / 100_000_000,
+                       "港交所主板和GEM同日公开的市价总值之和；档案按月更新至上月底",
+                       method, metric_key="TOTAL_MARKET_CAP_YI")
+               for day, total in archive.points]
+    return _result("HKEX_MARKET_CAP", "港交所主板及GEM每日市价总值", "hkex", "PASS",
+                   len(metrics), f"官方主板+GEM同日序列 {len(metrics)} 天，最新 {archive.points[-1][0]}；"
+                   "档案按月公布，当前月份尚未公布的日期不回填", None,
+                   PersistPlan(gold_metrics=metrics))
+
+
+def _collect_ths_cpi() -> CollectionTaskResult:
+    from .ths_macro import fetch_cpi_archive
+
+    try:
+        archive = fetch_cpi_archive()
+    except (OSError, ValueError, requests.RequestException) as error:
+        return _result("THS_CPI", "同花顺公开月度CPI", "ths-web", "FAILED", 0,
+                       f"同花顺CPI公开表不可用：{type(error).__name__}", type(error).__name__, PersistPlan())
+    fields = (
+        ("NATIONAL_INDEX", "全国当月CPI指数", "national_index", "指数"),
+        ("NATIONAL_YOY_PCT", "全国CPI同比增长", "national_yoy_pct", "%"),
+        ("NATIONAL_MOM_PCT", "全国CPI环比增长", "national_mom_pct", "%"),
+    )
+    metrics = []
+    for observation in archive.observations:
+        for key, name, attribute, unit in fields:
+            value = getattr(observation, attribute)
+            if value is None:
+                continue
+            metrics.append(_metric("THS_CPI", "CN.CPI.THS", observation.period, "MONTHLY", name,
+                                   value, "同花顺公开CPI表中全国分栏原值，不与通达信38# CPI合并",
+                                   f"source={archive.source_url}; payload_sha256={archive.payload_sha256}; unit={unit}",
+                                   metric_key=key, timestamp=archive.fetched_at))
+    return _result("THS_CPI", "同花顺公开月度CPI", "ths-web", "PASS", len(metrics),
+                   f"同花顺独立月度CPI观测 {len(archive.observations)} 期，最新 {archive.observations[0].period}",
+                   None, PersistPlan(gold_metrics=metrics))
 
 
 def _collect_hsgt() -> CollectionTaskResult:
@@ -2231,29 +2550,93 @@ def _collect_foreign_futures() -> CollectionTaskResult:
     )
 
 
+class ProviderTransportBlockedError(RuntimeError):
+    """The provider response cannot be trusted as an HTTPS source."""
+
+
+_PUBLIC_TEXT_HOSTS = frozenset({
+    "cdn.cboe.com",
+    "web.ifzq.gtimg.cn",
+    "push2his.eastmoney.com",
+    "push2delay.eastmoney.com",
+    "push2.eastmoney.com",
+})
+_PUBLIC_TEXT_MAX_BYTES = 2 * 1024 * 1024
+
+
+def _require_https_source(url: str, *, original_host: str | None = None) -> str:
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme.lower() != "https" or not parsed.hostname or parsed.username or parsed.password:
+        raise ProviderTransportBlockedError("HTTPS_REQUIRED")
+    try:
+        port = parsed.port
+    except ValueError as error:
+        raise ProviderTransportBlockedError("HTTPS_PORT_INVALID") from error
+    if port not in (None, 443):
+        raise ProviderTransportBlockedError("HTTPS_PORT_BLOCKED")
+    host = parsed.hostname
+    if host not in _PUBLIC_TEXT_HOSTS:
+        raise ProviderTransportBlockedError("PROVIDER_HOST_NOT_VERIFIED")
+    if original_host is not None and host != original_host:
+        raise ProviderTransportBlockedError("HTTPS_REDIRECT_HOST_BLOCKED")
+    return host
+
+
 def _fetch_url_text(url: str, timeout: int = 20) -> str:
-    """GET 远端文本：临时绕过系统代理，并对个别证书链不完整的源放宽 TLS 校验。"""
+    """Fetch public provider text over verified HTTPS, including redirects."""
 
     import requests
-    import urllib3
 
-    with _direct_network():
-        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-        response = requests.get(
-            url,
-            headers={
-                "User-Agent": (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                ),
-                "Accept": "application/json,text/plain,*/*",
-                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-            },
-            timeout=timeout,
-            verify=False,
-        )
-        response.raise_for_status()
-        return response.text
+    original_host = _require_https_source(url)
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        ),
+        "Accept": "application/json,text/plain,*/*",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    }
+    # Do not inherit a local proxy or its replacement CA bundle. A TLS failure
+    # blocks this source; it must never be converted into an unverified success.
+    with requests.Session() as session:
+        session.trust_env = False
+        current_url = url
+        for _ in range(4):
+            try:
+                response = session.get(
+                    current_url,
+                    headers=headers,
+                    timeout=timeout,
+                    verify=True,
+                    allow_redirects=False,
+                    stream=True,
+                )
+            except requests.exceptions.SSLError as error:
+                raise ProviderTransportBlockedError("TLS_VERIFICATION_FAILED") from error
+            try:
+                if 300 <= response.status_code < 400:
+                    location = response.headers.get("Location")
+                    if not location:
+                        raise ProviderTransportBlockedError("HTTPS_REDIRECT_INVALID")
+                    current_url = urllib.parse.urljoin(current_url, location)
+                    _require_https_source(current_url, original_host=original_host)
+                    continue
+                response.raise_for_status()
+                content_length = response.headers.get("Content-Length")
+                if content_length and content_length.isdecimal() and int(content_length) > _PUBLIC_TEXT_MAX_BYTES:
+                    raise ProviderTransportBlockedError("PROVIDER_RESPONSE_TOO_LARGE")
+                chunks: list[bytes] = []
+                total = 0
+                for chunk in response.iter_content(chunk_size=64 * 1024):
+                    total += len(chunk)
+                    if total > _PUBLIC_TEXT_MAX_BYTES:
+                        raise ProviderTransportBlockedError("PROVIDER_RESPONSE_TOO_LARGE")
+                    if chunk:
+                        chunks.append(chunk)
+                return b"".join(chunks).decode(response.encoding or "utf-8-sig")
+            finally:
+                response.close()
+    raise ProviderTransportBlockedError("HTTPS_REDIRECT_LIMIT")
 
 
 def _parse_cboe_vix(text: str) -> list[tuple[str, float]]:
@@ -2288,7 +2671,7 @@ def _parse_tencent_vix(text: str) -> list[tuple[str, float]]:
     return rows
 
 
-def _fetch_vix_points() -> list[tuple[str, float]]:
+def _fetch_vix_points(source_errors: list[str] | None = None) -> list[tuple[str, float]]:
     """VIX 收盘序列：CBOE 官方 CSV 优先，腾讯行情兜底。"""
 
     last_error: Exception | None = None
@@ -2309,6 +2692,8 @@ def _fetch_vix_points() -> list[tuple[str, float]]:
             last_error = ValueError("empty VIX rows")
         except Exception as error:  # noqa: BLE001 - 采集层需要尽量兜底
             last_error = error
+        if source_errors is not None:
+            source_errors.append(f"{urllib.parse.urlsplit(url).hostname}:{type(last_error).__name__}")
     raise last_error or ValueError("no VIX source")
 
 
@@ -2343,7 +2728,7 @@ def _parse_tencent_kline(document: dict[str, Any], symbol: str) -> list[tuple[st
     return rows
 
 
-def _fetch_usd_index_points() -> list[tuple[str, float]]:
+def _fetch_usd_index_points(source_errors: list[str] | None = None) -> list[tuple[str, float]]:
     """美元指数 DXY 序列：东方财富日 K 线优先，腾讯 whDINIW 日 K 线，实时行情兜底。"""
 
     kline_url = (
@@ -2359,10 +2744,15 @@ def _fetch_usd_index_points() -> list[tuple[str, float]]:
             if rows:
                 return rows
             last_error = ValueError("eastmoney USD index: empty klines")
+        except ProviderTransportBlockedError as error:
+            last_error = error
+            break
         except Exception as error:  # noqa: BLE001 - 采集层需要尽量兜底
             last_error = error
             if attempt == 0:
                 time.sleep(2)
+    if source_errors is not None:
+        source_errors.append(f"eastmoney-kline:{type(last_error).__name__}")
     try:
         return _parse_tencent_kline(
             json.loads(
@@ -2375,6 +2765,8 @@ def _fetch_usd_index_points() -> list[tuple[str, float]]:
         )
     except Exception as error:  # noqa: BLE001 - 采集层需要尽量兜底
         last_error = error
+        if source_errors is not None:
+            source_errors.append(f"tencent-kline:{type(error).__name__}")
     spot_errors: list[str] = []
     for spot_host in ("push2delay.eastmoney.com", "push2.eastmoney.com"):
         try:
@@ -2393,7 +2785,10 @@ def _fetch_usd_index_points() -> list[tuple[str, float]]:
             return [(day, float(close) / 100.0)]
         except Exception as error:  # noqa: BLE001 - 采集层需要尽量兜底
             spot_errors.append(f"{spot_host}:{type(error).__name__}:{str(error)[:80]}")
-            time.sleep(1)
+            if source_errors is not None:
+                source_errors.append(f"{spot_host}:{type(error).__name__}")
+            if not isinstance(error, ProviderTransportBlockedError):
+                time.sleep(1)
     if last_error is not None:
         raise last_error
     raise RuntimeError("; ".join(spot_errors))
@@ -2402,15 +2797,19 @@ def _fetch_usd_index_points() -> list[tuple[str, float]]:
 def _collect_usd_vix() -> CollectionTaskResult:
     metrics: list[dict[str, Any]] = []
     errors: list[str] = []
+    fallback_errors: list[str] = []
     for series_id, fetcher in (
         ("USD_INDEX", _fetch_usd_index_points),
         ("VIX", _fetch_vix_points),
     ):
+        source_failures: list[str] = []
         try:
-            points = fetcher()
+            points = fetcher(source_failures)
         except Exception as error:
+            fallback_errors.extend(f"{series_id}:{failure}" for failure in source_failures)
             errors.append(f"{series_id}:{type(error).__name__}:{str(error)[:100]}")
             continue
+        fallback_errors.extend(f"{series_id}:{failure}" for failure in source_failures)
         definition = macro_series_index()[series_id]
         for day, close in points[-120:]:
             metrics.append(
@@ -2427,14 +2826,15 @@ def _collect_usd_vix() -> CollectionTaskResult:
                 )
             )
     plan = PersistPlan(gold_metrics=metrics)
-    status = "PASS" if metrics and not errors else "PARTIAL_FAILURE" if metrics else "BLOCKED"
+    all_errors = errors + fallback_errors
+    status = "PASS" if metrics and not all_errors else "PARTIAL_FAILURE" if metrics else "BLOCKED"
     return _result(
         "USD_INDEX_VIX",
         "美元指数/VIX",
         "eastmoney+cboe",
         status,
         len(metrics),
-        f"指标={len(metrics)}；错误={'; '.join(errors) or '无'}",
-        "; ".join(errors) or None,
+        f"指标={len(metrics)}；错误={'; '.join(all_errors) or '无'}",
+        "; ".join(all_errors) or None,
         plan,
     )

@@ -13,7 +13,7 @@ from uuid import uuid4
 
 import duckdb
 
-from .market_data_version import advance_market_data_version
+from .market_data_version import advance_market_data_version, settle_market_data_version
 
 
 _CRYPTO_IDS = ("GLOBAL.CRYPTO.BTCUSDT", "GLOBAL.CRYPTO.ETHUSDT")
@@ -103,6 +103,9 @@ def prune_retired_market_data(data_root: Path) -> dict[str, Any]:
                 "sha256": digest,
             })
 
+        # The index contains paths into these mutable files.  Invalidate it
+        # before the first move, including across a process interruption.
+        _previous_revision, revision = advance_market_data_version(data_root, pending=True)
         promoted: list[dict[str, Any]] = []
         try:
             for plan in plans:
@@ -110,15 +113,16 @@ def prune_retired_market_data(data_root: Path) -> dict[str, Any]:
                 backup.parent.mkdir(parents=True, exist_ok=True)
                 os.replace(plan["source"], backup)
                 plan["backup"] = backup
+                promoted.append(plan)
                 staged = plan["staged"]
                 if staged is not None:
                     plan["source"].parent.mkdir(parents=True, exist_ok=True)
                     os.replace(staged, plan["source"])
-                promoted.append(plan)
         except Exception:
             for plan in reversed(promoted):
                 plan["source"].unlink(missing_ok=True)
                 os.replace(plan["backup"], plan["source"])
+            settle_market_data_version(data_root, revision)
             raise
 
         try:
@@ -144,10 +148,11 @@ def prune_retired_market_data(data_root: Path) -> dict[str, Any]:
             for plan in reversed(promoted):
                 plan["source"].unlink(missing_ok=True)
                 os.replace(plan["backup"], plan["source"])
+            settle_market_data_version(data_root, revision)
             raise
+        settle_market_data_version(data_root, revision)
 
-    _previous_revision, revision = advance_market_data_version(data_root)
-    _prune_query_cache(data_root, revision)
+    _prune_query_cache(data_root)
     report = {
         "status": "COMPLETE",
         "retiredRows": sum(plan["retired"] for plan in plans),
@@ -165,7 +170,7 @@ def prune_retired_market_data(data_root: Path) -> dict[str, Any]:
     return report
 
 
-def _prune_query_cache(data_root: Path, revision: str) -> None:
+def _prune_query_cache(data_root: Path) -> None:
     path = data_root / "state" / "kline_query.duckdb"
     if not path.is_file():
         return
@@ -179,12 +184,10 @@ def _prune_query_cache(data_root: Path, revision: str) -> None:
         try:
             for table in ("instrument_file", "instrument_period", "instrument_latest", "derived_bars"):
                 cache.execute(f"DELETE FROM {table} WHERE {predicate}")
-            rows = int(cache.execute("SELECT coalesce(sum(row_count), 0) FROM instrument_period").fetchone()[0])
-            cache.execute("DELETE FROM cache_meta")
-            cache.execute(
-                "INSERT INTO cache_meta VALUES (?, ?, ?, ?, ?)",
-                [2, revision, rows, _now(), 0.0],
-            )
+            # A one-off maintenance script has no complete Catalog SHA delta
+            # proof for all moved/deleted partitions. Keep cache_meta on its
+            # previous revision so chart reads fail closed until the audited
+            # full rebuild completes.
             cache.execute("COMMIT")
         except Exception:
             cache.execute("ROLLBACK")

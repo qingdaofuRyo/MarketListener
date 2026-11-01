@@ -37,7 +37,8 @@ fun validationErrorText(value: String?): String = when (value) {
     "SCHEMA" -> "行情包结构版本不受支持"
     "SPACE" -> "设备可用空间不足"
     "DUPLICATE" -> "该行情包已导入"
-    "DOWNGRADE" -> "行情包要求更高版本的 App"
+    "DOWNGRADE" -> "行情包版本不兼容或早于当前数据"
+    "UNSUPPORTED_DELTA" -> "当前版本不支持增量行情包，请导入完整包"
     "PAYLOAD" -> "行情数据载荷校验未通过"
     else -> "行情包结构无效"
 }

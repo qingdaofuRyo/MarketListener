@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import * as echarts from "echarts";
-import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import type { FuturesStructureResponse } from "../../domain/futures";
 import { useThemeStore } from "../../stores/theme";
 
@@ -17,6 +17,8 @@ const theme = useThemeStore();
 const element = ref<HTMLElement>();
 let chart: echarts.ECharts | undefined;
 let resizeObserver: ResizeObserver | undefined;
+const lineScope = ref<"all" | "area">("all");
+const displayedSeries = computed(() => lineScope.value === "all" ? (props.payload.lineSeries ?? props.payload.series) : props.payload.series);
 const colors = [
   "#2563eb", "#d946ef", "#16a34a", "#ea580c", "#0891b2", "#7c3aed", "#dc2626", "#65a30d",
   "#0284c7", "#c026d3", "#ca8a04", "#0f766e", "#4f46e5", "#be123c", "#15803d", "#9333ea",
@@ -40,8 +42,8 @@ function tooltipHtml(params: unknown): string {
   if (index < 0) return "";
   const coverage = props.payload.coverage[index];
   const rows = items.map((item) => {
-    const itemIndex = item.seriesIndex ?? props.payload.series.findIndex(series => series.memberName === item.seriesName);
-    const series = props.payload.series[itemIndex];
+    const itemIndex = item.seriesIndex ?? displayedSeries.value.findIndex(series => series.memberName === item.seriesName);
+    const series = displayedSeries.value[itemIndex];
     const values = series?.lineValues || series?.values || [];
     const current = values[index];
     const previous = index > 0 ? values[index - 1] : null;
@@ -70,7 +72,7 @@ function render(): void {
       textStyle: { color: palette.textPrimary, fontSize: 12 }, confine: true, formatter: tooltipHtml,
     },
     legend: {
-      type: "scroll", data: props.payload.series.map(item => item.memberName), top: 0, right: 8,
+      type: "scroll", data: displayedSeries.value.map(item => item.memberName), top: 0, right: 8,
       itemWidth: 14, itemHeight: 8, textStyle: { color: palette.textSecondary, fontSize: 11 },
     },
     grid: { left: 64, right: 18, top: 46, bottom: 48 },
@@ -89,7 +91,7 @@ function render(): void {
       { type: "inside", start: 0, end: 100, filterMode: "none" },
       { type: "slider", start: 0, end: 100, bottom: 4, height: 14, borderColor: palette.divider, backgroundColor: palette.surfaceElevated, fillerColor: `${palette.accent}26`, handleStyle: { color: palette.accent }, textStyle: { color: palette.chartAxis }, filterMode: "none" },
     ],
-    series: props.payload.series.map((item, index) => ({
+    series: displayedSeries.value.map((item, index) => ({
       id: item.memberKey, name: item.memberName, type: "line" as const,
       data: item.lineValues || item.values, showSymbol: false, connectNulls: false,
       lineStyle: { width: 1.5, color: colors[index % colors.length] },
@@ -100,7 +102,7 @@ function render(): void {
 }
 
 function resize(): void { chart?.resize(); }
-watch(() => [props.payload, theme.palette], () => void nextTick(render), { deep: true });
+watch(() => [props.payload, theme.palette, lineScope.value], () => void nextTick(render), { deep: true });
 onMounted(() => {
   void nextTick(render);
   window.addEventListener("resize", resize);
@@ -117,11 +119,19 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div ref="element" class="structure-line-chart" data-test="futures-structure-line-chart" role="img" :aria-label="ariaLabel" />
+  <div class="structure-line-controls">
+    <span>独立品种折线 · {{ displayedSeries.length }} 条；点击图例可隐藏/恢复品种，缺失日不连线。</span>
+    <el-radio-group v-if="payload.lineSeries" v-model="lineScope" size="small" aria-label="折线品种范围">
+      <el-radio-button value="all">全部已计算品种</el-radio-button>
+      <el-radio-button value="area">当前面积图成员</el-radio-button>
+    </el-radio-group>
+  </div>
+  <div ref="element" class="structure-line-chart" data-test="futures-structure-line-chart" :data-series-count="displayedSeries.length" role="img" :aria-label="ariaLabel" />
 </template>
 
 <style scoped>
-.structure-line-chart { height: 390px; width: 100%; }
+.structure-line-chart { height: 780px; width: 100%; }
+.structure-line-controls { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin: 16px 0 8px; color: var(--ml-text-secondary); font-size: 12px; }
 </style>
 
 <style>

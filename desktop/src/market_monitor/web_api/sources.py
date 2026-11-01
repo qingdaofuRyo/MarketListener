@@ -11,7 +11,10 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+import threading
+import time
 from typing import Any
+from uuid import uuid4
 
 import duckdb
 from fastapi import APIRouter, HTTPException, Request
@@ -19,15 +22,114 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from market_monitor.dataset_catalog import BAR_FIELDS
 from market_monitor.market_query_cache import get_kline_query_store
+from market_monitor.market_data_version import market_data_version
+from market_monitor.storage import connect_catalog
+from market_monitor.atomic_files import replace_with_retry
 
 from .common import clean, load_json, now_iso, save_json
 
 router = APIRouter(prefix="/api/data-sources", tags=["data-sources"])
+_STORAGE_SNAPSHOT_LOCK = threading.RLock()
+_STORAGE_BUILDING: set[Path] = set()
+_STORAGE_LAST_ATTEMPT: dict[Path, float] = {}
+_STORAGE_REFRESH_SECONDS = 300
 
 
 # These are repository facts, not a catalogue of vendors the product might
 # support in the future. Endpoint text comes from the adapters/collector.
 _PROVIDERS: tuple[dict[str, Any], ...] = (
+    {
+        "providerId": "bls_payroll_public", "name": "美国劳工统计局非农就业",
+        "type": "official_public_api", "access": "BLS CES 公共接口季调后非农就业总人数",
+        "endpoint": "https://api.bls.gov/publicAPI/v1/timeseries/data/CES0000000001",
+        "authentication": "none for public v1 endpoint", "implemented": True, "configured": True,
+        "priority": 20, "enabled": True, "markets": ["GLOBAL"], "assetTypes": ["MACRO"],
+        "periods": ["1mo"], "fields": ["nonfarm_payroll_monthly_change"],
+        "fieldNotes": "相邻统计月总人数之差，单位千人；当前修订值，不等于最初公布值或公布日期。",
+        "status": "IMPLEMENTED_SOURCE_ISOLATED",
+    },
+    {
+        "providerId": "cn_exchanges_official_daily",
+        "name": "沪深京交易所官网日统计",
+        "type": "official_http_adapter",
+        "access": "三所官网股票、基金及债券日/月统计；原件与单位独立核验",
+        "endpoint": "sse.com.cn/market/view; szse.cn/market/overview; bseinfo.net/static/statisticdata.html",
+        "authentication": "none for the validated public daily reports",
+        "implemented": True,
+        "configured": True,
+        "priority": 1,
+        "enabled": True,
+        "markets": ["CN"],
+        "assetTypes": ["STOCK", "FUND", "BOND"],
+        "periods": ["1d", "1mo"],
+        "fields": ["total_market_cap", "float_market_cap", "turnover", "company_count", "volume"],
+        "fieldNotes": "纯A股合计只在三所同日全部核验后发布；沪深挂牌股票数量含B股，基金只汇总沪深。",
+        "status": "IMPLEMENTED_SOURCE_ISOLATED",
+    },
+    {
+        "providerId": "cn_exchange_delisted_lists", "name": "沪深交易所终止上市名单",
+        "type": "official_http_adapter", "access": "上交所终止上市列表；深交所终止上市列表逐页核验",
+        "endpoint": "sse.com.cn/assortment/stock/list/delisting; szse.cn/market/stock/suspend",
+        "authentication": "none for current public exchange lists", "implemented": True, "configured": True,
+        "priority": 1, "enabled": True, "markets": ["CN"], "assetTypes": ["STOCK"], "periods": ["event"],
+        "fields": ["instrument_id", "delisting_date"],
+        "fieldNotes": "沪深名单仅正向识别已终止上市；排除B股，北交所仅个别公告。快照抓取时间不代表公告发布时间。",
+        "status": "IMPLEMENTED_SOURCE_ISOLATED",
+    },
+    {
+        "providerId": "eastmoney_a_limit_pools",
+        "name": "东方财富A股涨跌停与炸板池",
+        "type": "public_web_via_akshare",
+        "access": "按已核验A股交易日期读取涨停、跌停、炸板、昨日涨停池",
+        "endpoint": "AKShare stock_zt_pool_em / stock_zt_pool_dtgc_em / stock_zt_pool_zbgc_em",
+        "authentication": "none for current public endpoints",
+        "implemented": True,
+        "configured": True,
+        "priority": 15,
+        "enabled": True,
+        "markets": ["CN"],
+        "assetTypes": ["STOCK"],
+        "periods": ["1d"],
+        "fields": ["limit_up_count", "limit_down_count", "broken_board_count", "limit_height"],
+        "fieldNotes": "收盘重新封板不计炸板；历史漏日按指定日期复核，空池不记为零。",
+        "status": "IMPLEMENTED_DATED_PARTIAL",
+    },
+    {
+        "providerId": "ths_cpi_monthly",
+        "name": "同花顺公开CPI（月度）",
+        "type": "public_web_adapter",
+        "access": "data.10jqka.com.cn/macro/cpi 的已公布月度表",
+        "endpoint": "https://data.10jqka.com.cn/macro/cpi/",
+        "authentication": "none for current public page",
+        "implemented": True,
+        "configured": True,
+        "priority": 25,
+        "enabled": True,
+        "markets": ["CN"],
+        "assetTypes": ["MACRO"],
+        "periods": ["1mo"],
+        "fields": ["cpi_index", "yoy_pct", "mom_pct"],
+        "fieldNotes": "观测期是月份；不把上次网页抓取日当作新月份，也不混入通达信38# CPI。",
+        "status": "IMPLEMENTED_MONTHLY",
+    },
+    {
+        "providerId": "hkex_market_cap_archive",
+        "name": "港交所主板及GEM市值档案",
+        "type": "official_archive_permission_required",
+        "access": "已保存的历史Gold可读；官网脚本访问须先取得书面许可",
+        "endpoint": "hkex.com.hk/Market-Data/Statistics/Consolidated-Reports",
+        "authentication": "written HKEX permission required for programmatic collection",
+        "implemented": True,
+        "configured": False,
+        "priority": 90,
+        "enabled": False,
+        "markets": ["HK"],
+        "assetTypes": ["STOCK"],
+        "periods": ["1d"],
+        "fields": ["total_market_cap"],
+        "fieldNotes": "历史档案最新观测日以已保存数据为准；当前自动网页采集停用。",
+        "status": "BLOCKED_SOURCE_PERMISSION",
+    },
     {
         "providerId": "tdx_local",
         "name": "通达信本地行情缓存",
@@ -364,27 +466,27 @@ def _manifest_connection(data_root: Path) -> duckdb.DuckDBPyConnection | None:
         return None
 
 
-def _latest_group_facts(connection: duckdb.DuckDBPyConnection) -> dict[tuple[str, str], dict[str, Any]]:
+def _latest_group_facts(connection: duckdb.DuckDBPyConnection) -> dict[tuple[str, str, str], dict[str, Any]]:
     field_sql = ", ".join(
         "sum(CASE WHEN json_extract(bar_json, '$.%s') IS NOT NULL "
         "AND json_extract(bar_json, '$.%s') != 'null' THEN 1 ELSE 0 END)" % (field, field)
         for field in _COVERAGE_FIELDS
     )
     rows = connection.execute(
-        "SELECT market, asset_type, count(*)::BIGINT, "
+        "SELECT market, asset_type, period, count(*)::BIGINT, "
         "max(json_extract_string(bar_json, '$.fetched_at')), "
-        "list(DISTINCT coalesce(nullif(json_extract_string(bar_json, '$.actual_source'), ''), "
+        "histogram(coalesce(nullif(json_extract_string(bar_json, '$.actual_source'), ''), "
         "nullif(json_extract_string(bar_json, '$.source'), ''), 'unknown')), "
         "histogram(coalesce(nullif(json_extract_string(bar_json, '$.quality_status'), ''), 'UNKNOWN')), "
-        f"{field_sql} FROM instrument_latest GROUP BY market, asset_type"
+        f"{field_sql} FROM instrument_latest GROUP BY market, asset_type, period"
     ).fetchall()
-    facts: dict[tuple[str, str], dict[str, Any]] = {}
-    for market, asset_type, samples, updated_at, sources, quality, *counts in rows:
+    facts: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for market, asset_type, period, samples, updated_at, sources, quality, *counts in rows:
         sample_count = max(1, int(samples or 0))
-        facts[(str(market), str(asset_type))] = {
+        facts[(str(market), str(asset_type), str(period))] = {
             "samples": sample_count,
             "updatedAt": str(updated_at) if updated_at else None,
-            "sources": [str(value) for value in (sources or []) if value],
+            "sourceSamples": {str(key): int(value) for key, value in dict(sources or {}).items()},
             "quality": {str(key): int(value) for key, value in dict(quality or {}).items()},
             "fieldCompleteness": {
                 field: round(int(value or 0) / sample_count, 4)
@@ -421,21 +523,25 @@ def _local_inventory(data_root: Path) -> tuple[list[dict[str, Any]], int]:
         connection.close()
     result: list[dict[str, Any]] = []
     for market, asset_type, period, total, instruments, partitions, earliest, latest_at in rows:
-        key = (str(market), str(asset_type))
+        key = (str(market), str(asset_type), str(period))
         facts = latest.get(
             key,
             {
                 "samples": 0,
                 "updatedAt": None,
-                "sources": [],
+                "sourceSamples": {},
                 "quality": {},
                 "fieldCompleteness": {field: 0.0 for field in _COVERAGE_FIELDS},
             },
         )
-        source_ids = {_provider_for_source(value) for value in facts["sources"]}
+        source_samples: dict[str, int] = {}
+        for source, sample_count in facts["sourceSamples"].items():
+            provider_id = _provider_for_source(source)
+            source_samples[provider_id] = source_samples.get(provider_id, 0) + sample_count
+        source_ids = set(source_samples)
         result.append(
             {
-                "categoryKey": _category_key(*key, str(period)),
+                "categoryKey": _category_key(*key),
                 "market": key[0],
                 "assetType": key[1],
                 "period": str(period),
@@ -447,11 +553,13 @@ def _local_inventory(data_root: Path) -> tuple[list[dict[str, Any]], int]:
                 "lastUpdatedAt": facts["updatedAt"],
                 "sources": sorted(source_ids),
                 "sourceDetails": _source_details(source_ids),
+                "sourceSampleCounts": source_samples,
                 "quality": dict(sorted(facts["quality"].items())),
                 "fieldCompleteness": facts["fieldCompleteness"],
                 "fieldCoverageSamples": facts["samples"],
                 "rowCountMode": "MANIFEST_EXACT",
-                "fieldCoverageMode": "LATEST_INSTRUMENT_SAMPLE",
+                "fieldCoverageMode": "LATEST_INSTRUMENT_PERIOD_SAMPLE",
+                "sourceCoverageMode": "LATEST_INSTRUMENT_PERIOD_SAMPLE",
             }
         )
     return result, unique_instruments
@@ -463,10 +571,9 @@ def _catalog_tables(data_root: Path) -> list[dict[str, Any]]:
     path = data_root / "catalog.duckdb"
     if not path.is_file():
         return []
-    try:
-        connection = duckdb.connect(str(path), read_only=True)
-    except Exception:
-        return []
+    # Product tasks also hold writable connections to this catalog.
+    # DuckDB rejects mixed read_only configurations in one process.
+    connection = connect_catalog(data_root)
     try:
         table_rows = connection.execute(
             "SELECT table_name, estimated_size, column_count FROM duckdb_tables() "
@@ -531,10 +638,7 @@ def _registered_datasets(data_root: Path, inventory: list[dict[str, Any]]) -> li
     path = data_root / "catalog.duckdb"
     if not path.is_file():
         return []
-    try:
-        connection = duckdb.connect(str(path), read_only=True)
-    except Exception:
-        return []
+    connection = connect_catalog(data_root)
     try:
         tables = {str(row[0]) for row in connection.execute("SHOW TABLES").fetchall()}
         if "datasets" not in tables:
@@ -630,26 +734,82 @@ def _storage_inventory(data_root: Path) -> dict[str, Any]:
             "groups": list(groups.values()), "scope": "MANIFEST_SILVER_FILES", "generatedAt": now_iso()}
 
 
+def _storage_snapshot(data_root: Path) -> dict[str, Any]:
+    """Serve the last complete file-stat inventory while refresh runs off-request."""
+
+    root = Path(data_root).resolve()
+    revision = market_data_version(root)
+    path = root / "state" / "storage_inventory.json"
+    saved = load_json(path, {})
+    if not isinstance(saved, dict) or not isinstance(saved.get("inventory"), dict):
+        saved = {}
+    previous = saved.get("inventory", {})
+    try:
+        age = time.time() - float(saved.get("builtAtEpoch") or 0)
+    except (TypeError, ValueError):
+        age = float("inf")
+    current = saved.get("revision") == revision and 0 <= age < _STORAGE_REFRESH_SECONDS
+
+    def rebuild() -> None:
+        try:
+            inventory = _storage_inventory(root)
+            if not inventory.get("available"):
+                return
+            payload = {"revision": revision, "builtAtEpoch": time.time(), "inventory": inventory}
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = path.with_name(f"{path.name}.{uuid4().hex}.tmp")
+            try:
+                temporary.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+                replace_with_retry(temporary, path)
+            finally:
+                temporary.unlink(missing_ok=True)
+        except (duckdb.Error, OSError, ValueError, RuntimeError):
+            pass  # Existing complete snapshot remains readable.
+        finally:
+            with _STORAGE_SNAPSHOT_LOCK:
+                _STORAGE_BUILDING.discard(root)
+
+    if not current:
+        with _STORAGE_SNAPSHOT_LOCK:
+            now = time.monotonic()
+            if root not in _STORAGE_BUILDING and now - _STORAGE_LAST_ATTEMPT.get(root, -1e9) >= 10:
+                _STORAGE_BUILDING.add(root)
+                _STORAGE_LAST_ATTEMPT[root] = now
+                threading.Thread(target=rebuild, name="marketlistener-storage-inventory", daemon=True).start()
+    if previous:
+        return {**previous, "snapshotStatus": "CURRENT" if current else "STALE",
+                "sourceRevision": saved.get("revision"), "requestedRevision": revision}
+    return {"available": False, "bytes": None, "files": 0, "missingFiles": 0, "groups": [],
+            "snapshotStatus": "BUILDING", "requestedRevision": revision}
+
+
 def _inventory_payload(request: Request) -> dict[str, Any]:
     root = _data_root(request)
     preferences = load_json(_preference_path(root), {"preferences": {}})
     stored = preferences.get("preferences", {}) if isinstance(preferences, dict) else {}
     inventory, unique_instruments = _local_inventory(root)
-    datasets = _registered_datasets(root, inventory)
-    tables = [*_silver_tables(inventory), *_catalog_tables(root)]
+    catalog_status = "MISSING" if not (root / "catalog.duckdb").is_file() else "CURRENT"
+    try:
+        datasets = _registered_datasets(root, inventory)
+        catalog_tables = _catalog_tables(root)
+    except (duckdb.Error, OSError):
+        datasets, catalog_tables = [], []
+        catalog_status = "TEMPORARILY_UNAVAILABLE"
+    tables = [*_silver_tables(inventory), *catalog_tables]
     return clean(
         {
             "generatedAt": now_iso(),
             "inventory": inventory,
             "tables": tables,
             "datasets": datasets,
-            "storage": _storage_inventory(root),
+            "storage": _storage_snapshot(root),
             "preferences": stored,
             "metadata": {
                 "mode": "LIGHTWEIGHT_MANIFEST",
                 "rowCounts": "K 线为清单精确值；DuckDB 表为目录估算值",
                 "fieldCoverage": "可选字段完整度仅抽样每个标的最新记录",
                 "scansSilverRows": False,
+                "catalogStatus": catalog_status,
             },
             "summary": {
                 "categories": len(inventory),

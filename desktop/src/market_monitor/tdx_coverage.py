@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta, timezone
+from hashlib import sha256
 import json
 import os
 from pathlib import Path
@@ -24,6 +25,7 @@ _DAY = struct.Struct("<I28x")
 _MINUTE = struct.Struct("<HH28x")
 _BLOCK_RECORDS = 8192
 _RULE_VERSION = "tdx-raw-coverage-v1"
+_DATE_INDEX_VERSION = "tdx-gap-date-index-v1"
 _REPORT = Path("reports/tdx-coverage/latest.json")
 _FILE_PATTERN = re.compile(r"^(?:[a-z]{2}\d{6}|\d+#[A-Za-z0-9_.-]+)\.(?:day|lc5)$", re.IGNORECASE)
 _DOMESTIC_PREFIXES = {"28", "29", "30", "47", "66"}
@@ -85,6 +87,7 @@ def run_tdx_coverage_check(
                 "bytes": before.st_size,
                 "mtimeNs": before.st_mtime_ns,
                 "ruleVersion": _RULE_VERSION,
+                "dateIndexVersion": _DATE_INDEX_VERSION,
                 "calendarKey": calendar_key,
                 "profile": profile,
             }
@@ -92,8 +95,27 @@ def run_tdx_coverage_check(
                 file_rows.append(previous)
                 skipped += 1
                 continue
+            prior_fingerprint = previous.get("fingerprint") if previous else None
+            old_calendar_fingerprint = {**fingerprint, "calendarKey": _legacy_calendar_key(calendar)}
+            if (previous and isinstance(prior_fingerprint, dict)
+                    and prior_fingerprint == old_calendar_fingerprint
+                    and "gapDates" in previous):
+                file_rows.append({**previous, "fingerprint": fingerprint})
+                skipped += 1
+                continue
+            # Older reports omitted complete gap dates.  Their non-gapped
+            # files remain valid when every other fingerprint input matches;
+            # only affected files need a full rescan for the new index.
+            legacy_fingerprint = {key: value for key, value in fingerprint.items()
+                                  if key != "dateIndexVersion"}
+            if (previous and previous.get("status") != "GAPPED"
+                    and previous.get("fingerprint") == legacy_fingerprint):
+                file_rows.append({**previous, "fingerprint": fingerprint, "gapDates": []})
+                skipped += 1
+                continue
             file_rows.append(_scan_file(path, terminal, relative, profile, calendar, fingerprint))
     groups = _groups(file_rows)
+    gap_date_index = _gap_date_index(file_rows)
     summary = _aggregate(file_rows)
     summary["scannedFiles"] = len(file_rows) - skipped
     summary["reusedFiles"] = skipped
@@ -110,10 +132,13 @@ def run_tdx_coverage_check(
         "calendar": {
             "futures": calendar.provider if calendar else None,
             "retrievedAt": calendar.retrieved_at if calendar else None,
+            "tradingDaysSha256": _calendar_days_sha(calendar) if calendar else None,
             "securities": None,
         },
         "summary": summary,
         "groups": groups,
+        "gapDateIndexVersion": _DATE_INDEX_VERSION,
+        "gapDateIndex": gap_date_index,
         "extendedGroups": financial_extended_groups(file_rows),
         "files": file_rows,
     }
@@ -159,6 +184,16 @@ def financial_extended_groups(rows: Iterable[dict[str, Any]]) -> list[dict[str, 
 
 
 def _calendar_key(calendar: FuturesTradingCalendar | None) -> str:
+    if calendar is None:
+        return "missing"
+    return f"{calendar.provider}:{_calendar_days_sha(calendar)}"
+
+
+def _calendar_days_sha(calendar: FuturesTradingCalendar) -> str:
+    return sha256("\n".join(calendar.trading_days).encode("ascii")).hexdigest()
+
+
+def _legacy_calendar_key(calendar: FuturesTradingCalendar | None) -> str:
     if calendar is None:
         return "missing"
     return f"{calendar.provider}:{calendar.retrieved_at}:{len(calendar.trading_days)}:{calendar.trading_days[-1]}"
@@ -233,6 +268,7 @@ def _unreadable(terminal: str, relative: str, suffix: str, reason: str) -> dict[
         "latestAt": None,
         "gapCount": 0,
         "sampleGaps": [],
+        "gapDates": [],
         "fingerprint": None,
     }
 
@@ -314,6 +350,7 @@ def _scan_file(
         base["status"] = "INVALID_TIMESTAMP" if invalid else "EMPTY"
         return base
     samples: list[dict[str, str]] = []
+    gap_dates: dict[tuple[str, str], int] = defaultdict(int)
     gap_count = 0
     calendar_known = terminal == "futures" and profile != "unknown" and calendar is not None and bool(day_set)
     if calendar_known:
@@ -323,6 +360,8 @@ def _scan_file(
             missing = sorted(set(calendar.between(first, last)) - day_set)
             gap_count += len(missing)
             samples.extend({"date": day, "kind": "交易日无记录"} for day in missing[:8])
+            for day in missing:
+                gap_dates[(day, "交易日无记录")] += 1
         else:
             calendar_known = False
     if period == "5m":
@@ -333,12 +372,18 @@ def _scan_file(
                 continue
             missing_slots = sorted(expected - slots)
             gap_count += len(missing_slots)
+            if missing_slots:
+                gap_dates[(day.isoformat(), "5分钟候选缺口")] += len(missing_slots)
             samples.extend(
                 {"date": day.isoformat(), "time": f"{minute // 60:02d}:{minute % 60:02d}", "kind": "5分钟候选缺口"}
                 for minute in missing_slots[: max(0, 8 - len(samples))]
             )
     base["gapCount"] = gap_count
     base["sampleGaps"] = samples[:8]
+    base["gapDates"] = [
+        {"date": day, "kind": kind, "count": count}
+        for (day, kind), count in sorted(gap_dates.items())
+    ]
     base["calendarStatus"] = "VERIFIED" if calendar_known else "UNVERIFIED"
     base["sessionStatus"] = "VERIFIED" if period == "1d" or _sessions(profile) else "UNVERIFIED"
     base["status"] = "GAPPED" if gap_count else "CONTINUOUS" if calendar_known and base["sessionStatus"] == "VERIFIED" else "UNVERIFIED"
@@ -459,6 +504,38 @@ def _groups(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "sampleGaps": samples,
         })
     return output
+
+
+def _gap_date_index(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Compact query index built by the explicit coverage task, never by GET."""
+
+    grouped: dict[tuple[str, str, str, str], dict[str, Any]] = defaultdict(
+        lambda: {"affectedFiles": 0, "gapCount": 0, "sampleContracts": []}
+    )
+    for row in rows:
+        terminal, period = str(row.get("terminal") or ""), str(row.get("period") or "")
+        file_name = Path(str(row.get("file") or "")).stem
+        contract = file_name.partition("#")[2] or file_name
+        for gap in row.get("gapDates") or []:
+            if not isinstance(gap, dict):
+                continue
+            day, kind = str(gap.get("date") or ""), str(gap.get("kind") or "")
+            if not day or not kind:
+                continue
+            count = int(gap.get("count") or 0)
+            if count <= 0:
+                continue
+            totals = grouped[(terminal, period, day, kind)]
+            totals["affectedFiles"] += 1
+            totals["gapCount"] += count
+            examples = totals["sampleContracts"]
+            if contract and contract not in examples and len(examples) < 5:
+                examples.append(contract)
+    return [
+        {"terminal": terminal, "period": period, "date": day, "kind": kind,
+         **totals, "confidence": "CANDIDATE"}
+        for (terminal, period, day, kind), totals in sorted(grouped.items())
+    ]
 
 
 def coverage_groups(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:

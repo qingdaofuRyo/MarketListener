@@ -12,7 +12,7 @@ from typing import Any
 
 import duckdb
 
-from market_monitor.market_data_version import advance_market_data_version
+from market_monitor.market_data_version import advance_market_data_version, settle_market_data_version
 
 
 _SCHEMA = "market-listener/retired-expired-month-contracts/v1"
@@ -157,6 +157,7 @@ def run(data_root: Path, manifest_path: Path, *, apply: bool = False) -> dict[st
     result["restoreAudit"] = str(restore_root)
     copied: list[Path] = []
     committed = False
+    pending_revision: str | None = None
     try:
         with duckdb.connect(str(inventory["catalog"])) as connection:
             connection.execute("CHECKPOINT")
@@ -164,6 +165,7 @@ def run(data_root: Path, manifest_path: Path, *, apply: bool = False) -> dict[st
         current_version = root / "state" / "market_data_version.json"
         if current_version.is_file():
             shutil.copy2(current_version, restore_root / "market_data_version.before.json")
+        old_revision, pending_revision = advance_market_data_version(root, pending=True)
         for source, destination in inventory["filePairs"]:
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, destination)
@@ -190,15 +192,17 @@ def run(data_root: Path, manifest_path: Path, *, apply: bool = False) -> dict[st
             except Exception:
                 connection.execute("ROLLBACK")
                 raise
-        old_revision, new_revision = advance_market_data_version(root)
+        settle_market_data_version(root, pending_revision)
         result.update(
             status="RESTORED", previousDataRevision=old_revision,
-            dataRevision=new_revision, restoredFiles=len(copied),
+            dataRevision=pending_revision, restoredFiles=len(copied),
         )
     except Exception as error:
         if not committed:
             for path in copied:
                 path.unlink(missing_ok=True)
+            if pending_revision is not None:
+                settle_market_data_version(root, pending_revision)
         result.update(
             status="RESTORED_VERSION_PENDING" if committed else "FAILED_RECOVERABLE",
             error=f"{type(error).__name__}: {error}",

@@ -19,6 +19,12 @@ function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char] || char));
 }
 
+function color(key: string): string {
+  let hash = 0;
+  for (const char of key) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
+  return `hsl(${hash % 360}, 65%, 52%)`;
+}
+
 function render(): void {
   if (!element.value) { chart?.dispose(); chart = undefined; return; }
   if (chart && chart.getDom() !== element.value) { chart.dispose(); chart = undefined; }
@@ -46,7 +52,7 @@ function render(): void {
       type: "pie", radius: ["32%", "70%"], center: ["50%", "43%"],
       avoidLabelOverlap: true, label: { show: false },
       emphasis: { label: { show: true, formatter: "{b}\n{d}%" } },
-      data: positiveSlices.value.map(item => ({ name: item.name, value: item.value, id: item.key })),
+      data: positiveSlices.value.map(item => ({ name: item.name, value: item.value, id: item.key, itemStyle: { color: color(item.key) } })),
     }],
   }, true);
 }

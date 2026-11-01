@@ -11,6 +11,8 @@ import math
 from dataclasses import asdict, dataclass
 from typing import Any, Callable, Mapping, Sequence
 
+from market_monitor.formula_engine import sum_daily_returns, up_days
+
 
 NumberSeries = Sequence[int | float | None]
 
@@ -595,6 +597,8 @@ STRATEGY_FUNCTION_IMPLEMENTATIONS: Mapping[str, Callable[..., Any]] = {
 VERSIONED_STRATEGY_FUNCTION_IMPLEMENTATIONS: Mapping[tuple[str, int], Callable[..., Any]] = {
     **{(function_id, 1): implementation for function_id, implementation in STRATEGY_FUNCTION_IMPLEMENTATIONS.items()},
     ("technical.atr", 2): atr,
+    ("up_days", 1): up_days,
+    ("sum_daily_returns", 1): sum_daily_returns,
 }
 
 

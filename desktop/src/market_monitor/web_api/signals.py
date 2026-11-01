@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from copy import deepcopy
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from threading import RLock
@@ -14,6 +15,8 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from market_monitor.market_classification import UNCLASSIFIED_CATEGORY, classify_market, matches_market_category
+from market_monitor.market_data_version import market_data_version
+from market_monitor.profile_gate import ProfileGateBusy, profile_read_gate, profile_write_gate
 from market_monitor.signal_monitor import advance_monitor, evaluate_signals, validate_signal_rule
 from market_monitor.strategy_backtest import StrategyBacktestError
 from market_monitor.strategy_definition import StrategyDefinitionError
@@ -40,6 +43,10 @@ def write(path: Path, value: Any) -> None:
 
 def directory(request: Request) -> Path:
     return Path(request.app.state.data_root) / 'strategies' / 'signals'
+
+
+def _profile_busy(error: ProfileGateBusy) -> HTTPException:
+    return HTTPException(status_code=503, detail=str(error), headers={'Retry-After': '2'})
 
 
 class DefinitionBody(BaseModel):
@@ -76,18 +83,21 @@ def save(request: Request, body: DefinitionBody, strategy_id: str | None = None)
         validate_signal_rule(document)
     except StrategyDefinitionError as error:
         raise HTTPException(422, detail=error.to_dict()) from error
-    with _lock:
-        path = directory(request) / 'definitions.json'
-        items = read(path, {})
-        if strategy_id and (strategy_id not in items or items[strategy_id].get('deleted')):
-            raise HTTPException(404, detail='策略不存在')
-        old = items.get(strategy_id, {})
-        if strategy_id and old['version'] != body.version:
-            raise HTTPException(409, detail='策略已被更新，请刷新后编辑')
-        identifier = strategy_id or f'signal_{uuid4().hex}'
-        document.update(id=identifier, version=old.get('version', 0) + 1)
-        items[identifier] = document
-        write(path, items)
+    try:
+        with profile_write_gate(Path(request.app.state.data_root)), _lock:
+            path = directory(request) / 'definitions.json'
+            items = read(path, {})
+            if strategy_id and (strategy_id not in items or items[strategy_id].get('deleted')):
+                raise HTTPException(404, detail='策略不存在')
+            old = items.get(strategy_id, {})
+            if strategy_id and old['version'] != body.version:
+                raise HTTPException(409, detail='策略已被更新，请刷新后编辑')
+            identifier = strategy_id or f'signal_{uuid4().hex}'
+            document.update(id=identifier, version=old.get('version', 0) + 1)
+            items[identifier] = document
+            write(path, items)
+    except ProfileGateBusy as error:
+        raise _profile_busy(error) from error
     return document
 
 
@@ -103,25 +113,31 @@ def update(strategy_id: str, request: Request, body: DefinitionBody) -> dict[str
 
 @router.delete('/definitions/{strategy_id}')
 def delete(strategy_id: str, request: Request) -> dict[str, Any]:
-    with _lock:
-        path = directory(request) / 'definitions.json'
-        items = read(path, {})
-        if strategy_id not in items:
-            raise HTTPException(404, detail='策略不存在')
-        items[strategy_id]['deleted'] = True
-        write(path, items)
+    try:
+        with profile_write_gate(Path(request.app.state.data_root)), _lock:
+            path = directory(request) / 'definitions.json'
+            items = read(path, {})
+            if strategy_id not in items:
+                raise HTTPException(404, detail='策略不存在')
+            items[strategy_id]['deleted'] = True
+            write(path, items)
+    except ProfileGateBusy as error:
+        raise _profile_busy(error) from error
     return {'deleted': True, 'recoverable': True}
 
 
 @router.post('/definitions/{strategy_id}/restore')
 def restore(strategy_id: str, request: Request) -> dict[str, Any]:
-    with _lock:
-        path = directory(request) / 'definitions.json'
-        items = read(path, {})
-        if strategy_id not in items:
-            raise HTTPException(404, detail='策略不存在')
-        items[strategy_id]['deleted'] = False
-        write(path, items)
+    try:
+        with profile_write_gate(Path(request.app.state.data_root)), _lock:
+            path = directory(request) / 'definitions.json'
+            items = read(path, {})
+            if strategy_id not in items:
+                raise HTTPException(404, detail='策略不存在')
+            items[strategy_id]['deleted'] = False
+            write(path, items)
+    except ProfileGateBusy as error:
+        raise _profile_busy(error) from error
     return items[strategy_id]
 
 
@@ -138,38 +154,60 @@ def monitor(request: Request) -> dict[str, Any]:
 @router.post('/scan')
 def scan(request: Request, body: ScanBody) -> dict[str, Any]:
     root = Path(request.app.state.data_root)
-    with _lock:
-        strategies = [item for item in read(directory(request) / 'definitions.json', {}).values() if item['enabled'] and not item.get('deleted')]
-        state = read(directory(request) / 'monitor.json', {})
-        logical = _logical_instruments(root)
-        monitored = {cycle['instrumentId'] for cycle in state.get('cycles', {}).values() if cycle['active']}
-        universe = sorted(identifier for identifier, item in logical.items() if classify_market(item) != UNCLASSIFIED_CATEGORY and (identifier in monitored or (not body.monitoringOnly and (not body.categoryKeys or any(matches_market_category(item, category) for category in body.categoryKeys)))))
-        remaining = [identifier for identifier in universe if not body.afterId or identifier > body.afterId]
-        batch = remaining[body.offset:body.offset + body.limit]
-        issues = []
-        for identifier in batch:
-            evaluated = []
-            windows: dict[str, list[dict[str, Any]]] = {}
-            for strategy in strategies:
-                if strategy['action'] == 'open' and (body.monitoringOnly or (body.strategyIds and strategy['id'] not in body.strategyIds)):
+    definitions_path = directory(request) / 'definitions.json'
+    monitor_path = directory(request) / 'monitor.json'
+    # Hold the shared gate only while taking a coherent input snapshot. The
+    # potentially slow K-line scan runs outside the profile backup gate.
+    try:
+        with profile_read_gate(root), _lock:
+            definitions_snapshot = read(definitions_path, {})
+            monitor_snapshot = read(monitor_path, {})
+    except ProfileGateBusy as error:
+        raise _profile_busy(error) from error
+    source_revision = market_data_version(root)
+    strategies = [item for item in definitions_snapshot.values() if item['enabled'] and not item.get('deleted')]
+    state = deepcopy(monitor_snapshot)
+    logical = _logical_instruments(root)
+    monitored = {cycle['instrumentId'] for cycle in state.get('cycles', {}).values() if cycle['active']}
+    universe = sorted(identifier for identifier, item in logical.items() if classify_market(item) != UNCLASSIFIED_CATEGORY and (identifier in monitored or (not body.monitoringOnly and (not body.categoryKeys or any(matches_market_category(item, category) for category in body.categoryKeys)))))
+    remaining = [identifier for identifier in universe if not body.afterId or identifier > body.afterId]
+    batch = remaining[body.offset:body.offset + body.limit]
+    issues = []
+    for identifier in batch:
+        evaluated = []
+        windows: dict[str, list[dict[str, Any]]] = {}
+        for strategy in strategies:
+            if strategy['action'] == 'open' and (body.monitoringOnly or (body.strategyIds and strategy['id'] not in body.strategyIds)):
+                continue
+            if strategy['action'] == 'open' and body.categoryKeys and not any(matches_market_category(logical[identifier], category) for category in body.categoryKeys):
+                continue
+            try:
+                if strategy['period'] not in windows:
+                    windows[strategy['period']] = _history_before(
+                        root, logical[identifier], strategy['period'], None, 500, include_bounds=False,
+                    )[0]
+                bars = windows[strategy['period']]
+                points = evaluate_signals(strategy, bars)
+                cursor = state.get('cursors', {}).get(f"{identifier}|{strategy['id']}@{strategy['version']}")
+                if cursor and len(points) == 500 and cursor < points[0]['at']:
+                    issues.append({'instrumentId': identifier, 'strategyId': strategy['id'], 'reason': '监控缺口超过当前 500 根窗口，需补充历史后继续，未跳过信号'})
                     continue
-                if strategy['action'] == 'open' and body.categoryKeys and not any(matches_market_category(logical[identifier], category) for category in body.categoryKeys):
-                    continue
-                try:
-                    if strategy['period'] not in windows:
-                        windows[strategy['period']] = _history_before(root, logical[identifier], strategy['period'], None, 500)[0]
-                    bars = windows[strategy['period']]
-                    points = evaluate_signals(strategy, bars)
-                    cursor = state.get('cursors', {}).get(f"{identifier}|{strategy['id']}@{strategy['version']}")
-                    if cursor and len(points) == 500 and cursor < points[0]['at']:
-                        issues.append({'instrumentId': identifier, 'strategyId': strategy['id'], 'reason': '监控缺口超过当前 500 根窗口，需补充历史后继续，未跳过信号'})
-                        continue
-                    if not points or points[-1]['matched'] is None:
-                        issues.append({'instrumentId': identifier, 'strategyId': strategy['id'], 'reason': '本地行情字段缺失或历史暖机不足'})
-                    evaluated.append((strategy, points))
-                except (StrategyBacktestError, ValueError, KeyError) as error:
-                    issues.append({'instrumentId': identifier, 'strategyId': strategy['id'], 'reason': str(error)})
-            advance_monitor(state, identifier, evaluated)
-        write(directory(request) / 'monitor.json', state)
-        has_more = body.offset + len(batch) < len(remaining)
-        return {**state_payload(request, state), 'scanned': len(batch), 'total': len(universe), 'nextOffset': body.offset + len(batch) if has_more else None, 'nextAfterId': batch[-1] if has_more else None, 'issues': issues[:100], 'issueCount': len(issues)}
+                if not points or points[-1]['matched'] is None:
+                    issues.append({'instrumentId': identifier, 'strategyId': strategy['id'], 'reason': '本地行情字段缺失或历史暖机不足'})
+                evaluated.append((strategy, points))
+            except (StrategyBacktestError, ValueError, KeyError) as error:
+                issues.append({'instrumentId': identifier, 'strategyId': strategy['id'], 'reason': str(error)})
+        advance_monitor(state, identifier, evaluated)
+    # A parallel edit or scan must not be overwritten by a result computed
+    # from old definitions/cursors. Commit only against the captured inputs.
+    try:
+        with profile_write_gate(root), _lock:
+            if (read(definitions_path, {}) != definitions_snapshot or
+                    read(monitor_path, {}) != monitor_snapshot or
+                    market_data_version(root) != source_revision):
+                raise HTTPException(409, detail='监控状态、策略或行情已更新，请重新扫描')
+            write(monitor_path, state)
+    except ProfileGateBusy as error:
+        raise _profile_busy(error) from error
+    has_more = body.offset + len(batch) < len(remaining)
+    return {**state_payload(request, state), 'scanned': len(batch), 'total': len(universe), 'nextOffset': body.offset + len(batch) if has_more else None, 'nextAfterId': batch[-1] if has_more else None, 'issues': issues[:100], 'issueCount': len(issues)}

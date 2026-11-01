@@ -20,7 +20,9 @@ import zipfile
 import requests
 
 from .futures_calendar import load_futures_trading_calendar
+from .atomic_files import replace_with_retry
 from .futures_official_daily_sources import (
+    PARSER_VERSION,
     official_daily_request,
     parse_official_daily,
 )
@@ -93,7 +95,7 @@ def _process_file_lock(path: Path) -> Iterator[None]:
 
 
 class HostRateLimiter:
-    """Persist global daily counts and enforce a serialized request rate."""
+    """Reserve globally spaced request starts without serializing HTTP responses."""
 
     def __init__(
         self,
@@ -112,99 +114,97 @@ class HostRateLimiter:
         self.now = now or (lambda: datetime.now(BEIJING))
         self.ledger = self._read()
         self._active_host: str | None = None
-        self._lock_context: Any = None
 
     def acquire(self, host: str) -> None:
-        if self._lock_context is not None:
+        if self._active_host is not None:
             raise RuntimeError("a host request lease is already active")
         self.path.parent.mkdir(parents=True, exist_ok=True)
         while True:
-            lock_context = _process_file_lock(self.path.with_suffix(".lock"))
-            lock_context.__enter__()
-            self.ledger = self._read()
-            today_now = self.now().astimezone(BEIJING)
-            today = today_now.date().isoformat()
-            bucket = self.ledger.setdefault(host, {"day": today, "count": 0, "lastRequestAt": None})
-            global_bucket = self.ledger.get(_GLOBAL_BUDGET_KEY)
-            if not isinstance(global_bucket, dict) or global_bucket.get("day") != today:
-                previous_host_counts = [
-                    item for name, item in self.ledger.items()
-                    if name != _GLOBAL_BUDGET_KEY and item.get("day") == today
-                ]
-                prior_timestamps: list[datetime] = []
-                for item in previous_host_counts:
-                    last_request = item.get("lastRequestAt")
-                    if isinstance(last_request, str):
-                        try:
-                            prior_timestamps.append(datetime.fromisoformat(last_request))
-                        except ValueError:
-                            pass
-                global_bucket = {
-                    "day": today,
-                    "count": sum(int(item.get("count") or 0) for item in previous_host_counts),
-                    "lastRequestAt": max(prior_timestamps).isoformat(timespec="microseconds") if prior_timestamps else None,
-                }
-                self.ledger[_GLOBAL_BUDGET_KEY] = global_bucket
-            paused_until = bucket.get("pausedUntil")
-            if isinstance(paused_until, str):
-                try:
-                    paused_time = datetime.fromisoformat(paused_until)
-                except ValueError:
-                    bucket.pop("pausedUntil", None)
-                else:
-                    if today_now < paused_time:
-                        lock_context.__exit__(None, None, None)
-                        raise RequestBudgetExhausted(f"{host} 根据 Retry-After 暂停至 {paused_until}")
-            if bucket.get("day") != today:
-                bucket.update({"day": today, "count": 0, "lastRequestAt": None})
-            count = int(bucket.get("count") or 0)
-            if count >= self.daily_budget:
-                lock_context.__exit__(None, None, None)
-                raise RequestBudgetExhausted(f"{host} 已达到每日请求上限 {self.daily_budget}")
-            global_count = int(global_bucket.get("count") or 0)
-            if global_count >= self.daily_budget:
-                lock_context.__exit__(None, None, None)
-                raise RequestBudgetExhausted(f"所有官网主机已达到每日总请求上限 {self.daily_budget}")
-            previous = global_bucket.get("lastRequestAt")
-            remaining = 0.0
-            if isinstance(previous, str) and self.min_interval_seconds:
-                try:
-                    elapsed = (today_now - datetime.fromisoformat(previous)).total_seconds()
-                except ValueError:
-                    elapsed = self.min_interval_seconds
-                remaining = self.min_interval_seconds - elapsed
-            if remaining > 0:
-                lock_context.__exit__(None, None, None)
-                self.sleep(remaining)
-                continue
-            bucket["count"] = count + 1
-            requested_at = today_now.isoformat(timespec="microseconds")
-            bucket["lastRequestAt"] = requested_at
-            global_bucket["count"] = global_count + 1
-            global_bucket["lastRequestAt"] = requested_at
-            self._write()
-            self._active_host = host
-            self._lock_context = lock_context
-            return
+            with _process_file_lock(self.path.with_suffix(".lock")):
+                self.ledger = self._read()
+                today_now = self.now().astimezone(BEIJING)
+                today = today_now.date().isoformat()
+                bucket = self.ledger.setdefault(host, {"day": today, "count": 0, "lastRequestAt": None})
+                global_bucket = self.ledger.get(_GLOBAL_BUDGET_KEY)
+                if not isinstance(global_bucket, dict) or global_bucket.get("day") != today:
+                    previous_host_counts = [
+                        item for name, item in self.ledger.items()
+                        if name != _GLOBAL_BUDGET_KEY and item.get("day") == today
+                    ]
+                    prior_timestamps: list[datetime] = []
+                    for item in previous_host_counts:
+                        last_request = item.get("lastRequestAt")
+                        if isinstance(last_request, str):
+                            try:
+                                prior_timestamps.append(datetime.fromisoformat(last_request))
+                            except ValueError:
+                                pass
+                    global_bucket = {
+                        "day": today,
+                        "count": sum(int(item.get("count") or 0) for item in previous_host_counts),
+                        "lastRequestAt": max(prior_timestamps).isoformat(timespec="microseconds") if prior_timestamps else None,
+                    }
+                    self.ledger[_GLOBAL_BUDGET_KEY] = global_bucket
+                paused_until = bucket.get("pausedUntil")
+                if isinstance(paused_until, str):
+                    try:
+                        paused_time = datetime.fromisoformat(paused_until)
+                    except ValueError:
+                        bucket.pop("pausedUntil", None)
+                    else:
+                        if today_now < paused_time:
+                            raise RequestBudgetExhausted(f"{host} 根据 Retry-After 暂停至 {paused_until}")
+                if bucket.get("day") != today:
+                    bucket.update({"day": today, "count": 0, "lastRequestAt": None})
+                count = int(bucket.get("count") or 0)
+                if count >= self.daily_budget:
+                    raise RequestBudgetExhausted(f"{host} 已达到每日请求上限 {self.daily_budget}")
+                global_count = int(global_bucket.get("count") or 0)
+                if global_count >= self.daily_budget:
+                    raise RequestBudgetExhausted(f"所有官网主机已达到每日总请求上限 {self.daily_budget}")
+                remaining = 0.0
+                for previous, interval in (
+                    (global_bucket.get("lastRequestAt"), MIN_REQUEST_INTERVAL_SECONDS),
+                    (bucket.get("lastRequestAt"), self.min_interval_seconds),
+                ):
+                    if not isinstance(previous, str):
+                        continue
+                    try:
+                        elapsed = (today_now - datetime.fromisoformat(previous)).total_seconds()
+                    except ValueError:
+                        continue
+                    remaining = max(remaining, interval - elapsed)
+                if remaining <= 0:
+                    bucket["count"] = count + 1
+                    requested_at = today_now.isoformat(timespec="microseconds")
+                    bucket["lastRequestAt"] = requested_at
+                    global_bucket["count"] = global_count + 1
+                    global_bucket["lastRequestAt"] = requested_at
+                    self._write()
+                    self._active_host = host
+                    return
+            self.sleep(remaining)
 
     def complete(self, host: str, *, retry_after_seconds: float = 0.0) -> None:
-        if self._lock_context is None or self._active_host != host:
+        if self._active_host != host:
             raise RuntimeError("no matching official host request lease is active")
         try:
-            bucket = self.ledger[host]
-            global_bucket = self.ledger[_GLOBAL_BUDGET_KEY]
-            now = self.now().astimezone(BEIJING)
-            completed_at = now.isoformat(timespec="microseconds")
-            bucket["lastRequestAt"] = completed_at
-            global_bucket["lastRequestAt"] = completed_at
             if retry_after_seconds > 0:
-                bucket["pausedUntil"] = (now + timedelta(seconds=retry_after_seconds)).isoformat(timespec="seconds")
-            self._write()
+                with _process_file_lock(self.path.with_suffix(".lock")):
+                    self.ledger = self._read()
+                    now = self.now().astimezone(BEIJING)
+                    bucket = self.ledger[host]
+                    paused_until = now + timedelta(seconds=retry_after_seconds)
+                    previous = bucket.get("pausedUntil")
+                    if isinstance(previous, str):
+                        try:
+                            paused_until = max(paused_until, datetime.fromisoformat(previous))
+                        except ValueError:
+                            pass
+                    bucket["pausedUntil"] = paused_until.isoformat(timespec="seconds")
+                    self._write()
         finally:
-            lock_context = self._lock_context
-            self._lock_context = None
             self._active_host = None
-            lock_context.__exit__(None, None, None)
 
     def defer(self, host: str, seconds: float) -> None:
         if seconds <= 0:
@@ -247,7 +247,7 @@ class HostRateLimiter:
                 handle.write("\n")
                 handle.flush()
                 os.fsync(handle.fileno())
-            os.replace(temporary, self.path)
+            replace_with_retry(temporary, self.path)
         finally:
             if temporary is not None and temporary.exists():
                 temporary.unlink()
@@ -293,12 +293,16 @@ class GovernedRequestsSession:
 
 
 def default_backfill_range(data_root: Path, *, today: date | None = None) -> tuple[str, str]:
-    """Return the last completed calendar date and the prior 365-day window."""
+    """Return the last completed trading date and the prior 365-day window."""
 
     calendar = load_futures_trading_calendar(Path(data_root))
     if calendar is None:
         raise ValueError("缺少期货交易日历；请先运行 futures-calendar-sync，不能用工作日猜交易日")
-    cutoff = (today or datetime.now(BEIJING).date()) - timedelta(days=1)
+    if today is not None:
+        cutoff = today - timedelta(days=1)
+    else:
+        now = datetime.now(BEIJING)
+        cutoff = now.date() if now.hour >= 16 else now.date() - timedelta(days=1)
     completed = [value for value in calendar.trading_days if date.fromisoformat(value) <= cutoff]
     if not completed:
         raise ValueError("期货交易日历中没有最近一个已完成交易日")
@@ -343,12 +347,49 @@ def _find_cffex_archive(data_root: Path, trading_day: str) -> tuple[bytes, Path,
                         payload = json.loads(manifest.read_text(encoding="utf-8"))
                         retrieved_at = str(payload.get("retrievedAt") or "")
                         datetime.fromisoformat(retrieved_at)
-                    except (OSError, ValueError, TypeError):
-                        retrieved_at = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat(timespec="seconds")
+                        expected_url = official_daily_request("CFFEX", trading_day)["url"]
+                        if payload.get("sourceUrl") != expected_url:
+                            continue
+                        if payload.get("payloadSha256") != hashlib.sha256(raw).hexdigest():
+                            continue
+                    except (OSError, ValueError, TypeError, KeyError):
+                        continue
                     return raw, path, retrieved_at
         except (OSError, zipfile.BadZipFile):
             continue
     return None
+
+
+def _daily_bronze_index(root: Path) -> dict[tuple[str, str], tuple[bytes, str]]:
+    result: dict[tuple[str, str], tuple[bytes, str]] = {}
+    for exchange in DEFAULT_EXCHANGES:
+        if exchange == "CFFEX":
+            continue
+        directory = root / "bronze" / f"official_futures_daily_{exchange.lower()}"
+        for path in directory.glob("*.json"):
+            try:
+                proof = json.loads(path.read_text(encoding="utf-8"))
+                day = str(proof["tradingDay"])
+                date.fromisoformat(day)
+                raw = base64.b64decode(proof["contentBase64"], validate=True)
+                if hashlib.sha256(raw).hexdigest() != proof["payloadSha256"]:
+                    continue
+                saved_url = urlparse(str(proof["sourceUrl"]))
+                expected_url = urlparse(str(official_daily_request(exchange, day)["url"]))
+                if (
+                    saved_url.scheme not in {"http", "https"}
+                    or (saved_url.netloc, saved_url.path, saved_url.query)
+                    != (expected_url.netloc, expected_url.path, expected_url.query)
+                ):
+                    continue
+                timestamp = str(proof["retrievedAt"])
+                datetime.fromisoformat(timestamp)
+                key = day, exchange
+                if key not in result or timestamp > result[key][1]:
+                    result[key] = raw, timestamp
+            except (KeyError, TypeError, ValueError, OSError):
+                continue
+    return result
 
 
 def _store_cffex_archive(
@@ -479,13 +520,28 @@ def run_official_futures_backfill(
     host_failed_paused: set[str] = set()
     outcomes: list[dict[str, Any]] = []
     cffex_archive_cache: dict[str, tuple[bytes, Path, str]] = {}
+    raw_cache = _daily_bronze_index(root)
     try:
         store.register_default_datasets()
         cached_status = {
-            (str(row[0]), str(row[1])): (str(row[2]), str(row[3] or ""), str(row[4] or ""))
+            (str(row[0]), str(row[1])): (str(row[2]), str(row[3] or ""), str(row[4] or ""), str(row[5] or ""))
             for row in store.connection.execute(
-                "SELECT trade_date, exchange, status, retrieved_at, error FROM futures_contract_daily_official_coverage "
+                "SELECT trade_date, exchange, status, retrieved_at, error, parser_version FROM futures_contract_daily_official_coverage "
                 "WHERE adapter LIKE '%-daily-v2'",
+            ).fetchall()
+        }
+        verified_fact_days = {
+            (str(row[0]), str(row[1]))
+            for row in store.connection.execute(
+                "SELECT f.trade_date, f.exchange FROM futures_contract_daily_official f "
+                "JOIN futures_contract_daily_official_coverage c ON c.trade_date=f.trade_date "
+                "AND c.exchange=f.exchange AND c.adapter=f.adapter "
+                "WHERE c.adapter LIKE '%-daily-v2' AND c.status='PASS' AND c.parser_version=? "
+                "GROUP BY f.trade_date, f.exchange, c.usable_count "
+                "HAVING COUNT(*) > 0 AND COUNT(*)=c.usable_count "
+                "AND COUNT(*) = COUNT(CASE WHEN f.parser_version=? "
+                "AND f.quality_status='PASS' THEN 1 END)",
+                [PARSER_VERSION, PARSER_VERSION],
             ).fetchall()
         }
 
@@ -494,7 +550,7 @@ def run_official_futures_backfill(
             return any(marker in text for marker in ("403", "412", "429", "text/html", "html", "verification", "校验", "验证页"))
 
         if not retry_failed:
-            for (day, exchange), (status, _, error) in cached_status.items():
+            for (day, exchange), (status, _, error, _version) in cached_status.items():
                 if status != "FAILED" or not blocked_failure(error) or exchange not in selected:
                     continue
                 host = urlparse(str(official_daily_request(exchange, day)["url"])).hostname or exchange.lower()
@@ -506,7 +562,23 @@ def run_official_futures_backfill(
                 return False
             previous_status = previous[0]
             if previous_status == "PASS":
-                return True
+                return previous[3] == PARSER_VERSION and (day, exchange) in verified_fact_days
+            available = raw_cache.get((day, exchange))
+            if available is None and exchange == "CFFEX":
+                archive = _find_cffex_archive(root, day)
+                if archive is not None:
+                    available = archive[0], archive[2]
+            if available is not None:
+                try:
+                    parse_official_daily(
+                        available[0], exchange=exchange, trading_day=day,
+                        source_url=str(official_daily_request(exchange, day)["url"]),
+                        retrieved_at=available[1],
+                    )
+                except ValueError:
+                    pass
+                else:
+                    return False
             return previous_status in {"FAILED", "NO_PUBLICATION", "UNSUPPORTED"} and not retry_failed
 
         eligible_days = [
@@ -523,14 +595,44 @@ def run_official_futures_backfill(
                     continue
                 request_spec = official_daily_request(exchange, day)
                 host = urlparse(str(request_spec["url"])).hostname or exchange.lower()
-                if host in host_paused:
+                cached_raw = raw_cache.get((day, exchange))
+                if cached_raw is not None:
+                    try:
+                        parse_official_daily(
+                            cached_raw[0], exchange=exchange, trading_day=day,
+                            source_url=str(request_spec["url"]), retrieved_at=cached_raw[1],
+                        )
+                    except ValueError:
+                        # Keep the original audit file but allow this source-day
+                        # to recover from a wrong date or obsolete raw format.
+                        raw_cache.pop((day, exchange), None)
+                        cached_raw = None
+                cffex_month = day.replace("-", "")[:6]
+                cached_archive = (
+                    cffex_archive_cache.get(cffex_month) or _find_cffex_archive(root, day)
+                    if exchange == "CFFEX" else None
+                )
+                if cached_archive is not None:
+                    try:
+                        with zipfile.ZipFile(BytesIO(cached_archive[0])) as archive:
+                            if f"{day.replace('-', '')}_1.csv" not in archive.namelist():
+                                cached_archive = _find_cffex_archive(root, day)
+                        if cached_archive is not None:
+                            parse_official_daily(
+                                cached_archive[0], exchange=exchange, trading_day=day,
+                                source_url=str(request_spec["url"]), retrieved_at=cached_archive[2],
+                            )
+                    except (ValueError, zipfile.BadZipFile):
+                        cffex_archive_cache.pop(cffex_month, None)
+                        cached_archive = None
+                if host in host_paused and cached_raw is None and cached_archive is None:
                     reason = f"{host} 本轮已暂停，等待后续续跑"
                     pause_status = "FAILED" if host in host_failed_paused else "DEFERRED"
                     _persist_deferred_daily(
                         store, trading_day=day, exchange=exchange,
                         request_spec=request_spec, reason=reason, status=pause_status,
                     )
-                    cached_status[(day, exchange)] = (pause_status, datetime.now(BEIJING).isoformat(), reason)
+                    cached_status[(day, exchange)] = (pause_status, datetime.now(BEIJING).isoformat(), reason, "")
                     outcomes.append({"exchange": exchange, "tradingDay": day, "status": pause_status, "error": reason})
                     continue
                 run_id = store.begin_run(f"OFFICIAL_FUTURES_DAILY_{exchange}")
@@ -544,11 +646,12 @@ def run_official_futures_backfill(
                 archive_reused = False
                 try:
                     source_url = str(request_spec["url"])
-                    cached_archive = None
-                    cffex_month = day.replace("-", "")[:6]
-                    if exchange == "CFFEX":
-                        cached_archive = cffex_archive_cache.get(cffex_month) or _find_cffex_archive(root, day)
-                    if cached_archive is not None:
+                    if cached_raw is not None:
+                        raw, retrieved_at = cached_raw
+                        archive_reused = True
+                        response_status = 200
+                        content_type = "application/json" if exchange != "CZCE" else "text/plain"
+                    elif cached_archive is not None:
                         raw, archive_path, retrieved_at = cached_archive
                         cffex_archive_cache[cffex_month] = (raw, archive_path, retrieved_at)
                         archive_reused = True
@@ -561,17 +664,22 @@ def run_official_futures_backfill(
                             try:
                                 response = http.request(
                                     str(request_spec["method"]), str(request_spec["url"]),
-                                    data=request_spec.get("data"), json=request_spec.get("json"), timeout=30,
+                                    data=request_spec.get("data"), json=request_spec.get("json"),
+                                    headers=request_spec.get("headers"), timeout=30,
                                 )
-                                if int(response.status_code) == 429:
+                                if int(response.status_code) in {429, 567}:
                                     retry_after = _retry_after_seconds(response.headers.get("Retry-After"))
+                                    if int(response.status_code) == 567:
+                                        retry_after = max(retry_after, 60.0)
                             finally:
                                 limiter.complete(host, retry_after_seconds=retry_after)
                             retrieved_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
-                            if not (500 <= int(response.status_code) < 600 and request_attempt == 0):
+                            if int(response.status_code) == 567 or not (
+                                500 <= int(response.status_code) < 600 and request_attempt == 0
+                            ):
                                 break
                         response_status = int(response.status_code)
-                        if response_status in {403, 412, 429}:
+                        if response_status in {403, 412, 429, 567}:
                             host_paused.add(host)
                             if response_status in {403, 412}:
                                 host_failed_paused.add(host)
@@ -587,7 +695,7 @@ def run_official_futures_backfill(
                     if exchange == "CFFEX" and not archive_reused:
                         archive_path = _store_cffex_archive(root, cffex_month, raw, source_url, retrieved_at, digest)
                         cffex_archive_cache[cffex_month] = (raw, archive_path, retrieved_at)
-                    if raw:
+                    if raw and not archive_reused:
                         archived_response: dict[str, Any] = {
                                 "publisher": exchange, "sourceUrl": source_url,
                                 "adapter": f"official-{exchange.lower()}-daily-v2",
@@ -614,19 +722,21 @@ def run_official_futures_backfill(
                 except Exception as failure:
                     error = f"{type(failure).__name__}: {failure}"[:500]
                     if isinstance(failure, requests.HTTPError) and response_status == 404:
-                        status = "NO_PUBLICATION"
+                        error = "MISSING_REPORT: HTTP 404 on a verified trading day"
                     elif isinstance(failure, HostPaused):
+                        host_paused.add(host)
                         status = "PAUSED_HOST"
                     # Challenge bodies are intentionally neither archived nor parsed.
                 coverage = {
                     "trade_date": day, "exchange": exchange,
                     "status": "DEFERRED" if status in {"PAUSED_RATE_LIMIT", "PAUSED_HOST"} and response_status is None
-                    else "DEFERRED" if status == "PAUSED_HOST" and response_status == 429
+                    else "DEFERRED" if status == "PAUSED_HOST" and response_status in {429, 567}
                     else "FAILED" if status == "PAUSED_HOST" else status,
                     "record_count": len(rows), "usable_count": len(rows),
                     "adapter": f"official-{exchange.lower()}-daily-v2",
                     "source_url": str(request_spec["url"]), "payload_sha256": digest,
                     "error": error, "retrieved_at": retrieved_at,
+                    "parser_version": PARSER_VERSION if status == "PASS" else None,
                 }
                 store.record_futures_official_daily(rows, coverage)
                 store.finish_run(
@@ -634,7 +744,9 @@ def run_official_futures_backfill(
                     "PASS" if status == "PASS" else "DEFERRED" if coverage["status"] == "DEFERRED" else "PARTIAL_FAILURE",
                     error,
                 )
-                cached_status[(day, exchange)] = (str(coverage["status"]), retrieved_at, str(error or ""))
+                cached_status[(day, exchange)] = (str(coverage["status"]), retrieved_at, str(error or ""), str(coverage.get("parser_version") or ""))
+                if status == "PASS":
+                    verified_fact_days.add((day, exchange))
                 outcomes.append({
                     "exchange": exchange, "tradingDay": day, "status": status,
                     "recordCount": len(rows), "httpStatus": response_status, "error": error,

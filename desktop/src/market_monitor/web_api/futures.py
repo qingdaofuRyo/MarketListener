@@ -37,8 +37,13 @@ from market_monitor.futures_official_structure import (
     OFFICIAL_PRODUCT_OI_FORMULA_VERSION,
     OFFICIAL_PRODUCT_VOLUME_FORMULA_VERSION,
 )
+from market_monitor.futures_distribution_bubbles import market_distributions
+from market_monitor.futures_contract_info import read_official_contract_info
+from market_monitor.futures_ranking_series import ranking_directory, ranking_series
+from market_monitor.futures_weekly_heat_gold import read_weekly_heat_gold
 from market_monitor.futures_rule_sync import RuleBook, load_rule_book
 from market_monitor.futures_member_positions import ALL_EXCHANGES, COMMODITY_EXCHANGES
+from market_monitor.futures_member_rank_source import select_member_position_source_rows
 from market_monitor.storage import MarketStore
 
 from .common import read_bars
@@ -46,6 +51,102 @@ from .market import _logical_instruments
 
 
 router = APIRouter(prefix="/api/futures", tags=["futures"])
+
+
+@router.get("/contract-info")
+def futures_contract_info(request: Request) -> dict[str, Any]:
+    """Read audited exchange product terms and separately evidenced listing dates."""
+
+    return read_official_contract_info(Path(request.app.state.data_root))
+
+
+@router.get("/settlement-parameters")
+def futures_settlement_parameters(
+    request: Request, trade_date: date, exchange: str | None = None,
+    contract_code: str | None = None,
+) -> dict[str, Any]:
+    """Read source-isolated speculative margin observations for one trading day."""
+    from market_monitor.futures_settlement_parameters import read_settlement_parameters
+
+    if exchange is not None and exchange not in {"SHFE", "INE", "DCE", "CZCE", "GFEX", "CFFEX"}:
+        raise HTTPException(status_code=422, detail="invalid exchange")
+    if contract_code is not None and not re.fullmatch(r"[A-Z]{1,3}(?:-F)?\d{3,4}", contract_code):
+        raise HTTPException(status_code=422, detail="invalid contract_code")
+    try:
+        return read_settlement_parameters(
+            Path(request.app.state.data_root), trade_date.isoformat(),
+            exchange=exchange, contract_code=contract_code,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@router.get("/market-distributions")
+def futures_market_distributions(
+    request: Request, metric: str = "open_interest", range: str = "1y",
+    window: int = 20, end_day: str | None = None, snapshot_only: bool = False,
+) -> dict[str, Any]:
+    """Return source-gated official product-day distribution matrices."""
+
+    try:
+        return market_distributions(
+            Path(request.app.state.data_root), metric=metric,
+            range_name=range, window=window, end_day=end_day,
+            snapshot_only=snapshot_only,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@router.get("/weekly-heat")
+def futures_weekly_heat(
+    request: Request, range: str = "1y", product_key: str | None = None,
+    end_day: str | None = None,
+) -> dict[str, Any]:
+    """Serve completed-week v4 Gold; archived daily formulas stay separate."""
+
+    if range not in {"1y", "3y", "5y", "all"}:
+        raise HTTPException(status_code=422, detail="range must be 1y, 3y, 5y or all")
+    end = _optional_day(end_day, "end_day")
+    try:
+        payload = read_weekly_heat_gold(Path(request.app.state.data_root), product_key=product_key)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    points = payload["points"]
+    if not points:
+        return payload
+    latest = str(points[-1]["tradeDate"])
+    cutoff = min(end.isoformat(), latest) if end else latest
+    start = (
+        (date.fromisoformat(cutoff) - timedelta(days=365 * {"1y": 1, "3y": 3, "5y": 5}[range])).isoformat()
+        if range != "all" else "2023-01-01"
+    )
+    selected = [point for point in points if start <= point["tradeDate"] <= cutoff]
+    return {**payload, "available": any(point.get("totalScore") is not None for point in selected),
+            "points": selected, "latest": selected[-1] if selected else None,
+            "range": range}
+
+
+@router.get("/ranking-directory")
+def futures_ranking_directory(request: Request, snapshot_only: bool = False) -> dict[str, Any]:
+    return ranking_directory(Path(request.app.state.data_root), snapshot_only=snapshot_only)
+
+
+@router.get("/ranking-series")
+def futures_ranking_series(
+    request: Request, view: str = "members", range: str = "1y",
+    member_key: str | None = None, product_key: str | None = None,
+    contract_code: str | None = None, start_day: str | None = None, end_day: str | None = None,
+    snapshot_only: bool = False,
+) -> dict[str, Any]:
+    try:
+        return ranking_series(
+            Path(request.app.state.data_root), view=view, range_name=range,
+            member_key=member_key, product_key=product_key, contract_code=contract_code,
+            start_day=start_day, end_day=end_day, snapshot_only=snapshot_only,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
 _STRUCTURE_CHARTS = frozenset({PRODUCT_OPEN_INTEREST_CHART_ID, PRODUCT_NOTIONAL_CHART_ID, PRODUCT_VOLUME_CHART_ID, "member-notional", MEMBER_OPEN_INTEREST_CHART_ID})
 _MEMBER_STRUCTURE_DIRECTIONS = frozenset({"long", "short", STRUCTURE_DIRECTION_GROSS, "net-long", "net-short"})
 _CONTRACT_SERIES_KINDS = frozenset({"CONTRACT", "WEIGHTED"})
@@ -151,7 +252,7 @@ def futures_contract_heat(
         "points": points,
         "latest": latest,
         "generatedAt": rows[-1]["calculated_at"] if rows else None,
-        "source": "CN_FUTURE_SILVER+EXCHANGE_OFFICIAL_DAILY",
+        "source": "EXCHANGE_OFFICIAL_DAILY",
         "formulaVersion": CONTRACT_HEAT_FORMULA_VERSION,
         "limitations": limitations,
     }
@@ -197,6 +298,13 @@ def futures_official_daily(
             "openInterestSidedness": row["open_interest_sidedness"],
             "turnoverQualityStatus": row["turnover_quality_status"],
             "parserVersion": row["parser_version"],
+            "payloadSha256": row["payload_sha256"],
+            "sourceContractCode": row.get("source_contract_code"),
+            "sourceProductName": row.get("source_product_name"), "deliveryMonth": row.get("delivery_month"),
+            "previousSettlement": row.get("previous_settlement"),
+            "open": row.get("open"), "high": row.get("high"), "low": row.get("low"),
+            "changeClose": row.get("change_close"), "changeSettlement": row.get("change_settlement"),
+            "openInterestChange": row.get("open_interest_change"),
             "sourceUrl": row["source_url"], "adapter": row["adapter"],
             "retrievedAt": row["retrieved_at"], "qualityStatus": row["quality_status"],
         }
@@ -596,7 +704,7 @@ def futures_member_position_overview(
         ) if latest_observation_day else []
     finally:
         store.close()
-    ranks = _unique_published_ranks(ranks)
+    ranks = _unique_published_ranks(select_member_position_source_rows(ranks, coverage_rows))
     product_values: dict[str, float] = defaultdict(float)
     member_values: dict[str, float] = defaultdict(float)
     member_names: dict[str, str] = {}
@@ -709,7 +817,7 @@ def futures_member_position_history(
     finally:
         store.close()
     by_day: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
-    for row in _unique_published_ranks(ranks):
+    for row in _unique_published_ranks(select_member_position_source_rows(ranks, coverage)):
         by_day[str(row["trading_day"])].append(row)
     source_status: dict[str, str] = {}
     source_status_by_exchange: dict[str, dict[str, str]] = defaultdict(dict)
@@ -846,7 +954,7 @@ def futures_member_positions(
     finally:
         store.close()
     return _member_position_payload(
-        ranks,
+        _unique_published_ranks(select_member_position_source_rows(ranks, coverage_records)),
         trading_day=effective_day,
         latest_published_day=latest_published_day,
         exchange=selected_exchange,
@@ -975,6 +1083,23 @@ def _structure_payload(
         if level == "other" else main_series
     )
     chart_metadata = _structure_metadata(str(baseline["chart_id"]))
+    # Area membership remains fixed. Absolute-value lines may show every
+    # observed product, including baseline 'other' and post-baseline products.
+    line_members = [*primary, *other, *unclassified] if is_ranked_product else []
+    line_series = [
+        _member_series(member, dates, by_day, incomplete_days, keep_partial_lines=keep_partial_lines)
+        for member in line_members
+    ]
+    if keep_partial_lines:
+        for item in [*series, *line_series]:
+            affected_keys = (
+                {str(member["memberKey"]) for member in other}
+                if item["memberKey"] == "OTHER" else {item["memberKey"]}
+            )
+            item["lineValues"] = [
+                None if affected_keys.intersection(coverage[index].get("missingProductKeys", [])) else value
+                for index, value in enumerate(item["lineValues"])
+            ]
     return {
         "available": bool(dates),
         "chartId": baseline["chart_id"],
@@ -992,6 +1117,7 @@ def _structure_payload(
         "unclassifiedMembers": unclassified,
         "dates": dates,
         "series": series,
+        "lineSeries": line_series if is_ranked_product else series,
         "totals": totals,
         "unclassifiedTotals": unclassified_totals,
         "coverage": coverage,
@@ -1032,6 +1158,7 @@ def _official_input_coverage_payload(row: Mapping[str, Any] | None) -> dict[str,
         "unverifiedVolumeCount": int(row.get("unverified_volume_count") or 0),
         "unverifiedOpenInterestCount": int(row.get("unverified_open_interest_count") or 0),
         "missingProducts": [_product_display_name(key) for key in product_keys],
+        "missingProductKeys": product_keys,
         "missingContracts": contract_keys,
     }
 
@@ -1119,6 +1246,7 @@ def _unavailable_structure(chart_id: str, direction: str, limitation: str) -> di
         "unclassifiedMembers": [],
         "dates": [],
         "series": [],
+        "lineSeries": [],
         "totals": [],
         "unclassifiedTotals": [],
         "coverage": [],
@@ -1371,7 +1499,7 @@ def _member_position_coverage_payload(
             effective_records = direct_records or records
             statuses = {str(item.get("status") or "").upper() for item in effective_records}
             if "PASS" in statuses:
-                status = "PARTIAL" if statuses & {"PARTIAL", "FAILED", "UNSUPPORTED"} else "PASS"
+                status = "PASS"
             elif statuses and statuses <= {"NO_PUBLICATION"}:
                 status = "NO_PUBLICATION"
             elif statuses == {"UNSUPPORTED"}:
@@ -1630,7 +1758,7 @@ def _optional_contract_code(value: str | None, field: str) -> str | None:
     if value is None:
         return None
     code = value.strip().upper()
-    if not re.fullmatch(r"[A-Z]+[0-9]*", code):
+    if not re.fullmatch(r"[A-Z]+(?:-F)?[0-9]*", code):
         raise HTTPException(status_code=422, detail=f"{field} must contain only an uppercase product code and digits")
     return code
 

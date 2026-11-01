@@ -11,7 +11,7 @@ import {
 import type { IndicatorInstance, VolumeProfile } from "../../domain/strategyTypes";
 import { useThemeStore } from "../../stores/theme";
 import { heikinAshi, type ChartType } from "../../domain/chartPresentation";
-import { CHART_LAYOUT, CHART_BARS, chartAxisGutter, chartAxisScale } from "../../domain/chartLayout";
+import { CHART_LAYOUT, CHART_BARS, chartAxisGutter, chartAxisScale, remapBarRange } from "../../domain/chartLayout";
 import { REPLAY_EMPTY_SLOTS, type ChartRange } from "../../domain/chartReplay";
 import { formatAxisDate, formatCrosshairTime } from "../../domain/chartTime";
 import { resolveSecondaryMetric, subchartSeries, type MeasureEvidence } from "../../domain/chartSubchart";
@@ -19,6 +19,7 @@ import LaserCanvas from "./LaserCanvas.vue";
 import QuoteValues from "./QuoteValues.vue";
 
 export interface KLineBar {
+  timeBasisWarning?: string;
   barOpenTime?: string;
   tradingDate?: string;
   open?: number;
@@ -35,6 +36,19 @@ export interface KLineBar {
   amplitude?: number;
   capitalDeposit?: number;
   capitalDepositReason?: string;
+  notionalValue?: number;
+  officialMetricsDate?: string;
+  underlyingContractCode?: string;
+  mappingAsOfDate?: string;
+  mappingStatus?: string;
+  specMarginRateLong?: number;
+  specMarginRateShort?: number;
+  marginRateUsed?: number;
+  capitalDepositLong?: number;
+  capitalDepositShort?: number;
+  capitalDepositBasis?: string;
+  marginSourceKind?: string;
+  marginSourceUrl?: string | string[];
 }
 export type DrawingTool =
   | "cursor"
@@ -150,6 +164,8 @@ const props = withDefaults(
     magnet?: boolean;
     defaultVisible?: number;
     compact?: boolean;
+    marketBoard?: boolean;
+    hasMoreHistory?: boolean;
     selectedDrawingId?: string;
     showQuotePanel?: boolean;
     totalMarketCap?: number;
@@ -182,6 +198,8 @@ const props = withDefaults(
     magnet: false,
     defaultVisible: 60,
     compact: false,
+    marketBoard: false,
+    hasMoreHistory: false,
     selectedDrawingId: "",
     showQuotePanel: false,
     totalMarketCap: undefined,
@@ -214,6 +232,7 @@ const overlayElement = ref<HTMLElement>();
 const quoteElement = ref<HTMLElement>();
 const overlayHeight = ref(60);
 const priceTop = computed(() => Math.max(props.hideQuote ? 16 : 42, overlayHeight.value + CHART_LAYOUT.overlayGap));
+const hasTdxTimeWarning = computed(() => props.bars.some(bar => bar.timeBasisWarning === "TDX_CN_STOCK_5M_TIME_UNVERIFIED"));
 const axisGutter = ref(48);
 const rightAxisGutter = ref(48);
 const replayPreview = ref<{ x: number; label: string }>();
@@ -254,6 +273,8 @@ let requestedEarlierInGesture = false;
 let rangeRenderTimer: ReturnType<typeof setTimeout> | undefined;
 let requestedEarlierForLength = -1;
 let pendingEarlierShift = 0;
+let pendingBoardExpansion = 0;
+let barsPeriod = props.period;
 let resizeObserver: ResizeObserver | undefined;
 let hoverFrame: number | undefined;
 let pendingHoverIndex = -1;
@@ -356,8 +377,20 @@ function priceBounds(): { min: number; max: number; span: number } {
     Math.max(0, range.value.start),
     Math.min(props.bars.length, range.value.end + 1),
   );
-  const values = windowBars
-    .flatMap((bar) => [asNumber(bar.high), asNumber(bar.low)])
+  const visibleStart = Math.max(0, range.value.start);
+  const visibleEnd = Math.min(props.bars.length, range.value.end + 1);
+  const legacyOverlay = ["ma", "hsarResistance", "hsarSupport", "bollingerUpper", "bollingerMiddle",
+    "bollingerLower", "atrUpper", "atrMiddle", "atrLower", "sd"]
+    .flatMap((key) => (props.indicators[key] || []).slice(visibleStart, visibleEnd));
+  const dynamicOverlay = props.indicatorInstances
+    .filter((item) => item.visible && item.status === "ready" && item.placement === "overlay")
+    .flatMap((item) => {
+      const plots = item.plots ?? Object.keys(item.series || {}).map((id) => ({ id, type: "line" as const }));
+      return plots.flatMap((plot) => (item.series?.[plot.id] || []).slice(visibleStart, visibleEnd));
+    });
+  const values = [...windowBars.flatMap((bar) => [bar.high, bar.low, bar.open, bar.close]),
+    ...legacyOverlay, ...dynamicOverlay]
+    .map(asNumber)
     .filter((value): value is number => value != null);
   const rawMin = values.length ? Math.min(...values) : 0;
   const rawMax = values.length ? Math.max(...values) : 1;
@@ -365,7 +398,7 @@ function priceBounds(): { min: number; max: number; span: number } {
     Math.abs(rawMax - rawMin),
     Math.abs(rawMax || 1) * 0.01,
   );
-  const padding = props.compact ? 0.08 : 0.18;
+  const padding = props.marketBoard ? 0.06 : props.compact ? 0.08 : 0.18;
   return { min: rawMin - span * padding, max: rawMax + span * padding, span };
 }
 function lineDash(value?: DrawingLineStyle): number[] | undefined {
@@ -1580,7 +1613,7 @@ function chartLayout(): {
   );
   const priceHeight = paneCount
     ? Math.max(130, Math.floor(available * 0.5))
-    : Math.floor(available * (compact ? 0.62 : 0.64));
+    : Math.floor(available * (props.marketBoard ? 0.74 : compact ? 0.62 : 0.64));
   const secondaryHeight = Math.max(
     42,
     Math.floor((available - priceHeight) / secondaryCount),
@@ -2455,6 +2488,29 @@ function wheelZoom(event: unknown): void {
   payload.event?.preventDefault?.();
   payload.event?.stopPropagation?.();
 }
+function zoomBoard(direction: "in" | "out"): void {
+  if (!chart || props.bars.length < 2) return;
+  const current = Math.max(1, range.value.end - range.value.start + 1);
+  const minimum = Math.min(8, props.bars.length);
+  const desired = Math.max(minimum, Math.round(current * (direction === "in" ? 0.82 : 1.22)));
+  if (direction === "out" && desired > props.bars.length && props.hasMoreHistory
+      && !props.loadingEarlier && requestedEarlierForLength !== props.bars.length) {
+    pendingBoardExpansion = desired - current;
+    requestedEarlierForLength = props.bars.length;
+    emit("requestEarlier");
+    return;
+  }
+  const target = Math.min(desired, props.bars.length);
+  const end = Math.min(props.bars.length - 1, range.value.end);
+  const start = Math.max(0, end - target + 1);
+  chart.dispatchAction({ type: "dataZoom", startValue: start, endValue: end });
+}
+function resetBoardView(): void {
+  if (!chart || !props.bars.length) return;
+  pendingBoardExpansion = 0;
+  const initial = initialRange();
+  chart.dispatchAction({ type: "dataZoom", startValue: initial.start, endValue: initial.end });
+}
 function installHandlers(): void {
   if (!chart) return;
   chart.off("updateAxisPointer");
@@ -2525,11 +2581,13 @@ watch(
 watch(
   () => props.bars,
   (next, previous) => {
+    const samePeriod = barsPeriod === props.period;
+    barsPeriod = props.period;
     const previousFirst =
       previous?.[0] &&
       String(previous[0].barOpenTime || previous[0].tradingDate || "");
     const prepended =
-      previousFirst && next.length > previous.length
+      previousFirst && (!props.marketBoard || samePeriod) && next.length > previous.length
         ? next.findIndex(
             (bar) =>
               String(bar.barOpenTime || bar.tradingDate || "") ===
@@ -2537,13 +2595,24 @@ watch(
           )
         : -1;
     if (prepended > 0) {
-      const reveal = Math.min(prepended, pendingEarlierShift);
-      range.value = {
-        start: Math.max(0, range.value.start + prepended - reveal),
-        end: Math.max(0, range.value.end + prepended - reveal),
-      };
+      if (props.marketBoard && pendingBoardExpansion > 0) {
+        const end = Math.min(next.length - 1, range.value.end + prepended);
+        const visible = Math.min(next.length, range.value.end - range.value.start + 1 + pendingBoardExpansion);
+        range.value = { start: Math.max(0, end - visible + 1), end };
+      } else {
+        const reveal = Math.min(prepended, pendingEarlierShift);
+        range.value = {
+          start: Math.max(0, range.value.start + prepended - reveal),
+          end: Math.max(0, range.value.end + prepended - reveal),
+        };
+      }
       pendingEarlierShift = 0;
-    } else if (!props.replayMode) range.value = props.viewRequest ? { ...props.viewRequest } : initialRange();
+      pendingBoardExpansion = 0;
+    } else if (!props.replayMode) {
+      pendingBoardExpansion = 0;
+      const mapped = props.marketBoard && samePeriod && previous ? remapBarRange(next, previous, range.value) : null;
+      range.value = mapped ?? (props.viewRequest ? { ...props.viewRequest } : initialRange());
+    }
     void nextTick(() =>
       emit("visibleRange", range.value.start, range.value.end),
     );
@@ -2554,8 +2623,14 @@ watch(() => props.viewRequest, value => {
   if (value) range.value = { ...value };
   void nextTick(render);
 });
+watch(() => props.loadingEarlier, (loading, previous) => {
+  if (previous && !loading && pendingBoardExpansion > 0) {
+    pendingBoardExpansion = 0;
+    requestedEarlierForLength = -1;
+  }
+});
 watch(() => props.replayPick, () => { replayPreview.value = undefined; });
-defineExpose({ getRange: () => ({ ...range.value }) });
+defineExpose({ getRange: () => ({ ...range.value }), zoomBoard, resetBoardView });
 watch(
   () => props.height,
   (height) => {
@@ -2640,7 +2715,7 @@ function scrollQuotes(event: WheelEvent): void {
       <div class="chart-overlay-controls"><slot name="overlay" /></div>
       <div v-if="!hideQuote && hoverBar" ref="quoteElement" class="quote-panel" role="region" aria-label="行情字段（Shift加滚轮横向浏览）" tabindex="0"
         @keydown.left.prevent="quoteElement && (quoteElement.scrollLeft -= 104)" @keydown.right.prevent="quoteElement && (quoteElement.scrollLeft += 104)">
-        <QuoteValues :bar="hoverBar" :latest-bar="bars.at(-1)" :total-market-cap="totalMarketCap" :float-market-cap="floatMarketCap" :swap-colors="swapColors" />
+        <QuoteValues :bar="hoverBar" :latest-bar="bars.at(-1)" :total-market-cap="totalMarketCap" :float-market-cap="floatMarketCap" :swap-colors="swapColors" :future-units="futureUnits" :period="period" />
       </div>
       <div class="chart-overlay-actions"><slot name="actions" /></div>
     </div>
@@ -2685,6 +2760,7 @@ function scrollQuotes(event: WheelEvent): void {
     <div v-if="loadingEarlier" class="history-loading">
       正在加载更早的 K 线…
     </div>
+    <div v-if="hasTdxTimeWarning" class="time-basis-warning" role="status" data-test="tdx-time-basis-warning">本地 5 分钟线时间口径待核，衍生周期可能偏移</div>
     <div v-if="bars.length === 0" class="chart-empty">暂无 K 线数据</div>
   </div>
 </template>
@@ -2696,6 +2772,7 @@ function scrollQuotes(event: WheelEvent): void {
   min-width: 0;
   user-select: none;
 }
+.time-basis-warning { position: absolute; z-index: 25; top: 4px; right: 8px; padding: 3px 8px; border-radius: 4px; background: var(--ml-surface, #20242a); color: #d99821; font-size: 12px; pointer-events: none; }
 .kline-chart.fill { height: 100%; }
 .replay-preview{position:absolute;bottom:28px;z-index:16;border-left:1px solid var(--ml-accent);background:color-mix(in srgb,var(--ml-background) 65%,transparent);pointer-events:none}
 .replay-preview span{position:absolute;bottom:0;left:0;transform:translateX(-50%);background:var(--ml-accent);color:var(--ml-surface);white-space:nowrap;padding:3px 6px;font-size:11px}

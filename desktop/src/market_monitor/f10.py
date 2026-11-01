@@ -14,15 +14,20 @@ Windows 系统代理（127.0.0.1:7897）下 Python 的 HTTPS 挂起问题；
 from __future__ import annotations
 
 import json
+import logging
+import math
 import os
 import subprocess
 import sys
 import time
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 from threading import Lock
+from functools import wraps
+from typing import Callable
+from uuid import uuid4
 
 from .industry_graph.f10.market_caps import derive_market_caps
 from .industry_graph.f10.segments import largest_revenue_segment, migrate_revenue_rows
@@ -33,8 +38,12 @@ _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 _REFERER = "https://emweb.securities.eastmoney.com/"
 _RATE_LOCK = Lock()
 _LAST_F10_REQUEST_AT = 0.0
+_HELD_MARKET_LOCKS: dict[tuple[str, str], tuple[int, Any]] = {}
+_MARKET_LOCK_GUARD = Lock()
 # 用户批准的提速档位：默认约 4 次请求/秒；可用环境变量覆盖。
 _THROTTLE_SECONDS = float(os.environ.get("MARKET_MONITOR_F10_RATE_SECONDS", "0.25"))
+_MIN_A_SHARE_UNIVERSE = 3000
+_LOGGER = logging.getLogger(__name__)
 
 
 def _now() -> str:
@@ -51,6 +60,25 @@ def _acquire_market_lock(data_root: Path, market: str) -> bool:
     lock_dir = Path(data_root) / "f10" / market.lower()
     lock_dir.mkdir(parents=True, exist_ok=True)
     lock_file = lock_dir / "fetch.lock"
+    key = (str(Path(data_root).resolve()), market.upper())
+    import threading
+
+    guard = (lock_dir / "fetch.guard.lock").open("a+b")
+    try:
+        guard.seek(0, os.SEEK_END)
+        if guard.tell() == 0:
+            guard.write(b"0")
+            guard.flush()
+        guard.seek(0)
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(guard.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(guard.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        guard.close()
+        return False
     if lock_file.is_file():
         try:
             old_pid = int(lock_file.read_text(encoding="utf-8").strip())
@@ -59,24 +87,56 @@ def _acquire_market_lock(data_root: Path, market: str) -> bool:
             handle = kernel32.OpenProcess(0x1000, False, old_pid)
             if handle:
                 kernel32.CloseHandle(handle)
+                guard.close()
                 return False
         except Exception:
             pass
     try:
         lock_file.write_text(str(os.getpid()), encoding="utf-8")
+        with _MARKET_LOCK_GUARD:
+            _HELD_MARKET_LOCKS[key] = (threading.get_ident(), guard)
         return True
     except Exception:
+        guard.close()
         return False
 
 
 def _release_market_lock(data_root: Path, market: str) -> None:
     """Remove the file-based lock for one market."""
+    import threading
+
+    key = (str(Path(data_root).resolve()), market.upper())
+    with _MARKET_LOCK_GUARD:
+        held = _HELD_MARKET_LOCKS.get(key)
+        if held is None or held[0] != threading.get_ident():
+            return
+        del _HELD_MARKET_LOCKS[key]
     lock_file = Path(data_root) / "f10" / market.lower() / "fetch.lock"
     try:
-        if lock_file.is_file():
+        if lock_file.is_file() and lock_file.read_text(encoding="utf-8").strip() == str(os.getpid()):
             lock_file.unlink()
-    except Exception:
+    except OSError:
         pass
+    finally:
+        held[1].close()
+
+
+def _release_after_fetch(function: Callable[..., dict[str, Any]]) -> Callable[..., dict[str, Any]]:
+    @wraps(function)
+    def wrapped(data_root: Path, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        import threading
+
+        market = str(kwargs.get("market", "CN")).upper()
+        key = (str(Path(data_root).resolve()), market)
+        with _MARKET_LOCK_GUARD:
+            held = _HELD_MARKET_LOCKS.get(key)
+            previously_held = held is not None and held[0] == threading.get_ident()
+        try:
+            return function(data_root, *args, **kwargs)
+        finally:
+            if not previously_held:
+                _release_market_lock(Path(data_root), market)
+    return wrapped
 
 
 def _num(value: Any, default: float | None = None) -> float | None:
@@ -199,6 +259,60 @@ def _governed_fetch(
 # ---------------------------------------------------------------------------
 
 
+def _validate_a_share_universe(items: Sequence[Mapping[str, Any]]) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in items:
+        code = str(item.get("code") or "").strip()
+        name = str(item.get("name") or "").strip()
+        if (len(code) != 6 or not code.isascii() or not code.isdigit() or not name
+                or name.lower() in {"nan", "none"} or code in seen):
+            raise ValueError("invalid or duplicate A-share universe entry")
+        seen.add(code)
+        rows.append({"code": code, "name": name})
+    if len(rows) < _MIN_A_SHARE_UNIVERSE:
+        raise ValueError(f"A-share universe below minimum: {len(rows)}")
+    return rows
+
+
+def _read_a_share_universe_cache(path: Path) -> list[dict[str, str]]:
+    try:
+        rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        if any(not isinstance(item, dict) for item in rows):
+            return []
+        return _validate_a_share_universe(rows)
+    except (OSError, ValueError, TypeError, AttributeError):
+        return []
+
+
+def read_a_share_universe_cache_status(data_root: Path) -> dict[str, Any]:
+    """Describe local cache freshness, which is not proof of source completeness."""
+    path = Path(data_root) / "f10" / "cn" / "universe.jsonl"
+    rows = _read_a_share_universe_cache(path)
+    if not rows:
+        return {"status": "INVALID_OR_MISSING", "count": None, "savedAt": None}
+    try:
+        modified = path.stat().st_mtime
+        stamp = datetime.fromtimestamp(modified, tz=timezone.utc)
+        is_recent = 0 <= time.time() - modified <= 7 * 86400
+        return {"status": "RECENT_CACHE" if is_recent else "STALE_CACHE",
+                "count": len(rows), "savedAt": stamp.isoformat()}
+    except (OSError, ValueError, OverflowError):
+        return {"status": "INVALID_OR_MISSING", "count": None, "savedAt": None}
+
+
+def read_hk_universe_file_status(data_root: Path) -> dict[str, Any]:
+    """Report local file presence and modification time, not list completeness."""
+    path = Path(data_root) / "f10" / "hk" / "hkex_list.xlsx"
+    try:
+        if not path.is_file():
+            raise FileNotFoundError
+        stamp = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+        return {"status": "LOCAL_FILE_PRESENT", "savedAt": stamp.isoformat()}
+    except (OSError, ValueError, OverflowError):
+        return {"status": "MISSING", "savedAt": None}
+
+
 def load_a_share_universe(cache_dir: Path | None = None) -> list[dict[str, str]]:
     """Return all listed A-share securities (code + name).
 
@@ -210,49 +324,40 @@ def load_a_share_universe(cache_dir: Path | None = None) -> list[dict[str, str]]
     cache_dir = Path(cache_dir or Path("data_control") / "f10" / "cn")
     cache_dir.mkdir(parents=True, exist_ok=True)
     cached = cache_dir / "universe.jsonl"
-    cache_rows: list[dict[str, str]] = []
-    if cached.is_file():
-        for line in cached.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                item = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            code = str(item.get("code") or "").strip()
-            name = str(item.get("name") or "").strip()
-            if code:
-                cache_rows.append({"code": code, "name": name})
-    if cache_rows and cached.stat().st_mtime >= time.time() - 7 * 86400 and len(cache_rows) >= 3000:
+    cache_rows = _read_a_share_universe_cache(cached)
+    if cache_rows and 0 <= time.time() - cached.stat().st_mtime <= 7 * 86400:
         return cache_rows
 
     try:
         import akshare as ak  # only used for this one bulk listing call
     except Exception as error:  # pragma: no cover - environment dependent
         if cache_rows:
+            _LOGGER.warning("A-share universe provider unavailable; using older validated cache")
             return cache_rows
         raise RuntimeError(f"akshare unavailable: {error}") from error
     try:
         frame = ak.stock_info_a_code_name()
     except Exception as error:
         if cache_rows:
+            _LOGGER.warning("A-share universe fetch failed; using older validated cache")
             return cache_rows
         raise RuntimeError(f"A-share universe fetch failed: {error}") from error
-    rows: list[dict[str, str]] = []
-    for _, row in frame.iterrows():
-        code = str(row.get("code", "")).strip()
-        name = str(row.get("name", "")).strip()
-        if code:
-            rows.append({"code": code, "name": name})
-    if not rows:
+    try:
+        rows = _validate_a_share_universe([{"code": row.get("code"), "name": row.get("name")}
+                                           for _, row in frame.iterrows()])
+        if cache_rows and len(rows) < len(cache_rows) * 0.9:
+            raise ValueError("A-share universe unexpectedly shrank by over 10%")
+    except (ValueError, TypeError, AttributeError) as error:
         if cache_rows:
+            _LOGGER.warning("A-share universe failed quality checks; using older validated cache")
             return cache_rows
-        raise RuntimeError("A-share universe is empty")
-    cached.write_text(
-        "".join(json.dumps(item, ensure_ascii=False) + "\n" for item in rows),
-        encoding="utf-8",
-    )
+        raise RuntimeError("A-share universe failed quality checks; no validated cache") from error
+    temporary = cached.with_name(f".{cached.name}.{uuid4().hex}.tmp")
+    try:
+        temporary.write_text("".join(json.dumps(item, ensure_ascii=False) + "\n" for item in rows), encoding="utf-8")
+        os.replace(temporary, cached)
+    finally:
+        temporary.unlink(missing_ok=True)
     return rows
 
 
@@ -283,18 +388,16 @@ def _eastmoney_code(code: str) -> str:
 def load_hk_universe(*, cache_dir: Path | None = None) -> list[dict[str, str]]:
     """Return HKEX listed equity codes (5-digit) from the official securities list.
 
-    The HKEX xlsx is downloaded once per day and cached locally; the response
-    contains every listed security, and we keep only the ``Equity`` category.
+    Uses an already-saved HKEX file. Automated access to the HKEX website is
+    disabled; the local list can be stale and must not be called complete.
     """
     import pandas as pd
 
     cache_dir = Path(cache_dir or Path("data_control") / "f10" / "hk")
     cache_dir.mkdir(parents=True, exist_ok=True)
     cached = cache_dir / "hkex_list.xlsx"
-    if not cached.is_file() or cached.stat().st_mtime < time.time() - 86400:
-        url = "https://www.hkex.com.hk/eng/services/trading/securities/securitieslists/ListOfSecurities.xlsx"
-        body = _get_bytes(url, timeout=90.0)
-        cached.write_bytes(body)
+    if not cached.is_file():
+        raise RuntimeError("HK universe unavailable: local securities list missing")
     frame = pd.read_excel(cached, sheet_name="ListOfSecurities", skiprows=3, header=None)
     if frame.empty or len(frame.columns) < 3:
         raise RuntimeError("unexpected HKEX list layout")
@@ -511,6 +614,24 @@ def fetch_company_survey(
     return record
 
 
+def _finite_field(row: Mapping[str, Any], *keys: str) -> float | None:
+    for key in keys:
+        value = row.get(key)
+        if isinstance(value, bool):
+            continue
+        number = _num(value)
+        if number is not None and math.isfinite(number):
+            return number
+    return None
+
+
+def _ratio_as_percentage(ratio: float | None) -> float | None:
+    if ratio is None:
+        return None
+    value = ratio * 100.0
+    return value if math.isfinite(value) else None
+
+
 def parse_business_analysis(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
     """Extract a structured revenue breakdown from the BusinessAnalysis payload.
 
@@ -526,11 +647,13 @@ def parse_business_analysis(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
         item = str(row.get("ITEM_NAME") or row.get("item_name") or "").strip()
         if not item:
             continue
-        ratio = _num(row.get("MBI_RATIO") or row.get("ratio"))
-        income = _num(row.get("MAIN_BUSINESS_INCOME") or row.get("revenue"))
-        cost = _num(row.get("MAIN_BUSINESS_COST") or row.get("cost"))
-        gross_profit = _num(row.get("MAIN_BUSINESS_RPOFIT") or row.get("gross_profit"))
-        gross_margin = _num(row.get("GROSS_RPOFIT_RATIO") or row.get("gross_margin_pct"))
+        ratio = _finite_field(row, "MBI_RATIO", "ratio")
+        income = _finite_field(row, "MAIN_BUSINESS_INCOME", "revenue")
+        cost = _finite_field(row, "MAIN_BUSINESS_COST", "cost")
+        gross_profit = _finite_field(row, "MAIN_BUSINESS_RPOFIT", "gross_profit")
+        gross_margin_ratio = _finite_field(row, "GROSS_RPOFIT_RATIO")
+        gross_margin_pct = (_ratio_as_percentage(gross_margin_ratio) if gross_margin_ratio is not None
+                            else _finite_field(row, "gross_margin_pct"))
         classification = _classification_from_type(str(row.get("MAINOP_TYPE") or "").strip())
         breakdown.append(
             {
@@ -540,11 +663,11 @@ def parse_business_analysis(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
                 "income": income,
                 "revenue": income,
                 "currency": "CNY",
-                "revenue_share_pct": (ratio * 100.0) if ratio is not None else None,
+                "revenue_share_pct": _ratio_as_percentage(ratio),
                 "ratio": ratio,
                 "cost": cost,
                 "gross_profit": gross_profit,
-                "gross_margin_pct": (gross_margin * 100.0) if gross_margin is not None else None,
+                "gross_margin_pct": gross_margin_pct,
                 "period": str(row.get("REPORT_DATE") or "").strip() or None,
                 "source": "eastmoney_f10",
                 "classification": classification[0] if classification else None,
@@ -581,6 +704,70 @@ def fetch_business_analysis(code: str) -> dict[str, Any]:
     return {"code": code, "revenue_breakdown": parse_business_analysis(payload), "fetched_at": _now()}
 
 
+def _revenue_period(value: Any) -> date | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    try:
+        if len(text) == 10:
+            return date.fromisoformat(text)
+        return datetime.fromisoformat(text).date()
+    except ValueError:
+        return None
+
+
+def _latest_revenue_period(rows: Any, *, require_all: bool = False) -> date | None:
+    if not isinstance(rows, list) or not rows:
+        return None
+    periods: list[date] = []
+    for row in rows:
+        period = _revenue_period(row.get("period")) if isinstance(row, Mapping) else None
+        if period is None:
+            if require_all:
+                return None
+            continue
+        periods.append(period)
+    return max(periods) if periods else None
+
+
+def _retain_earlier_revenue_periods(current: Mapping[str, Any], previous: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep verified periods older than the new response, preserving their provenance."""
+    result = dict(current)
+    fresh = list(current.get("revenue_breakdown") or [])
+    fresh_dates = [_revenue_period(row.get("period")) for row in fresh if isinstance(row, Mapping)]
+    if not fresh_dates or any(period is None for period in fresh_dates):
+        return result
+    earliest = min(period for period in fresh_dates if period is not None)
+    older = []
+    for row in _revenue_rows_with_fetched_at(previous):
+        period = _revenue_period(row.get("period"))
+        if period is not None and period < earliest:
+            older.append(row)
+    result["revenue_breakdown"] = fresh + older
+    return result
+
+
+def _recover_revenue_publication_locked(data_root: Path) -> bool:
+    marker = Path(data_root) / "f10" / "cn" / "revenue_publication_pending.json"
+    if not marker.exists():
+        return False
+    export_atlas_f10(data_root, markets=("CN",))
+    marker.unlink()
+    return True
+
+
+@_release_after_fetch
+def recover_revenue_publication(data_root: Path, *, market: str = "CN") -> dict[str, Any]:
+    """Republish local data only; never contact an external provider."""
+    if market.upper() != "CN":
+        raise ValueError("revenue publication recovery is only implemented for CN")
+    data_root = Path(data_root)
+    if not _acquire_market_lock(data_root, "CN"):
+        return {"status": "SKIPPED"}
+    return {"status": "PUBLISHED" if _recover_revenue_publication_locked(data_root) else "NO_PENDING"}
+
+
+@_release_after_fetch
 def run_revenue_fetch(
     data_root: Path,
     *,
@@ -588,11 +775,12 @@ def run_revenue_fetch(
     limit: int = 200,
     detail_delay_seconds: float = 1.0,
     codes: Sequence[str] | None = None,
+    refresh_after_days: int | None = 90,
 ) -> dict[str, Any]:
     """Fetch Eastmoney BusinessAnalysis for already-collected CN companies.
 
-    Resumes automatically: codes already present in ``revenue_*.jsonl`` are
-    skipped. Rate-limited exactly like the CompanySurvey pass.
+    Missing records are fetched first, then old observations in bounded batches.
+    Fetch timestamps are not financial-report publication dates.
     """
     market_key = market.upper()
     if market_key != "CN":
@@ -602,6 +790,7 @@ def run_revenue_fetch(
     if detail_delay_seconds < 0.02:
         raise ValueError("detail_delay_seconds must be at least 0.02")
     data_root = Path(data_root)
+    started_at = _now()
     directory = data_root / "f10" / "cn"
     directory.mkdir(parents=True, exist_ok=True)
     if not _acquire_market_lock(data_root, market_key):
@@ -610,58 +799,70 @@ def run_revenue_fetch(
             "status": "SKIPPED",
             "message": "another process holds the lock for CN",
         }
-    import atexit
-
-    def _release_lock_on_exit() -> None:
-        _release_market_lock(data_root, market_key)
-
-    atexit.register(_release_lock_on_exit)
-    existing = _load_existing_records(data_root, "CN")
+    existing = _load_existing_records(data_root, "CN", strict=True)
     if codes is None:
         codes = [str(record.get("code") or "") for record in existing.values() if record.get("code")]
     codes = [code for code in codes if code]
-    done: dict[str, Any] = {}
-    for path in sorted(directory.glob("revenue_*.jsonl")):
-        try:
-            for line in path.read_text(encoding="utf-8").splitlines():
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    record = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                done[str(record.get("code") or "")] = record
-        except OSError:
-            continue
-    pending = [code for code in codes if code not in done]
+    done = _load_revenue_records(data_root, market_key)
+    publication_marker = directory / "revenue_publication_pending.json"
+    recovered_publication = _recover_revenue_publication_locked(data_root)
+    usable = {code: record for code, record in done.items()
+              if _latest_revenue_period(record.get("revenue_breakdown"), require_all=True) is not None}
+    pending = _pending_detail_codes(codes, usable, now=datetime.now(timezone.utc),
+                                    refresh_after_days=refresh_after_days)
+    retry_path = directory / "revenue_retry.json"
+    retry_queue = _load_retry_queue(retry_path)
+    pending = _order_retry_queue(pending, retry_queue)
+    already_done = len(done)
     fetched: list[dict[str, Any]] = []
     errors: list[dict[str, str]] = []
     for index, code in enumerate(pending[:limit], start=1):
         try:
             record = fetch_business_analysis(code)
+            current_period = _latest_revenue_period(record.get("revenue_breakdown"), require_all=True)
+            if current_period is None:
+                raise ValueError("no usable revenue breakdown with verified report periods")
+            previous_period = _latest_revenue_period((done.get(code) or {}).get("revenue_breakdown"))
+            if previous_period is not None and current_period < previous_period:
+                raise ValueError("revenue report period regressed; previous observation retained")
+            record = _retain_earlier_revenue_periods(record, done.get(code) or {})
+            if not publication_marker.exists():
+                _write_summary(publication_marker, {"started_at": _now()})
             _append_jsonl(_record_path(data_root, "CN", "revenue"), record)
             done[code] = record
             fetched.append(record)
         except Exception as error:
             errors.append({"code": code, "error": f"{type(error).__name__}: {error}"[:300]})
+            _move_retry_to_end(retry_queue, code)
+            _write_summary(retry_path, {"retry_queue": retry_queue})
             if len(errors) >= 8:
                 break
+        else:
+            if code in retry_queue:
+                retry_queue.remove(code)
+                _write_summary(retry_path, {"retry_queue": retry_queue})
         if index < len(pending[:limit]):
             time.sleep(detail_delay_seconds)
-    export_atlas_f10(data_root, markets=("CN",))
-    return {
+    if fetched or not recovered_publication:
+        export_atlas_f10(data_root, markets=("CN",))
+        publication_marker.unlink(missing_ok=True)
+    summary = {
         "market": "CN",
-        "started_at": _now(),
+        "started_at": started_at,
         "completed_at": _now(),
         "total_codes": len(codes),
-        "already_done": len(done) - len(fetched),
+        "already_done": already_done,
         "new_revenue": len(fetched),
+        "pending_before": len(pending),
+        "remaining_details": max(0, len(pending) - len(fetched)),
+        "refresh_after_days": refresh_after_days,
         "total_revenue": len(done),
         "failed_codes": len(errors),
         "errors": errors[-10:],
-        "status": "PASS" if not errors else "PARTIAL_FAILURE",
+        "status": "PARTIAL_FAILURE" if errors else "PARTIAL" if len(fetched) < len(pending) else "PASS",
     }
+    _write_summary(directory / "revenue_summary.json", summary)
+    return summary
 
 
 # ---------------------------------------------------------------------------
@@ -671,6 +872,45 @@ def run_revenue_fetch(
 
 def _state_path(root: Path, market: str) -> Path:
     return root / "f10" / market.lower() / "state.json"
+
+
+def _write_summary(path: Path, summary: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    try:
+        temporary.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def read_f10_batch_summary(data_root: Path, kind: str) -> dict[str, Any] | None:
+    """Only expose aggregate counters, never provider errors or company codes."""
+    paths = {"F10_UPDATE_CN": ("cn", "summary.json"), "F10_UPDATE_HK": ("hk", "summary.json"),
+             "REVENUE_UPDATE": ("cn", "revenue_summary.json")}
+    if kind not in paths:
+        return None
+    market, filename = paths[kind]
+    path = Path(data_root) / "f10" / market / filename
+    try:
+        if path.stat().st_size > 100_000:
+            return None
+        value = json.loads(path.read_text(encoding="utf-8"))
+        status = value.get("status")
+        count = value.get("new_revenue" if kind == "REVENUE_UPDATE" else "new_details")
+        remaining, failed = value.get("remaining_details"), value.get("failed_codes")
+        completed = value.get("completed_at")
+        if (status not in {"PASS", "PARTIAL", "PARTIAL_FAILURE"}
+                or any(type(number) is not int or number < 0 for number in (count, remaining, failed))
+                or not isinstance(completed, str)):
+            return None
+        parsed = datetime.fromisoformat(completed)
+        if parsed.tzinfo is None:
+            return None
+        return {"status": status, "updated": count, "remaining": remaining,
+                "failed": failed, "completedAt": parsed.astimezone(timezone.utc).isoformat()}
+    except (OSError, ValueError, TypeError, AttributeError, OverflowError):
+        return None
 
 
 def _load_state(root: Path, market: str) -> dict[str, Any]:
@@ -685,8 +925,34 @@ def _load_state(root: Path, market: str) -> dict[str, Any]:
 
 def _save_state(root: Path, market: str, state: Mapping[str, Any]) -> None:
     path = _state_path(root, market)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    _write_summary(path, state)
+
+
+def _load_retry_queue(path: Path) -> list[str]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        return _normalize_retry_queue(value.get("retry_queue", []))
+    except (OSError, ValueError, TypeError, AttributeError):
+        return []
+
+
+def _normalize_retry_queue(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return list(dict.fromkeys(code for code in value if isinstance(code, str) and code))
+
+
+def _move_retry_to_end(queue: list[str], code: str) -> None:
+    if code in queue:
+        queue.remove(code)
+    queue.append(code)
+
+
+def _order_retry_queue(pending: Sequence[str], queue: Sequence[str]) -> list[str]:
+    """Try fresh work first, then failures from least to most recently attempted."""
+    deferred = set(queue)
+    eligible = set(pending)
+    return [code for code in pending if code not in deferred] + [code for code in queue if code in eligible]
 
 
 def _record_path(root: Path, market: str, kind: str) -> Path:
@@ -699,7 +965,49 @@ def _append_jsonl(path: Path, record: Mapping[str, Any]) -> None:
         handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
-def _load_existing_records(root: Path, market: str) -> dict[str, dict[str, Any]]:
+def _load_revenue_records(root: Path, market: str) -> dict[str, dict[str, Any]]:
+    """Fail closed on incomplete or unreadable local revenue source files."""
+    records: dict[str, dict[str, Any]] = {}
+    directory = Path(root) / "f10" / market.lower()
+    for path in sorted(directory.glob("revenue_*.jsonl")):
+        try:
+            with path.open(encoding="utf-8") as handle:
+                for line in handle:
+                    if not line.strip():
+                        continue
+                    record = json.loads(line)
+                    if not isinstance(record, dict) or not str(record.get("code") or "").strip():
+                        raise ValueError("invalid revenue record")
+                    breakdown = record.get("revenue_breakdown")
+                    if breakdown is not None and (not isinstance(breakdown, list)
+                                                  or any(not isinstance(row, dict) for row in breakdown)):
+                        raise ValueError("invalid revenue breakdown")
+                    records[str(record["code"]).strip()] = record
+        except (OSError, ValueError, UnicodeError):
+            raise ValueError(f"{market.upper()} revenue records cannot be read safely") from None
+    return records
+
+
+def _revenue_rows_with_fetched_at(record: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Attach the parent revenue fetch time without replacing row-level provenance."""
+    fetched_at = record.get("fetched_at")
+    if isinstance(fetched_at, str):
+        try:
+            fetched_at = fetched_at if datetime.fromisoformat(fetched_at).tzinfo is not None else None
+        except ValueError:
+            fetched_at = None
+    else:
+        fetched_at = None
+    rows = []
+    for item in record.get("revenue_breakdown") or []:
+        row = dict(item)
+        if fetched_at and not row.get("fetched_at"):
+            row["fetched_at"] = fetched_at
+        rows.append(row)
+    return rows
+
+
+def _load_existing_records(root: Path, market: str, *, strict: bool = False) -> dict[str, dict[str, Any]]:
     """Load all previous detail records from JSONL files (by code)."""
     records: dict[str, dict[str, Any]] = {}
     directory = root / "f10" / market.lower()
@@ -714,13 +1022,52 @@ def _load_existing_records(root: Path, market: str) -> dict[str, dict[str, Any]]
                 try:
                     record = json.loads(line)
                 except json.JSONDecodeError:
+                    if strict:
+                        raise ValueError("F10 detail record is malformed") from None
+                    continue
+                if not isinstance(record, dict):
+                    if strict:
+                        raise ValueError("F10 detail record is malformed")
                     continue
                 code = str(record.get("code") or "").strip()
                 if code:
                     records[code] = record
         except OSError:
+            if strict:
+                raise
             continue
     return records
+
+
+def _pending_detail_codes(codes: Sequence[str], existing: Mapping[str, Mapping[str, Any]], *,
+                          now: datetime, refresh_after_days: int | None,
+                          force: bool = False) -> list[str]:
+    """Prioritize missing details, then oldest fetch times; never infer report dates."""
+    if now.tzinfo is None or (refresh_after_days is not None and refresh_after_days < 1):
+        raise ValueError("invalid F10 refresh policy")
+    missing = [code for code in codes if code not in existing]
+    if force:
+        return list(codes)
+    if refresh_after_days is None:
+        return missing
+    cutoff = now.astimezone(timezone.utc) - timedelta(days=refresh_after_days)
+    stale: list[tuple[datetime, int, str]] = []
+    for index, code in enumerate(codes):
+        record = existing.get(code)
+        if record is None:
+            continue
+        try:
+            stamp = datetime.fromisoformat(str(record.get("detail_fetched_at") or record.get("fetched_at") or ""))
+            if stamp.tzinfo is None:
+                raise ValueError("naive timestamp")
+            stamp = stamp.astimezone(timezone.utc)
+            if stamp > now.astimezone(timezone.utc):
+                raise ValueError("future timestamp")
+        except (ValueError, TypeError, OverflowError):
+            stamp = datetime.min.replace(tzinfo=timezone.utc)
+        if stamp <= cutoff:
+            stale.append((stamp, index, code))
+    return missing + [code for _, _, code in sorted(stale)]
 
 
 # ---------------------------------------------------------------------------
@@ -728,6 +1075,7 @@ def _load_existing_records(root: Path, market: str) -> dict[str, dict[str, Any]]
 # ---------------------------------------------------------------------------
 
 
+@_release_after_fetch
 def run_f10_fetch(
     data_root: Path,
     *,
@@ -736,13 +1084,13 @@ def run_f10_fetch(
    detail_delay_seconds: float = 1.2,
    skip_quotes: bool = False,
    force_details: bool = False,
+   refresh_after_days: int | None = 90,
 ) -> dict[str, Any]:
    """Run one throttled F10 fetch pass and persist a snapshot.
 
    - Always refreshes the bulk quote snapshot (one request per 60 symbols).
-   - Fetches per-stock CompanySurvey details only for codes that are not yet
-     in the local detail cache, up to ``limit_details`` per run, sleeping
-     ``detail_delay_seconds`` between requests to protect against IP bans.
+   - Fetches missing details first, then oldest stale details, bounded by
+     ``limit_details``. Fetch time is not a report publication date.
    """
    if market.upper() not in {"CN", "HK"}:
        raise ValueError("market must be CN or HK")
@@ -761,12 +1109,6 @@ def run_f10_fetch(
            "status": "SKIPPED",
            "message": f"another process holds the lock for {market_key}",
        }
-   import atexit
-
-   def _release_lock_on_exit() -> None:
-       _release_market_lock(data_root, market_key)
-
-   atexit.register(_release_lock_on_exit)
    if market_key == "CN":
        universe = load_a_share_universe(cache_dir=data_root / "f10" / "cn")
    elif market_key == "HK":
@@ -806,10 +1148,18 @@ def run_f10_fetch(
    state = _load_state(data_root, market_key)
    done_codes = set(str(item) for item in state.get("done", []))
    failed_codes = set(str(item) for item in state.get("failed", []))
-   existing = _load_existing_records(data_root, market_key)
-   pending = [code for code in codes if code not in existing or force_details]
+   retry_queue = _normalize_retry_queue(state.get("retry_queue", []))
+   for code in sorted(failed_codes - set(retry_queue)):
+       retry_queue.append(code)
+   existing = _load_existing_records(data_root, market_key, strict=True)
+   pending = _pending_detail_codes(codes, existing, now=datetime.now(timezone.utc),
+                                   refresh_after_days=refresh_after_days, force=force_details)
    if not force_details:
-       pending = [code for code in pending if code not in done_codes]
+       pending = _order_retry_queue(pending, retry_queue)
+
+   def save_retry_state() -> None:
+       _save_state(data_root, market_key, {"done": sorted(done_codes), "failed": sorted(failed_codes),
+                                          "retry_queue": retry_queue, "updated_at": _now()})
 
    fetched: list[dict[str, Any]] = []
    errors: list[dict[str, str]] = []
@@ -818,6 +1168,9 @@ def run_f10_fetch(
            record = fetch_company_survey(code, market=market_key, quote=quotes.get(code))
            fetched_at = _now()
            previous = existing.get(code, {})
+           for key in ("org_name", "org_profile", "business_scope", "main_business"):
+               if previous.get(key) and not record.get(key):
+                   raise ValueError("F10 response omits previously available company fields")
            record.update(
                {
                    "market": market_key,
@@ -829,7 +1182,7 @@ def run_f10_fetch(
                        "pe": quotes[code].pe,
                        "pb": quotes[code].pb,
                        "price": quotes[code].price,
-                   }) or None,
+                   }) or previous.get("quote"),
                }
            )
            _append_jsonl(_record_path(data_root, market_key, "details"), record)
@@ -839,20 +1192,25 @@ def run_f10_fetch(
        except Exception as error:
            errors.append({"code": code, "error": f"{type(error).__name__}: {error}"[:300]})
            failed_codes.add(code)
+           _move_retry_to_end(retry_queue, code)
+           save_retry_state()
            if len(errors) >= 8:
                break  # source is likely blocking us; stop before making it worse
+       else:
+           if code in retry_queue:
+               retry_queue.remove(code)
+               save_retry_state()
        if index < len(pending[:limit_details]):
            time.sleep(detail_delay_seconds)
        if index % 25 == 0:
-           state = {"done": sorted(done_codes), "failed": sorted(failed_codes), "updated_at": _now()}
-           _save_state(data_root, market_key, state)
+           save_retry_state()
 
-   state = {"done": sorted(done_codes), "failed": sorted(failed_codes), "updated_at": _now()}
-   _save_state(data_root, market_key, state)
+   save_retry_state()
 
    # Persist a queryable snapshot table in the catalog.
-   combined = list(existing.values())
-   combined.extend(fetched)
+   combined_by_code = dict(existing)
+   combined_by_code.update({str(record["code"]): record for record in fetched})
+   combined = list(combined_by_code.values())
    if quotes:
        for record in combined:
            code = str(record.get("code") or "")
@@ -867,6 +1225,8 @@ def run_f10_fetch(
                    "amount_yi": quote.amount_yi,
                }
    try:
+       if not combined:
+           raise ValueError("empty F10 snapshot; existing records retained")
        store = MarketStore(data_root)
        try:
            store.register_default_datasets()
@@ -888,6 +1248,7 @@ def run_f10_fetch(
                )
                """
            )
+           store.connection.execute("BEGIN TRANSACTION")
            store.connection.execute("DELETE FROM f10_company WHERE market = ?", [market_key])
            for record in combined:
                quote = record.get("quote") or {}
@@ -920,27 +1281,31 @@ def run_f10_fetch(
    except Exception as error:
        errors.append({"code": "__persist__", "error": f"{type(error).__name__}: {error}"[:300]})
 
+   try:
+       export_atlas_f10(data_root, markets=(market_key,))
+   except Exception as error:
+       errors.append({"code": "__atlas_export__", "error": f"{type(error).__name__}: {error}"[:300]})
    completed_at = _now()
    summary = {
        "market": market_key,
        "started_at": started_at,
        "completed_at": completed_at,
        "universe_count": len(codes),
+       "universe_scope": "LOCAL_LIST_MAY_BE_STALE" if market_key == "HK" else "CACHED_OR_PUBLIC_LIST",
        "quote_count": len(quotes),
        "new_details": len(fetched),
+       "pending_before": len(pending),
+       "remaining_details": max(0, len(pending) - len(fetched)),
+       "refresh_after_days": refresh_after_days,
        "total_details": len(combined),
        "failed_codes": len(errors),
        "errors": errors[-10:],
        "detail_delay_seconds": detail_delay_seconds,
-       "status": "PASS" if not errors else "PARTIAL_FAILURE",
+       "status": "PARTIAL_FAILURE" if errors else "PARTIAL" if len(fetched) < len(pending) else "PASS",
    }
    target = data_root / "f10" / market_key.lower() / "summary.json"
    target.parent.mkdir(parents=True, exist_ok=True)
-   target.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-   try:
-       export_atlas_f10(data_root, markets=(market_key,))
-   except Exception as error:  # never fail the fetch run because of export
-       errors.append({"code": "__atlas_export__", "error": f"{type(error).__name__}: {error}"[:300]})
+   _write_summary(target, summary)
    return summary
 
 
@@ -999,6 +1364,14 @@ def _atlas_record(
 
 
 def export_atlas_f10(data_root: Path, *, markets: Sequence[str] = ("CN", "HK")) -> dict[str, Any]:
+    """Serialize cross-market snapshot publication across collector processes."""
+    from .kpl_auto_refresh import _lock
+
+    with _lock(Path(data_root) / "f10" / "export.guard.lock"):
+        return _export_atlas_f10(data_root, markets=markets)
+
+
+def _export_atlas_f10(data_root: Path, *, markets: Sequence[str]) -> dict[str, Any]:
     """Write ``industry/f10/{cn_f10,hk_f10}.jsonl`` + ``meta.json`` for the atlas."""
     root = Path(data_root)
     target_dir = root / "industry" / "f10"
@@ -1012,9 +1385,12 @@ def export_atlas_f10(data_root: Path, *, markets: Sequence[str] = ("CN", "HK")) 
     for market_key in active_markets:
         filename = f"{market_key.lower()}_f10.jsonl"
         target = target_dir / filename
-        records = list(_load_existing_records(root, market_key).values())
+        records = list(_load_existing_records(root, market_key, strict=True).values())
+        if not records and target.is_file():
+            raise ValueError(f"{market_key} F10 source is empty; existing snapshot retained")
         quotes: dict[str, dict[str, Any]] = {}
-        revenue_map: dict[str, list[dict[str, Any]]] = {}
+        revenue_map = {code: _revenue_rows_with_fetched_at(payload)
+                       for code, payload in _load_revenue_records(root, market_key).items()}
         quote_dir = root / "f10" / market_key.lower()
         for path in sorted(quote_dir.glob("quotes_*.jsonl")):
             try:
@@ -1026,30 +1402,25 @@ def export_atlas_f10(data_root: Path, *, markets: Sequence[str] = ("CN", "HK")) 
                     for row in payload.get("rows") or []:
                         code = str(row.get("code") or "")
                         if code:
-                            quotes.setdefault(code, row)
+                            quotes[code] = row
             except (OSError, json.JSONDecodeError):
-                continue
-        for path in sorted(quote_dir.glob("revenue_*.jsonl")):
-            try:
-                for line in path.read_text(encoding="utf-8").splitlines():
-                    line = line.strip()
-                    if not line:
+                raise ValueError(f"{market_key} quote records cannot be read safely") from None
+        temporary = target.with_name(f".{target.name}.{uuid4().hex}.tmp")
+        try:
+            with temporary.open("w", encoding="utf-8") as handle:
+                count = 0
+                for record in records:
+                    code = str(record.get("code") or "")
+                    line = _atlas_record(record, quotes.get(code), revenue_map.get(code))
+                    if not line.get("name") and not line.get("full_name"):
                         continue
-                    payload = json.loads(line)
-                    code = str(payload.get("code") or "")
-                    if code:
-                        revenue_map[code] = payload.get("revenue_breakdown") or []
-            except (OSError, json.JSONDecodeError):
-                continue
-        with target.open("w", encoding="utf-8") as handle:
-            count = 0
-            for record in records:
-                code = str(record.get("code") or "")
-                line = _atlas_record(record, quotes.get(code), revenue_map.get(code))
-                if not line.get("name") and not line.get("full_name"):
-                    continue
-                handle.write(json.dumps(line, ensure_ascii=False) + "\n")
-                count += 1
+                    handle.write(json.dumps(line, ensure_ascii=False) + "\n")
+                    count += 1
+            if records and not count:
+                raise ValueError(f"{market_key} F10 export has no valid companies")
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
         totals[filename] = count
     meta = {
         "generated_at": _now(),

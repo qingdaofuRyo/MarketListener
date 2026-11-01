@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from market_monitor.market_data_version import market_data_version
-from market_monitor.market_query_cache import KLineWindow, get_kline_query_store
+from market_monitor.market_query_cache import KLineCacheUnavailable, KLineWindow, _intraday_quality_clause, get_kline_query_store
 
 DEFAULT_PAGE_SIZE = 50
 MAX_PAGE_SIZE = 500
@@ -226,7 +226,11 @@ def load_inventory(data_root: Path, *, max_instruments: int | None = None) -> Si
             for row in snapshot["items"]:
                 key_id, item = _inventory_item(*row)
                 instruments[key_id] = item
+        except KLineCacheUnavailable:
+            raise
         except Exception:
+            if not get_kline_query_store(data_root)._should_build_inline():
+                raise KLineCacheUnavailable("K-line inventory index is unavailable") from None
             files = silver_partitions(data_root)
             if files:
                 try:
@@ -299,8 +303,11 @@ def read_bars(
     # readable rather than silently returning an empty chart.
     try:
         return get_kline_query_store(data_root).read_bars(instrument_id, period, limit)
+    except KLineCacheUnavailable:
+        raise
     except Exception:
-        pass
+        if not get_kline_query_store(data_root)._should_build_inline():
+            raise KLineCacheUnavailable("K-line query index is unavailable") from None
     files = silver_period_partitions(data_root, period)
     if not files:
         return []
@@ -309,7 +316,7 @@ def read_bars(
     if period:
         clauses.append("period = ?")
         parameters.append(period)
-    where = " AND ".join(clauses)
+    where = " AND ".join(clauses) + _intraday_quality_clause(instrument_id, period)
     query = (
         f"SELECT bar_json FROM read_parquet({[str(path) for path in files]!r}) "
         f"WHERE {where} ORDER BY bar_open_time DESC LIMIT {limit}"
@@ -355,15 +362,19 @@ def read_bars_window(
     limit = max(1, min(int(limit), 5_000))
     try:
         return get_kline_query_store(data_root).read_window(instrument_id, period, start, limit)
+    except KLineCacheUnavailable:
+        raise
     except Exception:
-        pass
+        if not get_kline_query_store(data_root)._should_build_inline():
+            raise KLineCacheUnavailable("K-line query index is unavailable") from None
     files = silver_period_partitions(data_root, period)
     if not files:
         return [], 0
     source = [str(path) for path in files]
-    count_query = f"SELECT count(*) FROM read_parquet({source!r}) WHERE instrument_id = ? AND period = ?"
+    quality = _intraday_quality_clause(instrument_id, period)
+    count_query = f"SELECT count(*) FROM read_parquet({source!r}) WHERE instrument_id = ? AND period = ?{quality}"
     data_query = (
-        f"SELECT bar_json FROM read_parquet({source!r}) WHERE instrument_id = ? AND period = ? "
+        f"SELECT bar_json FROM read_parquet({source!r}) WHERE instrument_id = ? AND period = ?{quality} "
         f"ORDER BY bar_open_time ASC LIMIT {limit} OFFSET {start}"
     )
     bars: list[dict[str, Any]] = []
@@ -411,24 +422,28 @@ def read_bars_before(
             before=before,
             limit=limit,
         )
+    except KLineCacheUnavailable:
+        raise
     except Exception:
-        pass
+        if not get_kline_query_store(data_root)._should_build_inline():
+            raise KLineCacheUnavailable("K-line query index is unavailable") from None
     files = silver_period_partitions(data_root, period)
     if not files:
         return KLineWindow([], 0, before, False)
     source = [str(path) for path in files]
     cursor_clause = " AND bar_open_time < ?" if before else ""
+    quality = _intraday_quality_clause(instrument_id, period)
     parameters: list[Any] = [instrument_id, period]
     if before:
         parameters.append(before)
     data_query = (
         f"SELECT bar_open_time, bar_json FROM read_parquet({source!r}) "
-        f"WHERE instrument_id = ? AND period = ?{cursor_clause} "
+        f"WHERE instrument_id = ? AND period = ?{quality}{cursor_clause} "
         f"ORDER BY bar_open_time DESC LIMIT {limit + 1}"
     )
     count_query = (
         f"SELECT count(*) FROM read_parquet({source!r}) "
-        "WHERE instrument_id = ? AND period = ?"
+        f"WHERE instrument_id = ? AND period = ?{quality}"
     )
     try:
         import duckdb
@@ -462,6 +477,8 @@ def bar_bounds(data_root: Path, instrument_id: str, period: str) -> tuple[int, s
 
     try:
         return get_kline_query_store(data_root).bounds(instrument_id, period)
+    except KLineCacheUnavailable:
+        raise
     except Exception:
         rows, total = read_bars_window(data_root, instrument_id, period=period, start=0, limit=1)
         tail, _ = read_bars_window(data_root, instrument_id, period=period, start=max(0, total - 1), limit=1)
@@ -473,6 +490,8 @@ def instrument_periods(data_root: Path, instrument_id: str) -> list[str]:
 
     try:
         return get_kline_query_store(data_root).periods(instrument_id)
+    except KLineCacheUnavailable:
+        raise
     except Exception:
         return []
 

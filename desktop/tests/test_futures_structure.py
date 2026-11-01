@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+import pytest
 
 from market_monitor.cli import main
 from market_monitor.futures_structure import (
@@ -28,6 +29,49 @@ from market_monitor.futures_official_multipliers import load_official_multiplier
 from market_monitor.storage import MarketStore, PartitionKey
 from market_monitor.web_api.futures import _structure_payload
 from market_monitor.web_app import create_web_app
+
+
+@pytest.mark.parametrize("chart_id,version", [
+    ("product-open-interest", "futures-structure-oi-official-v1"),
+    ("product-notional", "futures-structure-notional-official-v5"),
+    ("product-volume", "futures-structure-volume-official-v1"),
+])
+def test_product_lines_include_other_and_new_products_without_changing_area_baseline(chart_id: str, version: str) -> None:
+    members = {f"SHFE.P{index:02}": float(100 - index) for index in range(45)}
+    names = {key: f"合成品种（{key.split('.')[1]}）" for key in members}
+    baseline = _build_baseline(
+        members, names, "2026-09-24", "2026-09-25T00:00:00+00:00",
+        chart_id=chart_id, direction="gross", formula_version=version,
+        price_basis=None, source="fixture-official",
+    )
+    rows = [
+        {"trade_date": day, "member_key": key, "member_name": names.get(key, "新品种（NEW）"),
+         "value": value, "input_row_count": 47, "missing_row_count": 1,
+         "data_quality_status": "PARTIAL", "calculated_at": "2026-09-25T00:00:00+00:00"}
+        for day in ("2026-09-24", "2026-09-25")
+        for key, value in {**members, **({"SHFE.NEW": 20.0} if day.endswith("25") else {})}.items()
+    ]
+    # P44 has a second missing contract: its residual Gold sum is not a full
+    # product value and must not be displayed as such. Third day has no facts.
+    coverage = [
+        {"trade_date": day, "quality_status": "PARTIAL", "input_contract_count": 47,
+         "missing_exchange_count": 1, "missing_exchanges_json": '["DCE"]',
+         "missing_products_json": '["SHFE.P44"]' if day.endswith("25") else "[]"}
+        for day in ("2026-09-24", "2026-09-25", "2026-09-28")
+    ]
+    for level in ("main", "other"):
+        payload = _structure_payload(baseline, rows, level, coverage)
+        assert len(payload["primaryMembers"]) == 40
+        assert len(payload["otherMembers"]) == 5
+        assert len(payload["series"]) == (41 if level == "main" else 5)
+        assert len(payload["lineSeries"]) == 46
+        assert "OTHER" not in {item["memberKey"] for item in payload["lineSeries"]}
+        assert payload["totals"] == [None, None, None]
+        by_key = {item["memberKey"]: item for item in payload["lineSeries"]}
+        assert by_key["SHFE.P44"]["lineValues"] == [56, None, None]
+        assert by_key["SHFE.NEW"]["lineValues"] == [None, 20, None]
+        assert by_key["SHFE.P00"]["lineValues"] == [100, 100, None]
+        assert payload["coverage"][1]["missingProductKeys"] == ["SHFE.P44"]
 
 
 def _bar(day: str, *, exchange: str, product: str, symbol: str, open_interest: float) -> dict[str, object]:
@@ -319,12 +363,12 @@ def test_product_notional_api_attaches_official_v4_gap_reasons(tmp_path: Path) -
 
 def test_official_multiplier_interval_is_independent_of_daily_margin_snapshot() -> None:
     registry = load_official_multiplier_registry()
-    assert registry.resolve("2026-01-28", "SHFE", "CU") is None
-    copper = registry.resolve("2026-01-29", "SHFE", "CU")
+    assert registry.resolve("2022-12-30", "SHFE", "CU") is None
+    copper = registry.resolve("2023-01-03", "SHFE", "CU")
     assert copper is not None and copper.contract_multiplier == 5
     assert copper.payload_sha256 and len(copper.payload_sha256) == 64
     assert registry.resolve("2026-09-24", "CZCE", "AP").contract_multiplier == 10
-    assert registry.resolve("2026-09-24", "DCE", "JM") is None
+    assert registry.resolve("2023-01-03", "DCE", "JM").contract_multiplier == 60
 
 
 def test_official_notional_has_separate_version_and_missing_reason_coverage(tmp_path: Path) -> None:
@@ -332,7 +376,7 @@ def test_official_notional_has_separate_version_and_missing_reason_coverage(tmp_
     _write(root, [
         _bar("2026-08-20", exchange="SHFE", product="CU", symbol="CU2610", open_interest=100),
         _bar("2026-08-20", exchange="CZCE", product="AP", symbol="AP2610", open_interest=10),
-        _bar("2026-08-21", exchange="DCE", product="JM", symbol="JM2610", open_interest=50),
+        _bar("2026-08-21", exchange="DCE", product="ZZ", symbol="ZZ2610", open_interest=50),
     ])
     result = run_product_official_notional_structure_pipeline(root)
     assert result["status"] == "PARTIAL"
@@ -355,7 +399,7 @@ def test_official_notional_has_separate_version_and_missing_reason_coverage(tmp_
     assert [(row["trade_date"], row["missing_multiplier_count"]) for row in coverage] == [
         ("2026-08-20", 0), ("2026-08-21", 1),
     ]
-    assert json.loads(coverage[-1]["missing_products_json"]) == ["DCE.JM"]
+    assert json.loads(coverage[-1]["missing_products_json"]) == ["DCE.ZZ"]
 
 
 def test_futures_structure_cli_passes_explicit_baseline_rebuild(tmp_path: Path, monkeypatch, capsys) -> None:

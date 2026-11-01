@@ -19,6 +19,7 @@ from typing import Any, Callable, Iterable, Mapping
 import duckdb
 
 from .futures import resolve_futures_contract_spec
+from .market_data_version import market_data_version
 from .market_query_cache import refresh_kline_cache_partitions
 from .storage import MarketStore, PartitionKey
 
@@ -107,11 +108,15 @@ def read_tdx_file(path: Path, *, start_offset: int = 0) -> list[dict[str, Any]]:
         raise RuntimeError(f"期货通正在写入，稍后重试: {path.name}")
     suffix = path.suffix.lower()
     rows: list[dict[str, Any]] = []
+    seen_days: set[str] = set()
     for offset in range(0, len(payload), 32):
         values = (_DAY if suffix == ".day" else _LC5).unpack_from(payload, offset)
         if suffix == ".day":
             raw_day, open_, high, low, close, open_interest, volume, settlement = values
             day = f"{raw_day // 10000:04d}-{raw_day % 10000 // 100:02d}-{raw_day % 100:02d}"
+            if day in seen_days:
+                raise ValueError(f"日线文件存在重复交易日: {path.name}")
+            seen_days.add(day)
             rows.append({"day": day, "time": "00:00:00", "open": open_, "high": high, "low": low,
                          "close": close, "open_interest": open_interest, "volume": volume, "settlement": settlement})
         else:
@@ -228,7 +233,7 @@ def _partition_writes(store: MarketStore, run_id: str, rows: Iterable[dict[str, 
         values.sort(key=lambda item: str(item["bar_open_time"]))
         store.write_silver_bars(
             PartitionKey(market, asset_type, period, year, f"{prefix}-{market}-{asset_type}-{period}-{year}"),
-            values, str(values[-1]["bar_open_time"]), run_id,
+            values, str(values[-1]["bar_open_time"]), run_id, update_query_cache=False,
         )
         written += len(values)
     return written
@@ -370,6 +375,8 @@ def _tdx_rows(
             elif match.groupdict().get("delivery"):
                 market_code, code = match.group("market"), match.group("code").upper()
                 product = match.group("product").upper().removesuffix("-F")
+                if market_code == "29" and "-F" in code:
+                    product += "-F"
                 exchange = _exchange(market_code, product)
                 canonical = f"CN.{exchange}.FUTURE.{code}.CONTRACT"
                 physical = canonical + ".TDX"
@@ -530,6 +537,7 @@ def run_bulk_futures(
     data_root: Path, *, tdx_futures_root: Path | None = None, include_domestic: bool = True,
     include_global: bool = True, include_akshare: bool = True, full_rescan: bool = False, api: Any | None = None,
     start_date: str | None = None, end_date: str | None = None,
+    run_started: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     """Import all available local domestic series and the curated AKShare set."""
     data_root = Path(data_root)
@@ -549,12 +557,15 @@ def run_bulk_futures(
     output: list[dict[str, Any]] = []
     written = 0
     cache_run_ids: list[str] = []
+    cache_base_revision = market_data_version(data_root)
     tdx_root = resolve_tdx_root(tdx_futures_root)
     store = MarketStore(data_root)
     if include_domestic and tdx_root:
         store.register_default_datasets()
         tdx_run_id = store.begin_run("bulk-futures:通达信期货通")
         cache_run_ids.append(tdx_run_id)
+        if run_started is not None:
+            run_started(tdx_run_id)
         try:
             local_written, next_state, local_errors = _tdx_rows(
                 tdx_root, state, full_rescan=full_rescan,
@@ -608,20 +619,24 @@ def run_bulk_futures(
             raise
     finally:
         store.close()
+    cache_refreshed: bool | None = None
     if written and cache_run_ids:
         catalog = data_root / "catalog.duckdb"
-        with duckdb.connect(str(catalog), read_only=True) as connection:
+        with duckdb.connect(str(catalog)) as connection:
             placeholders = ",".join("?" for _ in cache_run_ids)
             rows = connection.execute(
                 f"SELECT file_path FROM partitions WHERE source_run_id IN ({placeholders})",
                 cache_run_ids,
             ).fetchall()
-        refresh_kline_cache_partitions(
-            data_root, [data_root / str(row[0]) for row in rows if row and row[0]]
+        cache_refreshed = refresh_kline_cache_partitions(
+            data_root, [data_root / str(row[0]) for row in rows if row and row[0]],
+            expected_base_revision=cache_base_revision,
+            target_revision=market_data_version(data_root),
         )
     _save_json(state_path, state)
     _save_json(catalog_path, {"updatedAt": _beijing_now(), "unsupported": unsupported})
-    return {"状态": "完成" if written and not errors else "部分完成" if written else "失败", "写入K线": written,
+    return {"状态": "完成" if written and not errors else "无需增量" if not errors else "部分完成" if written else "失败", "写入K线": written,
+            "K线查询索引": "CURRENT" if cache_refreshed else "STALE" if cache_refreshed is False else "NO_CHANGE",
             "错误": errors, "通达信目录": str(tdx_root) if tdx_root else None, "检查点": str(state_path), "生成时间": _beijing_now()}
 
 

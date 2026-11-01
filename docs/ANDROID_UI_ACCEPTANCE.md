@@ -1,7 +1,7 @@
 # MarketListener Android UI 重构验收报告
 
 > 验收时间：2026-08-10
-> 仓库：`SUPMColdRain/MarketListener`（工作树：`C:\Users\qingd\Documents\MarketListener`）
+> 仓库：`SUPMColdRain/MarketListener`（工作树：`C:\Users\<user>\Documents\MarketListener`）
 > 范围：Android App UI/UX、主题、图表展示、页面结构与必要 UI 架构升级；
 > 不重写行情、策略、交易统计、产业链、数据库、同步包、安全校验等业务逻辑。
 

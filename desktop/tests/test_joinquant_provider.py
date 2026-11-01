@@ -48,7 +48,7 @@ def test_joinquant_probe_uses_source_local_symbol_mapping_and_real_period_names(
     provider = JoinQuantProvider(
         sdk=sdk,
         username="local-user",
-        password="local-password",
+        password="local-password",  # Synthetic test credential or marker.
         today=lambda: date(2026, 8, 3),
     )
 
@@ -71,7 +71,7 @@ def test_joinquant_quota_failure_is_reported_without_suppressing_other_capabilit
     provider = JoinQuantProvider(
         sdk=sdk,
         username="local-user",
-        password="local-password",
+        password="local-password",  # Synthetic test credential or marker.
         today=lambda: date(2026, 8, 3),
     )
 
@@ -110,7 +110,7 @@ def test_rate_limit_is_reported_per_capability_without_stopping_other_probes() -
     provider = JoinQuantProvider(
         sdk=FakeJoinQuantSdk(RuntimeError("HTTP 429 too many requests")),
         username="local-user",
-        password="local-password",
+        password="local-password",  # Synthetic test credential or marker.
     )
 
     capabilities = provider.probe_capabilities()

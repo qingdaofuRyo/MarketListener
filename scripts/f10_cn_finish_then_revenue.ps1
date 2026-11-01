@@ -1,6 +1,6 @@
 $ErrorActionPreference = 'Stop'
 
-$root = 'C:\Users\qingd\Documents\MarketListener'
+$root = Split-Path -Parent $PSScriptRoot
 $cnDir = Join-Path $root 'data_control\f10\cn'
 $logsDir = Join-Path $root 'data_control\f10\logs'
 $detailsPath = Join-Path $cnDir 'details_20260809.jsonl'

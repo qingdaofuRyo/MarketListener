@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-test("strategy custom indicator is available from the market-detail indicator action", async ({ page }) => {
+test("strategy custom indicator handoff is consumed by the market workbench", async ({ page }) => {
   const customIndicator = {
     resourceKind: "indicator",
     id: "indicator.user.two_day_ma",
@@ -36,10 +36,8 @@ test("strategy custom indicator is available from the market-detail indicator ac
   await expect(drawer).toContainText("indicator.user.two_day_ma@1");
   await drawer.getByRole("button", { name: "添加到当前图表" }).click();
 
-  await page.waitForURL(/\/market\/\?indicator=indicator\.user.two_day_ma&version=1/);
-  await expect.poll(() => page.evaluate(() => localStorage.getItem("marketlistener.pendingIndicator"))).toContain(
-    "indicator.user.two_day_ma",
-  );
+  await expect(page).toHaveURL(/\/market\/all\/\?/);
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("marketlistener.pendingIndicator"))).toBeNull();
 });
 
 test("strategy page creates a custom indicator then publishes an immutable next version", async ({ page }) => {

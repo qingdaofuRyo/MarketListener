@@ -9,7 +9,7 @@
 |---|---|---|
 | 桌面 DSL/图谱/契约专项 | `desktop\.venv\Scripts\python.exe -m pytest desktop\tests\test_strategy_dsl.py desktop\tests\test_industry_graph_models.py desktop\tests\test_industry_graph_importers.py desktop\tests\test_industry_graph_pipeline.py desktop\tests\test_industry_graph_review.py desktop\tests\test_contracts.py -q` | PASS：115 项收集（43/6/9/9/8/40），全部通过，exit 0 |
 | 金标评估（FULL-702） | `desktop\.venv\Scripts\python.exe -m market_monitor.industry_graph.evaluate` | 实体 P/R/F1=1.0/1.0/1.0（10/10/10）；关系 P/R/F1=1.0/1.0/1.0（8/8/8）；阈值 precision≥0.8、recall≥0.7，超阈值 |
-| Android JVM 全量 | `gradlew -p android testDebugUnitTest --no-daemon --rerun-tasks`（JDK 21 + 临时 subst 盘，`C:\Users\qingd\.jdks\jbr-21.0.11`） | BUILD SUCCESSFUL：20 个 suite / 68 tests / 0 failures / 0 errors / 0 skipped |
+| Android JVM 全量 | `gradlew -p android testDebugUnitTest --no-daemon --rerun-tasks`（JDK 21 + 临时 subst 盘，`C:\Users\<user>\.jdks\jbr-21.0.11`） | BUILD SUCCESSFUL：20 个 suite / 68 tests / 0 failures / 0 errors / 0 skipped |
 | Android lint | `gradlew -p android lintDebug --no-daemon` | BUILD SUCCESSFUL：0 errors；9 warnings + 1 information（GradleDependency 6、SetJavaScriptEnabled 1、KaptUsageInsteadOfKsp 1、AutoboxingStateCreation 1、MissingApplicationIcon 1，均为存量非阻断项） |
 | 临时资源清理 | 验收结束后 `subst` 复检 | 无残留盘符映射 |
 | 设备条件 | `adb devices -l` | 无设备连接；Android 13+ / 16 KB 页面真机类验收项本机无法执行，如实保留解除条件 |

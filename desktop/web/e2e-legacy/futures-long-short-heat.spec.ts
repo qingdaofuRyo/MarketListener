@@ -557,6 +557,41 @@ test("product traded volume renders both the ranked area and absolute-value tren
   await expect(panel).toContainText("futures-structure-volume-official-v1");
 });
 
+test("three product trends are doubled in height and expose all computed products without pretending full coverage", async ({ page }) => {
+  const lineSeries = [
+    { memberKey: "DCE.JM", memberName: "焦煤（JM）", values: [null, null], lineValues: [100, 110] },
+    { memberKey: "CZCE.AP", memberName: "苹果（AP）", values: [null, null], lineValues: [5, 6] },
+    { memberKey: "SHFE.NEW", memberName: "合成新品种（NEW）", values: [null, null], lineValues: [null, 4] },
+  ];
+  const partial = {
+    ...structurePayload, lineSeries, totals: [null, null],
+    series: structurePayload.series.map(item => ({ ...item, values: [null, null], lineValues: item.values })),
+    coverage: structurePayload.coverage.map(item => ({
+      ...item, dataQualityStatus: "PARTIAL", missingExchangeCount: 2, missingExchanges: ["DCE", "GFEX"],
+    })),
+  };
+  await openFutures(page, heatPayload, undefined, { productStructure: partial, productNotionalStructure: {
+    ...partial, chartId: "product-notional", formulaVersion: "futures-structure-notional-official-v5", priceBasis: "SETTLEMENT",
+  } });
+  await page.route("**/api/futures/structures/product-volume**", route => route.fulfill({ json: {
+    ...partial, chartId: "product-volume", formulaVersion: "futures-structure-volume-official-v1",
+  } }));
+  await page.locator('[data-test="futures-refresh"]').click();
+  for (const id of ["product-open-interest", "product-notional", "product-volume"]) {
+    const panel = page.locator(`[data-test="${id}-structure"]`);
+    const chart = panel.locator('[data-test="futures-structure-line-chart"]');
+    await expect(chart).toHaveCSS("height", "780px");
+    await expect(chart).toHaveAttribute("data-series-count", "3");
+    await expect(panel.locator('[data-test="structure-area-empty"]')).toBeVisible();
+    await expect(panel.locator('[data-test="structure-coverage-summary"]')).toContainText("大商所、广期所");
+    await expect(panel.locator('[data-test="structure-coverage-summary"]')).toContainText("0/2 个完整市场日");
+    await panel.getByText("当前面积图成员", { exact: true }).click();
+    await expect(chart).toHaveAttribute("data-series-count", "2");
+    await panel.getByText("全部已计算品种", { exact: true }).click();
+    await expect(chart).toHaveAttribute("data-series-count", "3");
+  }
+});
+
 test("product structure renders one hundred real members without API truncation", async ({ page }) => {
   test.slow();
   const dates = Array.from({ length: 500 }, (_, index) => {

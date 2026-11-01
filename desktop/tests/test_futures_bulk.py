@@ -67,20 +67,27 @@ def test_tdx_reader_and_bulk_job_keep_l7_l8_l9_separate(tmp_path: Path) -> None:
     assert main["name"] == "焦煤主连"
     assert main["actualSource"] == "通达信期货通"
     assert main["latestTimeText"] == "2026-08-14 09:00:00"
-    assert main["capitalDeposit"] == 660
-    assert main["contractMultiplier"] == 60
-    assert main["marginRate"] == pytest.approx(0.2)
-    assert main["capitalDepositFormulaVersion"] == "2026-01-v1"
-    assert "大商所" in main["contractSpecSource"]
+    # Local TDX prices alone cannot prove same-day official margin facts.
+    assert main["capitalDeposit"] is None
+    assert main.get("marginRate") is None
+    assert main["officialMetricsStatus"] == "MISSING"
     bars = client.get(f"/api/market/instruments/{main['instrumentId']}/bars", params={"period": "5m"})
     assert bars.status_code == 200
     assert bars.json()["bars"][0]["instrumentId"] == main["instrumentId"]
     assert bars.json()["bars"][0]["actualSource"] == "通达信期货通"
-    assert bars.json()["bars"][0]["capitalDeposit"] == 660
+    assert bars.json()["bars"][0]["capitalDeposit"] is None
     secondary = client.get("/api/market/instruments", params={"seriesKind": "SECONDARY"}).json()["items"]
     weighted = client.get("/api/market/instruments", params={"seriesKind": "WEIGHTED"}).json()["items"]
     assert next(item for item in secondary if item["productCode"] == "JM")["name"] == "焦煤次连"
     assert next(item for item in weighted if item["productCode"] == "JM")["name"] == "焦煤加权"
+
+
+def test_tdx_day_file_rejects_duplicate_trading_dates(tmp_path: Path) -> None:
+    path = tmp_path / "29#JM2701.day"
+    record = struct.pack("<IffffIIf", 20260930, 100, 110, 90, 105, 20, 30, 103)
+    path.write_bytes(record * 2)
+    with pytest.raises(ValueError, match="重复交易日"):
+        read_tdx_file(path)
 
 
 def test_bulk_checkpoint_skips_unchanged_tdx_files(tmp_path: Path) -> None:
@@ -90,6 +97,7 @@ def test_bulk_checkpoint_skips_unchanged_tdx_files(tmp_path: Path) -> None:
     second = run_bulk_futures(data_root, tdx_futures_root=root, include_global=False, api=_EmptyAk())
     assert first["写入K线"] > 0
     assert second["写入K线"] == 0
+    assert second["状态"] == "无需增量"
 
 
 def test_bulk_checkpoint_reads_only_appended_futures_records(tmp_path: Path) -> None:
@@ -147,7 +155,7 @@ def test_bulk_imports_specific_month_contracts_and_searches_polysilicon(tmp_path
     client = TestClient(create_web_app(data_root), client=("127.0.0.1", 50000))
     response = client.get(
         "/api/market/instruments",
-        params={"q": "多晶硅", "seriesKind": "CONTRACT", "pageSize": 30},
+        params={"q": "多晶硅", "seriesKind": "CONTRACT", "pageSize": 30, "includeExpired": True},
     )
 
     assert response.status_code == 200
@@ -219,11 +227,12 @@ def test_tdx_classifies_dce_f_cffex_ranked_and_option_volatility_series(tmp_path
     data_root = tmp_path / "data"
     run_bulk_futures(data_root, tdx_futures_root=root, include_global=False, api=_EmptyAk())
     items = TestClient(create_web_app(data_root), client=("127.0.0.1", 50000)).get(
-        "/api/market/instruments", params={"pageSize": 100}
+        "/api/market/instruments", params={"pageSize": 100, "includeExpired": True}
     ).json()["items"]
     by_id = {item["instrumentId"]: item for item in items}
 
     assert by_id["CN.DCE.FUTURE.L-F2609.CONTRACT"]["seriesKind"] == "CONTRACT"
+    assert by_id["CN.DCE.FUTURE.L-F2609.CONTRACT"]["productCode"] == "L-F"
     assert by_id["CN.CFFEX.FUTURE.IC.RANKED_0"]["seriesKind"] == "RANKED_0"
     assert classify_market(by_id["CN.CFFEX.INDEX.IF300.FUTURES_UNDERLYING_INDEX"]) == "cn-future-index"
     volatility = by_id["CN.TDX_OPTION_VOLATILITY.INDEX.V050C0.OPTION_VOLATILITY_INDEX"]

@@ -114,6 +114,26 @@ async function setup(page: Page) {
   return {errors,requests};
 }
 
+test("K线索引重建后看板按服务端重试间隔自动恢复", async ({page}) => {
+  const state = await setup(page);
+  let rejected = 0;
+  await page.route("**/api/market/instruments/*/bars*", route => {
+    if (!new URL(route.request().url()).pathname.endsWith("/bars")) return route.fallback();
+    if (rejected++ < 2) return route.fulfill({
+      status: 503,
+      headers: {"Retry-After": "1"},
+      json: {code: "KLINE_INDEX_REBUILDING", detail: "K线索引正在核验，请稍后重试"},
+    });
+    return route.fallback();
+  });
+  await page.goto("/market/all/");
+  await expect(page.locator(".board-status").filter({hasText:"索引核验中"})).toHaveCount(2);
+  await expect(page.locator(".board-status")).toHaveCount(0, {timeout: 10_000});
+  await expect(page.locator(".boards .chart-root")).toHaveCount(2);
+  expect(rejected).toBeGreaterThanOrEqual(4);
+  expect(state.errors).toEqual([]);
+});
+
 test("列表控件宽度、黑体零padding、独立颜色和列拖拽/排序", async ({page}) => {
   await page.setViewportSize({width:1366,height:768});
   const state=await setup(page);
@@ -143,7 +163,7 @@ test("列表控件宽度、黑体零padding、独立颜色和列拖拽/排序", 
   await expect(page.getByRole("button",{name:"按名称排序"})).toHaveCSS("color",expectedBody);
   await expect(row.locator(".column-return22")).toHaveCSS("color",expectedBody);
   const sorter=page.getByRole("button",{name:"按近3日涨幅排序"});
-  for (const arrow of ["↑","↓",""]) {await sorter.click();expect((await sorter.textContent())?.trim()).toBe(`近3日涨幅 ${arrow}`.trim());}
+  for (const arrow of ["↓","↑",""]) {await sorter.click();expect((await sorter.textContent())?.trim()).toBe(`近3日涨幅 ${arrow}`.trim());}
   await headers.nth(0).dragTo(headers.nth(1));
   await expect(headers.first()).toContainText("代码");
   const headerBoxes=await headers.evaluateAll(els=>els.map(el=>({x:el.getBoundingClientRect().x,w:el.getBoundingClientRect().width})));

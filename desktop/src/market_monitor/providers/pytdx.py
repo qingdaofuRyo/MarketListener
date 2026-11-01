@@ -9,6 +9,7 @@ setting (comma-separated host:port pairs).
 from __future__ import annotations
 
 import os
+import struct
 from datetime import date
 from typing import Any, Callable, Mapping, Sequence
 
@@ -27,6 +28,14 @@ from .base import (
     SourceDescription,
 )
 from .joinquant import _error_detail, _provider_error
+
+
+def _tdx_error(error: Exception) -> ProviderError:
+    if isinstance(error, ProviderError):
+        return error
+    if isinstance(getattr(error, "original_exception", None), struct.error):
+        return ProviderError(ErrorCategory.FIELD_CHANGE, "TDX_INVALID_BINARY_RESPONSE")
+    return _provider_error(error)
 
 _DEFAULT_SERVERS: tuple[tuple[str, int], ...] = (
     ("60.191.117.167", 7709),
@@ -121,18 +130,27 @@ class TdxProvider(Provider):
             api.disconnect()
 
     def fetch_bars(self) -> FetchResult:
-        api, host = self._connect()
-        try:
-            records = self._bars(api, "600519", 1, "1d", 250)
-            dates = [str(row["date"]) for row in records]
-            return FetchResult(
-                records=records,
-                earliest=_iso_datetime(min(dates)),
-                latest=_iso_datetime(max(dates)),
-                detail=f"TDX {host} 600519 daily bars",
-            )
-        finally:
-            api.disconnect()
+        errors: list[ProviderError] = []
+        for host, port in self._servers:
+            api = self._new_api()
+            try:
+                if not api.connect(host, port, time_out=self._timeout_seconds):
+                    errors.append(ProviderError(ErrorCategory.NETWORK, "TDX connection refused"))
+                    continue
+                records = self._bars(api, "600519", 1, "1d", 250)
+                dates = [str(row["date"]) for row in records]
+                return FetchResult(records=records, earliest=_iso_datetime(min(dates)),
+                                   latest=_iso_datetime(max(dates)), detail=f"TDX {host}:{port} 600519 daily bars")
+            except Exception as error:
+                errors.append(_tdx_error(error))
+            finally:
+                try:
+                    api.disconnect()
+                except Exception:
+                    pass
+        if errors:
+            raise errors[-1]
+        raise ProviderError(ErrorCategory.NETWORK, "no TDX servers configured")
 
     def fetch_indicators(self) -> FetchResult:
         raise ProviderError(ErrorCategory.NO_COVERAGE, "TDX protocol does not expose standalone indicator datasets")
@@ -161,9 +179,17 @@ class TdxProvider(Provider):
                 connected = api.connect(host, port, time_out=self._timeout_seconds)
             except Exception as error:
                 failures.append(f"{host}:{port} {type(error).__name__}")
+                try:
+                    api.disconnect()
+                except Exception:
+                    pass
                 continue
             if not connected:
                 failures.append(f"{host}:{port} refused")
+                try:
+                    api.disconnect()
+                except Exception:
+                    pass
                 continue
             return api, f"{host}:{port}"
         raise ProviderError(ErrorCategory.NETWORK, "; ".join(failures) or "no TDX servers configured")
@@ -173,7 +199,7 @@ class TdxProvider(Provider):
             return self._api_factory()
         from pytdx.hq import TdxHq_API
 
-        return TdxHq_API()
+        return TdxHq_API(raise_exception=True)
 
     def _security_list(self, api: Any, market: int) -> list[Mapping[str, Any]]:
         rows = api.get_security_list(market, 0)
@@ -184,9 +210,11 @@ class TdxProvider(Provider):
             for row in rows
         ]
 
-    def _bars(self, api: Any, code: str, market: int, period: str, count: int) -> list[Mapping[str, Any]]:
+    def _bars(self, api: Any, code: str, market: int, period: str, count: int,
+              asset_type: AssetType = AssetType.STOCK) -> list[Mapping[str, Any]]:
         category = _BAR_CATEGORIES[period]
-        rows = api.get_security_bars(category, market, code, 0, count)
+        fetch = api.get_index_bars if asset_type is AssetType.INDEX else api.get_security_bars
+        rows = fetch(category, market, code, 0, count)
         if not rows:
             raise ProviderError(ErrorCategory.NO_COVERAGE, f"TDX returned zero {period} bars for {code}")
         records: list[Mapping[str, Any]] = []
@@ -279,7 +307,7 @@ class TdxProvider(Provider):
         asset_type: AssetType,
     ) -> Capability:
         try:
-            records = self._bars(api, code, market, period, 60)
+            records = self._bars(api, code, market, period, 60, asset_type)
             return self._capability(
                 capability_id,
                 f"{code} {period} bars",
@@ -293,7 +321,7 @@ class TdxProvider(Provider):
                 latest=_iso_datetime(records[-1]["date"]),
             )
         except Exception as error:
-            wrapped = error if isinstance(error, ProviderError) else _provider_error(error)
+            wrapped = _tdx_error(error)
             return self._capability(
                 capability_id,
                 f"{code} {period} bars",

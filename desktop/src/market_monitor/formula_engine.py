@@ -21,7 +21,7 @@ ALLOWED_FUNCTIONS = frozenset({
     "ts_momentum", "cs_momentum", "sharpe", "calmar",
     "hsar_resistance", "hsar_support", "ma", "sd", "bollinger_upper", "bollinger_lower",
     "gann_rising_rate", "gann_falling_rate",
-    "period_return", "no_limit_up", "no_limit_down", "limit_up_count", "limit_down_count",
+    "period_return", "up_days", "sum_daily_returns", "no_limit_up", "no_limit_down", "limit_up_count", "limit_down_count",
     "close_new_high", "close_new_low", "up_count", "down_count", "up_down_ratio", "down_up_ratio",
     "range_high_low_ratio", "range_low_high_ratio", "volume_slope",
 })
@@ -32,7 +32,7 @@ _FUNCTION_ARITY = {
     "ts_momentum": 2, "cs_momentum": 3, "sharpe": 3, "calmar": 2,
     "hsar_resistance": 3, "hsar_support": 3, "ma": 2, "sd": 2,
     "bollinger_upper": 3, "bollinger_lower": 3, "gann_rising_rate": 2, "gann_falling_rate": 2,
-    "period_return": 2, "no_limit_up": 2, "no_limit_down": 2,
+    "period_return": 2, "up_days": 2, "sum_daily_returns": 2, "no_limit_up": 2, "no_limit_down": 2,
     "limit_up_count": 2, "limit_down_count": 2, "close_new_high": 3, "close_new_low": 3,
     "up_count": 3, "down_count": 3, "up_down_ratio": 3, "down_up_ratio": 3,
     "range_high_low_ratio": 3, "range_low_high_ratio": 3, "volume_slope": 3,
@@ -138,6 +138,18 @@ CONDITION_CATALOG: tuple[dict[str, Any], ...] = (
         "definition": "当前收盘价相对近第 lookback 根之前收盘价的累计涨幅。",
         "parameters": ["lookback", "return_threshold"], "data": "close",
         "example": "value = period_return(close, lookback)\nsignal = value > return_threshold / 100",
+    },
+    {
+        "id": "up_days", "name": "上涨天数（相对前收）",
+        "definition": "统计最近 N 根收盘价高于各自前收盘价的天数，平盘不计入；需要 N+1 根有效收盘价。",
+        "parameters": ["lookback"], "data": "close", "returnType": "series<number>",
+        "example": "value = up_days(close, 20)\nsignal = value > 10",
+    },
+    {
+        "id": "sum_daily_returns", "name": "每日涨跌幅之和",
+        "definition": "将最近 N 根相对前收盘的涨跌幅直接相加；0.1 表示 10 个百分点，不是区间复利涨幅。",
+        "parameters": ["lookback"], "data": "close", "returnType": "series<number>",
+        "example": "value = sum_daily_returns(close, 5)\nsignal = value > 0.1",
     },
     {
         "id": "no_limit", "name": "近 N 根没有涨停 / 跌停",
@@ -621,6 +633,34 @@ def gann_falling_rate(high: Sequence[float | None], lookback: Any) -> list[float
 
 def period_return(close: Sequence[float | None], lookback: Any) -> list[float | None]:
     return time_series_momentum(close, lookback)
+
+
+def _daily_return_windows(close: Sequence[float | None], lookback: Any) -> list[list[float] | None]:
+    """Return N close-to-previous-close changes, requiring N+1 valid prices."""
+    window = _positive_window(lookback)
+    result: list[list[float] | None] = [None] * len(close)
+    for index in range(window, len(close)):
+        raw = close[index - window:index + 1]
+        try:
+            if any(value is None or isinstance(value, bool) or not math.isfinite(float(value))
+                   or float(value) <= 0 for value in raw):
+                continue
+            values = [float(value) for value in raw if value is not None]
+            result[index] = [current / previous - 1 for previous, current in zip(values[:-1], values[1:], strict=True)]
+        except (TypeError, ValueError, OverflowError):
+            continue
+    return result
+
+
+def up_days(close: Sequence[float | None], lookback: Any) -> list[int | None]:
+    """Number of closes above the previous close in the last N periods."""
+    return [sum(value > 0 for value in window) if window is not None else None
+            for window in _daily_return_windows(close, lookback)]
+
+
+def sum_daily_returns(close: Sequence[float | None], lookback: Any) -> list[float | None]:
+    """Sum N daily simple returns; 0.10 means ten percentage points."""
+    return [sum(window) if window is not None else None for window in _daily_return_windows(close, lookback)]
 
 
 def _rolling_flag_count(flags: Sequence[bool | None], lookback: Any) -> list[int | None]:

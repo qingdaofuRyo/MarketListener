@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from market_monitor.formula_engine import MetricValue, performance_metrics
+from market_monitor.profile_gate import profile_write_gate
 from market_monitor.web_api.common import MAX_BARS, load_json, load_jsonl, read_bars
 from market_monitor.web_api.market import _derived_bars, _logical_instruments
 
@@ -39,7 +40,7 @@ def load_performance_store(data_root: Path) -> dict[str, Any]:
     }
 
 
-def save_performance_store(data_root: Path, store: Mapping[str, Any]) -> None:
+def _save_performance_store_unlocked(data_root: Path, store: Mapping[str, Any]) -> None:
     path = _store_path(data_root)
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
@@ -53,41 +54,50 @@ def save_performance_store(data_root: Path, store: Mapping[str, Any]) -> None:
             os.unlink(temporary_name)
 
 
+def save_performance_store(data_root: Path, store: Mapping[str, Any]) -> None:
+    """Serialize direct store replacement with backup capture and other writers."""
+    with profile_write_gate(data_root):
+        _save_performance_store_unlocked(data_root, store)
+
+
 def set_strategy_capital(data_root: Path, strategy_id: str, capital: float) -> dict[str, Any]:
     if not strategy_id.strip() or not capital > 0:
         raise PerformanceError("策略和独立初始本金必须有效，且本金必须大于零")
-    store = load_performance_store(data_root)
-    store["capitalByStrategy"][strategy_id] = float(capital)
-    save_performance_store(data_root, store)
-    return store
+    with profile_write_gate(data_root):
+        store = load_performance_store(data_root)
+        store["capitalByStrategy"][strategy_id] = float(capital)
+        _save_performance_store_unlocked(data_root, store)
+        return store
 
 
 def upsert_strategy_trade(data_root: Path, trade: Mapping[str, Any], trade_id: str | None = None) -> dict[str, Any]:
-    store = load_performance_store(data_root)
-    normalized = dict(trade)
-    normalized["id"] = trade_id or str(normalized.get("id") or f"trade_{uuid.uuid4().hex[:16]}")
-    normalized["source"] = "desktop"
-    found = False
-    for index, item in enumerate(store["trades"]):
-        if item.get("id") == normalized["id"]:
-            store["trades"][index] = normalized
-            found = True
-            break
-    if trade_id and not found:
-        raise PerformanceError("交易记录不存在")
-    if not found:
-        store["trades"].append(normalized)
-    save_performance_store(data_root, store)
-    return normalized
+    with profile_write_gate(data_root):
+        store = load_performance_store(data_root)
+        normalized = dict(trade)
+        normalized["id"] = trade_id or str(normalized.get("id") or f"trade_{uuid.uuid4().hex[:16]}")
+        normalized["source"] = "desktop"
+        found = False
+        for index, item in enumerate(store["trades"]):
+            if item.get("id") == normalized["id"]:
+                store["trades"][index] = normalized
+                found = True
+                break
+        if trade_id and not found:
+            raise PerformanceError("交易记录不存在")
+        if not found:
+            store["trades"].append(normalized)
+        _save_performance_store_unlocked(data_root, store)
+        return normalized
 
 
 def delete_strategy_trade(data_root: Path, trade_id: str) -> None:
-    store = load_performance_store(data_root)
-    filtered = [item for item in store["trades"] if item.get("id") != trade_id]
-    if len(filtered) == len(store["trades"]):
-        raise PerformanceError("交易记录不存在")
-    store["trades"] = filtered
-    save_performance_store(data_root, store)
+    with profile_write_gate(data_root):
+        store = load_performance_store(data_root)
+        filtered = [item for item in store["trades"] if item.get("id") != trade_id]
+        if len(filtered) == len(store["trades"]):
+            raise PerformanceError("交易记录不存在")
+        store["trades"] = filtered
+        _save_performance_store_unlocked(data_root, store)
 
 
 def _timestamp(value: Any) -> datetime:

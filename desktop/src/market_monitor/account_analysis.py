@@ -8,6 +8,8 @@ replace a user-entered end-of-day account equity.
 from __future__ import annotations
 
 import math
+import hashlib
+import json
 import sqlite3
 import statistics
 import uuid
@@ -18,12 +20,18 @@ from pathlib import Path
 from typing import Any, Iterator, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
+from .profile_gate import ProfileGateBusy, profile_write_gate
+
 BEIJING = ZoneInfo("Asia/Shanghai")
 ANNUAL_TRADING_DAYS = 250
 
 
 class AccountError(ValueError):
     """A stable user-facing error for local account data."""
+
+
+class AccountBusyError(AccountError):
+    """A profile backup or another logical mutation owns the write gate."""
 
 
 def now_iso() -> str:
@@ -48,20 +56,26 @@ def _database_path(data_root: Path) -> Path:
 @contextmanager
 def _connect(data_root: Path) -> Iterator[sqlite3.Connection]:
     path = _database_path(data_root)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(path)
-    connection.row_factory = sqlite3.Row
     try:
-        connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute("PRAGMA journal_mode = WAL")
-        _schema(connection)
-        yield connection
-        connection.commit()
-    except Exception:
-        connection.rollback()
-        raise
-    finally:
-        connection.close()
+        # _schema can create tables even on a nominal read, so every connection
+        # holds the gate through commit/rollback and SQLite sidecar cleanup.
+        with profile_write_gate(data_root):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            connection = sqlite3.connect(path)
+            connection.row_factory = sqlite3.Row
+            try:
+                connection.execute("PRAGMA foreign_keys = ON")
+                connection.execute("PRAGMA journal_mode = WAL")
+                _schema(connection)
+                yield connection
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
+            finally:
+                connection.close()
+    except ProfileGateBusy as error:
+        raise AccountBusyError(str(error)) from error
 
 
 def _schema(connection: sqlite3.Connection) -> None:
@@ -237,15 +251,43 @@ def restore_account(data_root: Path, account_id: str) -> dict[str, Any]:
     return get_account(data_root, account_id)
 
 
-def purge_deleted(data_root: Path, *, now: datetime | None = None) -> int:
-    cutoff = ((now or datetime.now(timezone.utc)).timestamp() - 30 * 86400)
-    deleted: list[str] = []
+def _expired_deleted_rows(connection: sqlite3.Connection, now: datetime) -> list[tuple[str, str]]:
+    cutoff = now.timestamp() - 30 * 86400
+    rows = connection.execute("SELECT id, deleted_at FROM accounts WHERE deleted_at IS NOT NULL").fetchall()
+    return sorted((str(row["id"]), str(row["deleted_at"])) for row in rows
+                  if _parse_time(row["deleted_at"]).timestamp() < cutoff)
+
+
+def _trash_digest(rows: list[tuple[str, str]]) -> str:
+    return hashlib.sha256(json.dumps(rows, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
+
+
+def preview_deleted_accounts(data_root: Path, *, now: datetime | None = None) -> dict[str, Any]:
+    """Read the exact 30-day purge set for a deliberate maintenance action."""
     with _connect(data_root) as connection:
-        rows = connection.execute("SELECT id, deleted_at FROM accounts WHERE deleted_at IS NOT NULL").fetchall()
-        deleted = [row["id"] for row in rows if _parse_time(row["deleted_at"]).timestamp() < cutoff]
-        for account_id in deleted:
-            connection.execute("DELETE FROM accounts WHERE id=?", [account_id])
-    return len(deleted)
+        rows = _expired_deleted_rows(connection, now or datetime.now(timezone.utc))
+    return {"count": len(rows), "accountIds": [value[0] for value in rows],
+            "confirmationDigest": _trash_digest(rows)}
+
+
+def purge_deleted(data_root: Path, *, expected_digest: str,
+                  now: datetime | None = None) -> int:
+    """Purge only the previously previewed rows, including their child records."""
+    if len(expected_digest) != 64 or not all(value in "0123456789abcdef" for value in expected_digest):
+        raise AccountError("账户清理确认摘要无效")
+    with _connect(data_root) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        rows = _expired_deleted_rows(connection, now or datetime.now(timezone.utc))
+        if not rows or _trash_digest(rows) != expected_digest:
+            raise AccountError("待清理账户已变化，请重新预览")
+        for account_id, deleted_at in rows:
+            for table in ("account_snapshots", "account_cashflows", "account_fills", "account_strategy_uses"):
+                connection.execute(f"DELETE FROM {table} WHERE account_id=?", [account_id])
+            changed = connection.execute("DELETE FROM accounts WHERE id=? AND deleted_at=?",
+                                         [account_id, deleted_at]).rowcount
+            if changed != 1:
+                raise AccountError("待清理账户已变化，请重新预览")
+    return len(rows)
 
 
 def _parse_time(value: Any) -> datetime:
@@ -555,7 +597,7 @@ def analyze_account(data_root: Path, account_id: str, *, start: str | None = Non
 
 
 __all__ = (
-    "AccountError", "analyze_account", "create_account", "delete_record", "get_account", "list_accounts",
-    "list_records", "purge_deleted", "restore_account", "soft_delete_account", "update_account", "upsert_cashflow",
+    "AccountBusyError", "AccountError", "analyze_account", "create_account", "delete_record", "get_account", "list_accounts",
+    "list_records", "preview_deleted_accounts", "purge_deleted", "restore_account", "soft_delete_account", "update_account", "upsert_cashflow",
     "upsert_fill", "upsert_snapshot", "upsert_strategy_use",
 )

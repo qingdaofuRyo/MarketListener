@@ -2,6 +2,8 @@
 
 当前开发唯一入口：[Plan_R4.md](./Plan_R4.md)。`Plan_R1.md`、`Plan_R2.md`、`Plan_R3.md`、`Plan.md`、`Plan_full.md` 与 `docs/STATUS.md` 保留历史计划和验收事实。
 
+2026-10-26 当前网页入口：[客户产品与内部管理台](./docs/WEB_CONTROL_CENTER.md)。8765面向产品客户；服务运行后，本机浏览器直接打开`http://127.0.0.1:8766/`即可进入内部管理台，无需浏览器口令或桌面快捷入口。快捷入口仍可启动后台服务；独立图形EXE启动器属于历史迁移路径。
+
 2026-09-20 新增：[性能、功能代码与现代界面改动计划](./docs/Optimization_Plan_20260920.md)。问题证据、优先级、验收矩阵和回退方法已整理；任务状态集中登记在 `Plan_R4.md` 的 `R4-OPT-001～014`，目前为计划阶段。
 
 相关设计详案：[现代化金融终端 UI / UX 专项计划](./docs/UI_Modernization_Plan_20260920.md)。同一组件的性能和视觉改进复用任务与验收，保留当前默认布局。
@@ -52,7 +54,7 @@ Day 0 已于 2026-08-04 停止执行且未封板。`Plan.md` 与 `docs/deliverie
 
 版本权威清单见 `toolchain.versions.toml`：Python 3.11.0、JDK 21、Gradle Wrapper 8.5、AGP 8.3.2、Kotlin 2.0.0、Android SDK 34（Platform revision 3）和 Build Tools 34.0.0。Python 完整依赖锁见 `desktop/requirements.lock`，Android 传递依赖由 Gradle lockfile 固定。
 
-路径说明：仓库当前位于英文路径 `C:\Users\qingd\Documents\MarketListener`，命令行可直接构建；若以后把仓库克隆或移动到中文路径，JDK 21/Gradle 的测试 worker 会把英文 junction 解析回中文物理路径并导致测试类加载失败，届时可临时执行 `subst M: <仓库绝对路径>`，从 `M:\` 运行 Gradle，结束后执行 `subst M: /D`（盘符 `M:` 已占用时选择其他空闲盘符）。
+路径说明：仓库当前位于英文路径 `C:\Users\<user>\Documents\MarketListener`，命令行可直接构建；若以后把仓库克隆或移动到中文路径，JDK 21/Gradle 的测试 worker 会把英文 junction 解析回中文物理路径并导致测试类加载失败，届时可临时执行 `subst M: <仓库绝对路径>`，从 `M:\` 运行 Gradle，结束后执行 `subst M: /D`（盘符 `M:` 已占用时选择其他空闲盘符）。
 
 ```powershell
 # 数据生产端

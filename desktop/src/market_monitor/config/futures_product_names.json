@@ -79,9 +79,17 @@
   "CZCE.PR": "瓶片",
   "CZCE.PL": "丙烯",
   "CZCE.RS": "油菜籽",
+  "CZCE.JR": "粳稻",
+  "CZCE.LR": "晚籼稻",
+  "CZCE.PM": "普麦",
+  "CZCE.RI": "早籼稻",
+  "CZCE.WH": "强麦",
   "GFEX.SI": "工业硅",
   "GFEX.LC": "碳酸锂",
   "GFEX.PS": "多晶硅",
   "GFEX.PT": "铂",
-  "GFEX.PD": "钯"
+  "GFEX.PD": "钯",
+  "DCE.L-F": "聚乙烯月均价",
+  "DCE.V-F": "聚氯乙烯月均价",
+  "DCE.PP-F": "聚丙烯月均价"
 }

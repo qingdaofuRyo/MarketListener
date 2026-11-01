@@ -54,3 +54,17 @@ def test_calendar_missing_and_invalid_cache_remain_explicit(tmp_path: Path) -> N
     target.write_text("{}", encoding="utf-8")
     with pytest.raises(ValueError, match="schema"):
         load_futures_trading_calendar(tmp_path)
+
+
+def test_updated_calendar_replaces_cached_trading_days(tmp_path: Path) -> None:
+    sync_futures_trading_calendar(tmp_path, fetcher=FakeCalendar)
+    original = load_futures_trading_calendar(tmp_path)
+    assert original is not None
+    target = tmp_path / CALENDAR_RELATIVE_PATH
+    payload = json.loads(target.read_text(encoding="utf-8"))
+    payload["tradingDays"].append("2026-10-12")
+    target.write_text(json.dumps(payload), encoding="utf-8")
+    refreshed = load_futures_trading_calendar(tmp_path)
+    assert refreshed is not None
+    assert refreshed.trading_days[-1] == "2026-10-12"
+    assert original.trading_days[-1] == "2026-10-09"

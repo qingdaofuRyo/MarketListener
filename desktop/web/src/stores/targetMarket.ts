@@ -64,8 +64,10 @@ export const useTargetMarketStore = defineStore("targetMarket", () => {
     finally { if (request === serial) loading.value = false; }
   }
   function toggle(list: string[], value: string): string[] { return list.includes(value) ? list.filter((item) => item !== value) : [...list, value]; }
-  function toggleMarket(value: string): void { selectedMarkets.value = value === "all" ? [] : toggle(selectedMarkets.value, value); void load(); }
-  function toggleStrategy(value: string): void { selectedStrategies.value = value === "all" ? [] : toggle(selectedStrategies.value, value); void load(); }
+  // Filtering uses the already loaded result set; refreshing it here sends an
+  // unrelated pair of requests on every chip click and can replace a scan result.
+  function toggleMarket(value: string): void { selectedMarkets.value = value === "all" ? [] : toggle(selectedMarkets.value, value); }
+  function toggleStrategy(value: string): void { selectedStrategies.value = value === "all" ? [] : toggle(selectedStrategies.value, value); }
   function start(): void { void load(); if (monitorTimer) return; monitorTimer = setInterval(() => { if (monitored.value.length && !document.hidden) void scan(true); }, 30_000); }
   function stopScan(): void { serial++; loading.value=false; progress.value="已停止后续批次；正在处理的服务端批次可能已完成，请刷新结果。"; }
   onScopeDispose(() => { if(monitorTimer)clearInterval(monitorTimer); serial++; loadSerial++; });

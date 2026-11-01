@@ -10,7 +10,7 @@
 
 **接口变化**：Room 的加密数据库工厂由 `net.sqlcipher.database.SupportFactory` 迁为 `net.zetetic.database.sqlcipher.SupportOpenHelperFactory`；创建个人数据库前显式执行 `System.loadLibrary("sqlcipher")`，这是新 SQLCipher 工件的必要初始化步骤。应用数据库名称、Keystore 密钥包装方式和市场/个人数据边界均未改变。
 
-**实际测试**：在 `C:\Users\qingd\Documents\MarketListener`，使用 JDK 20.0.2 执行：
+**实际测试**：在 `C:\Users\<user>\Documents\MarketListener`，使用 JDK 20.0.2 执行：
 
 ```powershell
 android\gradlew.bat -p android testDebugUnitTest assembleDebug --no-daemon

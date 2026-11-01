@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
 from market_monitor.storage import MarketStore, PartitionKey
+from market_monitor.futures import is_expired_futures_contract
 from market_monitor.futures_rule_sync import SNAPSHOT_PROVIDER, SNAPSHOT_RELATIVE_PATH, SNAPSHOT_SCHEMA
 from market_monitor.web_app import create_web_app
 
@@ -92,7 +94,10 @@ def _write_rule_snapshot(data_root: Path, *, day: str, product: str, exchange: s
     )
 
 
-def test_contract_selector_and_series_keep_blocked_metrics_explicit(tmp_path: Path) -> None:
+def test_contract_selector_and_series_keep_blocked_metrics_explicit(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("market_monitor.web_api.futures.is_expired_futures_contract",
+                        lambda symbol, exchange, reference_day: is_expired_futures_contract(
+                            symbol, exchange, reference_day=date(2026, 8, 29)))
     data_root = tmp_path / "data"
     _write(
         data_root,

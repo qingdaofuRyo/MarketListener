@@ -108,9 +108,11 @@ desktop/web/coverage/
 /coverage/
 .coverage
 .coverage.*
+/desktop/tests/pytest-junit.xml
 htmlcov/
 *.tsbuildinfo
 desktop/src/market_monitor/web_dist/
+desktop/src/market_monitor/admin_web_dist/
 
 # Python tool caches
 .ruff_cache/

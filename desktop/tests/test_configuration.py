@@ -51,7 +51,7 @@ def test_explicit_external_configuration_overrides_environment(tmp_path: Path) -
     repo = tmp_path / "repo"
     repo.mkdir()
     external = tmp_path / "market-monitor.env"
-    external.write_text("JQDATA_USERNAME=external-user\nJQDATA_PASSWORD='external-password'\n", encoding="utf-8")
+    external.write_text("JQDATA_USERNAME=external-user\nJQDATA_PASSWORD='external-password'\n", encoding="utf-8")  # Synthetic test credential or marker.
 
     configuration = load_local_configuration(
         config_file=external,
@@ -67,7 +67,7 @@ def test_configuration_accepts_utf8_bom_and_rejects_case_normalized_duplicates(t
     repo = tmp_path / "repo"
     repo.mkdir()
     external = tmp_path / "market-monitor.env"
-    external.write_bytes("\ufeffJQDATA_PASSWORD='quoted-value'\n".encode("utf-8"))
+    external.write_bytes("\ufeffJQDATA_PASSWORD='quoted-value'\n".encode("utf-8"))  # Synthetic test credential or marker.
 
     assert load_local_configuration(config_file=external, repo_root=repo).get("JQDATA_PASSWORD") == "quoted-value"
     external.write_text("JQDATA_PASSWORD=first\njqdata_password=second\n", encoding="utf-8")

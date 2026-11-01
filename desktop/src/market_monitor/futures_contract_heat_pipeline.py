@@ -11,7 +11,8 @@ from .futures_contract_turnover_heat import (
     calculate_contract_turnover_heat,
 )
 from .futures_rule_sync import load_rule_book
-from .futures_structure import _read_contract_aggregates
+from .futures_official_daily_quality import validated_daily_inputs
+from .futures_weekly_heat_gold import rebuild_weekly_heat_gold
 from .storage import MarketStore
 
 
@@ -19,16 +20,13 @@ def run_futures_contract_heat_pipeline(data_root: Path) -> dict[str, Any]:
     """Build v2 without changing the archived product/deposit v1 heat rows."""
 
     root = Path(data_root)
-    files = sorted(
-        (root / "silver" / "market=CN" / "asset_type=FUTURE" / "period=1d").rglob("*.parquet")
-    )
-    bars, source_rows, rejected_rows = _read_contract_aggregates(files, end_day=None)
     store = MarketStore(root)
     try:
-        official = store.list_futures_official_daily()
-        coverage = store.list_futures_official_daily_coverage()
+        official, coverage = validated_daily_inputs(
+            store.list_futures_official_daily(), store.list_futures_official_daily_coverage(),
+        )
         results = calculate_contract_turnover_heat(
-            bars, official, coverage, rule_book=load_rule_book(root)
+            (), official, coverage, rule_book=load_rule_book(root)
         )
         calculated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
         for row in results:
@@ -39,14 +37,18 @@ def run_futures_contract_heat_pipeline(data_root: Path) -> dict[str, Any]:
     finally:
         store.close()
     latest = results[-1] if results else None
+    weekly = rebuild_weekly_heat_gold(root, as_of_day=latest["trade_date"]) if latest else {
+        "status": "NO_DATA", "formulaVersion": None, "writtenDays": 0,
+    }
+    daily_status = "PASS" if latest and latest["data_quality_status"] == "PASS" else "PARTIAL" if results else "NO_DATA"
     return {
-        "status": "PASS" if latest and latest["data_quality_status"] == "PASS"
+        "status": "PASS" if daily_status == weekly["status"] == "PASS"
         else "PARTIAL" if results else "NO_DATA",
+        "dailyStatus": daily_status,
+        "weekly": weekly,
         "formulaVersion": FORMULA_VERSION,
-        "silverFiles": len(files),
-        "sourceRows": source_rows,
-        "preparedContractDays": len(bars),
-        "rejectedRows": rejected_rows,
+        "sourceRows": len(official),
+        "preparedContractDays": len(official),
         "officialRows": len(official),
         "officialCoverageRows": len(coverage),
         "writtenDays": written,

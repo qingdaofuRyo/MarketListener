@@ -60,7 +60,18 @@ async function chooseDrawingTool(page: Page, group: string, tool: string): Promi
   await page.getByRole("menuitem", { name: tool, exact: true }).click();
 }
 
-test("first market request waits for the current data version so ETF names are fresh", async ({ page }) => {
+test("chart shows local minute time-basis warning when supplied by API", async ({ page }) => {
+  await mockMarket(page);
+  await page.route("**/api/market/instruments/*/chart?**", route => route.fulfill({json:{
+    bars: bars.map(item => ({...item, timeBasisWarning:"TDX_CN_STOCK_5M_TIME_UNVERIFIED"})),
+    series:{},drawings:[],total:bars.length,start:0,size:bars.length,period:"30m",availablePeriods:["30m"],hasMore:false,dataVersion:"e2e",
+  }}));
+  await page.goto("/market/");
+  await page.locator(".row-main").first().dblclick();
+  await expect(page.locator('.workbench-overlay [data-test="tdx-time-basis-warning"]')).toContainText('时间口径待核');
+});
+
+test("first market request uses its returned version and renders fresh ETF names", async ({ page }) => {
   const requestedVersions: Array<string | null> = [];
   const etf = { instrumentId: "CN.SSE.ETF.510300", symbol: "510300", name: "沪深300ETF", market: "CN", assetType: "ETF", latestPrice: 4.12, actualSource: "通达信金融终端（本地）" };
   const fulfill = (route: Route, json: unknown) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(json) });
@@ -84,7 +95,7 @@ test("first market request waits for the current data version so ETF names are f
 
   await page.goto("/market/");
   await expect(page.getByText("沪深300ETF", { exact: true }).first()).toBeVisible();
-  expect(requestedVersions).toEqual(["names-v1"]);
+  expect(requestedVersions).toEqual([null]);
 });
 
 async function drawRectangle(page: Page, leftRatio: number, rightRatio: number): Promise<Drawing> {
@@ -184,7 +195,8 @@ test("market list and drawing preferences persist across the right-side workbenc
   await expect(page.locator(".row-main")).toHaveCount(1);
   await page.locator(".row-main").first().dblclick();
   await expect(page.locator(".workbench-overlay")).toBeVisible();
-  await expect(page.locator(".workbench-header")).toContainText("浦发银行 · 600000");
+  await expect(page.locator(".workbench-overlay .instrument-info")).toContainText("浦发银行");
+  await expect(page.locator(".workbench-overlay .instrument-info")).toContainText("600000");
   const created = await drawRectangle(page, 0.2, 0.48);
   await expect(page.locator(".drawing-popover")).toBeVisible();
 
@@ -237,8 +249,9 @@ test("market list and drawing preferences persist across the right-side workbenc
   await expect(page.locator(".row-main")).toHaveCount(1);
 
   await page.reload();
+  await page.locator(".row-main").first().dblclick();
   await expect(page.locator(".workbench-overlay")).toBeVisible();
-  await expect(page.locator(".workbench-header")).toContainText("浦发银行 · 600000");
+  await expect(page.locator(".workbench-overlay .instrument-info")).toContainText("浦发银行");
   await expect(page.getByRole("button", { name: "吸附" })).toHaveClass(/active/);
   await expect(page.getByRole("button", { name: "跨周期" }).first()).toHaveClass(/active/);
   await expect(page.getByRole("button", { name: "连续画线" })).toHaveClass(/active/);

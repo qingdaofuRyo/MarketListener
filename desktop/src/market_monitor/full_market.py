@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import json
+import math
 import time
 from datetime import date, timedelta
 from pathlib import Path
@@ -124,7 +125,8 @@ def _run_market(
     start_date = (date.today() - timedelta(days=history_days)).strftime("%Y%m%d")
     result: dict[str, Any] = {
         "状态": "运行中", "市场": "A股" if market == "CN" else "港股",
-        "数据源": "通达信 TCP（A股）" if market == "CN" else "新浪财经（经 AkShare，港股）",
+        "数据源": ("通达信 TCP（A股）" if market == "CN" else "新浪财经（经 AkShare，港股）")
+                  if fetcher is _fetch_market_rows else "调用方提供（来源待核验）",
         "总标的": len(universe), "已完成": len(completed), "待处理": len(pending),
         "失败": list(previous.get("失败", []))[-200:], "起始日期": start_date, "更新时间": _now(),
     }
@@ -147,7 +149,9 @@ def _run_market(
                 if error:
                     failures.append({"代码": item["code"], "错误": error})
                     continue
-                normalized = _normalize_rows(rows, market, item["code"], item["name"])
+                source = (("pytdx-full-market-stock" if market == "CN" else "akshare-sina-hk-daily")
+                          if fetcher is _fetch_market_rows else "unverified-custom-fetcher")
+                normalized = _normalize_rows(rows, market, item["code"], item["name"], source=source)
                 if not normalized:
                     failures.append({"代码": item["code"], "错误": "数据源未返回有效日线"})
                     continue
@@ -203,12 +207,12 @@ def _fetch_market_rows(market: str, code: str, start_date: str) -> Iterable[Mapp
 
 def _fetch_cn_from_tdx(code: str) -> Iterable[Mapping[str, Any]]:
     from pytdx.hq import TdxHq_API
-    from .collector import _TDX_SERVERS
+    from .collector import _configured_tdx_servers, _tdx_error_type
 
     market_id = 1 if code.startswith(("60", "68", "90")) else 2 if code.startswith(("43", "83", "87", "88", "92")) else 0
     errors: list[str] = []
-    for host, port in _TDX_SERVERS:
-        api = TdxHq_API()
+    for host, port in _configured_tdx_servers():
+        api = TdxHq_API(raise_exception=True)
         try:
             if not api.connect(host, port, time_out=8):
                 errors.append(f"{host}:{port} 无法连接")
@@ -225,7 +229,7 @@ def _fetch_cn_from_tdx(code: str) -> Iterable[Mapping[str, Any]]:
                 ]
             errors.append(f"{host}:{port} 未返回数据")
         except Exception as error:
-            errors.append(f"{host}:{port} {type(error).__name__}")
+            errors.append(f"{host}:{port} {_tdx_error_type(error)}")
         finally:
             try:
                 api.disconnect()
@@ -234,7 +238,8 @@ def _fetch_cn_from_tdx(code: str) -> Iterable[Mapping[str, Any]]:
     raise RuntimeError("；".join(errors)[:300])
 
 
-def _normalize_rows(rows: Iterable[Mapping[str, Any]], market: str, code: str, name: str) -> list[dict[str, Any]]:
+def _normalize_rows(rows: Iterable[Mapping[str, Any]], market: str, code: str, name: str, *,
+                    source: str = "unverified-custom-fetcher") -> list[dict[str, Any]]:
     currency, exchange = ("CNY", _exchange(code)) if market == "CN" else ("HKD", "HKEX")
     normalized: list[dict[str, Any]] = []
     for row in rows:
@@ -242,20 +247,29 @@ def _normalize_rows(rows: Iterable[Mapping[str, Any]], market: str, code: str, n
         if raw_date is None:
             continue
         trading_date = str(raw_date)[:10]
-        close = _number(_first(row, "收盘", "close", "Close"))
-        if len(trading_date) != 10 or close is None:
+        try:
+            date.fromisoformat(trading_date)
+        except ValueError:
             continue
-        open_price = _number(_first(row, "开盘", "open", "Open")) or close
-        high = _number(_first(row, "最高", "high", "High")) or max(open_price, close)
-        low = _number(_first(row, "最低", "low", "Low")) or min(open_price, close)
+        close = _number(_first(row, "收盘", "close", "Close"))
+        open_price = _number(_first(row, "开盘", "open", "Open"))
+        high = _number(_first(row, "最高", "high", "High"))
+        low = _number(_first(row, "最低", "low", "Low"))
+        volume = _number(_first(row, "成交量", "volume", "Volume"))
+        if (any(value is None or not math.isfinite(value) or value <= 0
+                for value in (open_price, high, low, close))
+                or volume is None or not math.isfinite(volume) or volume < 0):
+            continue
+        if high < max(open_price, close, low) or low > min(open_price, close, high):
+            continue
         bar_time = f"{trading_date}T00:00:00+08:00"
         normalized.append({
             "instrument_id": f"{market}.{exchange}.STOCK.{code}", "symbol": code, "name": name, "trading_date": trading_date,
             "bar_start": bar_time, "bar_end": f"{trading_date}T23:59:59+08:00", "bar_open_time": bar_time, "period": "1d",
             "open": open_price, "high": high, "low": low, "close": close, "pct_change": _number(_first(row, "涨跌幅", "pct_change", "change")),
-            "amplitude": (high - low) / low * 100 if low else None, "volume": _number(_first(row, "成交量", "volume", "Volume")),
+            "amplitude": (high - low) / low * 100, "volume": volume,
             "amount": _number(_first(row, "成交额", "amount", "Amount")), "open_interest": None, "currency": currency, "adjustment": "",
-            "source": "akshare-eastmoney-full-stock", "source_period": "1d", "fetched_at": _now(), "data_version": "1", "quality_status": "PASS",
+            "source": source, "source_period": "1d", "fetched_at": _now(), "data_version": "1", "quality_status": "PASS",
         })
     return normalized
 
@@ -312,11 +326,12 @@ def _etf_universe() -> list[dict[str, str | int]]:
     # Fallback when the public ETF spot list is unavailable.  Prefix filtering
     # prevents ETF-named indices such as 399306 from being treated as funds.
     from pytdx.hq import TdxHq_API
-    from .collector import _TDX_SERVERS
+    from .collector import _configured_tdx_servers, _tdx_error_type
 
     selected: dict[str, dict[str, str | int]] = {}
-    for host, port in _TDX_SERVERS:
-        api = TdxHq_API()
+    error_types: set[str] = set()
+    for host, port in _configured_tdx_servers():
+        api = TdxHq_API(raise_exception=True)
         try:
             if not api.connect(host, port, time_out=8):
                 continue
@@ -331,36 +346,43 @@ def _etf_universe() -> list[dict[str, str | int]]:
                         selected[code] = {"code": code, "name": name, "market": market}
             if selected:
                 return sorted(selected.values(), key=lambda item: str(item["code"]))
+        except Exception as error:
+            error_types.add(_tdx_error_type(error))
+            selected.clear()
         finally:
             try:
                 api.disconnect()
             except Exception:
                 pass
-    raise RuntimeError("通达信未返回 ETF 清单")
+    raise RuntimeError("通达信未返回 ETF 清单" + ("；错误=" + ",".join(sorted(error_types)) if error_types else ""))
 
 
 def _fetch_etf_from_tdx(_kind: str, code: str, _start_date: str) -> Iterable[Mapping[str, Any]]:
     from pytdx.hq import TdxHq_API
-    from .collector import _TDX_SERVERS
+    from .collector import _configured_tdx_servers, _tdx_error_type
 
     market = 1 if code.startswith(("50", "51", "52", "56", "58")) else 0
-    for host, port in _TDX_SERVERS:
-        api = TdxHq_API()
+    error_types: set[str] = set()
+    for host, port in _configured_tdx_servers():
+        api = TdxHq_API(raise_exception=True)
         try:
             if api.connect(host, port, time_out=8):
                 rows = api.get_security_bars(4, market, code, 0, 320) or []
                 if rows:
                     return [{"date": f"{int(row['year']):04d}-{int(row['month']):02d}-{int(row['day']):02d}", "open": row.get("open"), "high": row.get("high"), "low": row.get("low"), "close": row.get("close"), "volume": row.get("vol"), "amount": row.get("amount")} for row in rows]
+        except Exception as error:
+            error_types.add(_tdx_error_type(error))
+            continue
         finally:
             try:
                 api.disconnect()
             except Exception:
                 pass
-    raise RuntimeError("通达信未返回ETF日线")
+    raise RuntimeError("通达信未返回ETF日线" + ("；错误=" + ",".join(sorted(error_types)) if error_types else ""))
 
 
 def _normalize_etf_rows(rows: Iterable[Mapping[str, Any]], code: str, name: str, market: int) -> list[dict[str, Any]]:
-    normalized = _normalize_rows(rows, "CN", code, name)
+    normalized = _normalize_rows(rows, "CN", code, name, source="pytdx-full-market-etf")
     exchange = "SSE" if market == 1 else "SZSE"
     for row in normalized:
         row["instrument_id"] = f"CN.{exchange}.ETF.{code}"

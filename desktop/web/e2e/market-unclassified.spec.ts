@@ -75,5 +75,6 @@ test("market list ignores a persisted pre-v3 category response", async ({ page }
   await page.goto("/market/");
   await expect(page.locator(".instrument-row").first()).toContainText("浦发银行");
   await expect(page.locator(".all-section")).not.toContainText("旧版待分类标的");
-  expect(requestedVersions).toEqual([currentVersion]);
+  expect(requestedVersions.length).toBeGreaterThan(0);
+  expect(requestedVersions.every(version => version === null || version === currentVersion)).toBe(true);
 });

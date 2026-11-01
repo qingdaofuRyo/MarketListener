@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
+import re
 from typing import Any, Mapping, Sequence
 
 
@@ -159,6 +160,11 @@ DEFAULT_MACRO_SERIES: tuple[MacroSeriesDefinition, ...] = (
         "来源值以万人表示时乘以 10 转为千人；日期为来源公布日",
     ),
     MacroSeriesDefinition(
+        "US_NONFARM_BLS_LATEST", "美国非农就业月度变化（BLS 最新修订）", "MONTHLY", "千人",
+        "美国劳工统计局 BLS CES 公共接口", "季调后非农就业总人数相邻统计月之差，采用当前修订值",
+        "CES0000000001 本月人数减上月人数，单位千人；日期为统计月，不代表最初公布值或公布日",
+    ),
+    MacroSeriesDefinition(
         "US_IMPORTS_SA", "美国季调后商品和服务进口", "MONTHLY", "百万美元",
         "美国经济分析局 / 人口普查局", "美国商品和服务进口总额（季调后）",
         "读取 BEA《U.S. International Trade in Goods and Services》Table 1 的 Imports/Total；保留百万美元原值",
@@ -235,9 +241,16 @@ def normalise_macro_point(
         raise ValueError("macro value must be finite")
     if quality_status not in {"PASS", "SUSPECT", "FAILED"}:
         raise ValueError("quality_status must be PASS/SUSPECT/FAILED")
-    available = available_time.isoformat() if isinstance(available_time, date) else str(available_time)
-    if not available.strip():
-        raise ValueError("available_time must not be blank")
+    available = available_time.isoformat() if isinstance(available_time, date) else str(available_time).strip()
+    try:
+        if re.fullmatch(r"\d{4}-\d{2}", available):
+            date.fromisoformat(available + "-01")
+        elif re.fullmatch(r"\d{4}-Q[1-4]", available):
+            date(int(available[:4]), 1, 1)
+        else:
+            datetime.fromisoformat(available)
+    except ValueError:
+        raise ValueError("available_time must be a valid date, month or quarter") from None
     return MacroPoint(
         series_id=definition.series_id,
         name=definition.name,

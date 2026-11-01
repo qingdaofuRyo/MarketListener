@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from pathlib import Path
 
@@ -12,6 +13,8 @@ from fastapi.testclient import TestClient
 from market_monitor.web_app import create_web_app
 from market_monitor.builtin_strategies import build_builtin_strategy_definitions
 from market_monitor.indicator_registry import build_builtin_indicator_registry
+from market_monitor.profile_gate import ProfileGateBusy, profile_read_gate
+from market_monitor.web_api import strategy as strategy_api
 from web_fixtures import silver_row, write_silver
 
 
@@ -299,6 +302,57 @@ def test_strategy_crud_separates_display_name_and_stable_id(tmp_path: Path) -> N
     assert deleted.json()["deleted"] is True
 
 
+def test_strategy_create_excludes_backup_between_definition_and_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, document = _app(tmp_path)
+    data_root = tmp_path / "data"
+    save_metadata = strategy_api._save_metadata
+    observed = False
+
+    def assert_gate_spans_both_files(root: Path, metadata: dict[str, dict[str, object]]) -> None:
+        nonlocal observed
+        assert list((root / "strategies" / "definitions").glob("user_*.json"))
+
+        def try_backup_capture() -> None:
+            with profile_read_gate(root, timeout=0.1):
+                pytest.fail("备份读取进入了未完成的策略双文件操作")
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(try_backup_capture)
+            with pytest.raises(ProfileGateBusy):
+                future.result(timeout=2)
+        observed = True
+        save_metadata(root, metadata)
+
+    monkeypatch.setattr(strategy_api, "_save_metadata", assert_gate_spans_both_files)
+    response = client.post(
+        "/api/strategy/definitions",
+        json={"displayName": "事务门回归", "description": "同时写两份资料", "script": document},
+    )
+    assert response.status_code == 201
+    assert observed
+    assert response.json()["strategyId"] in strategy_api._read_metadata(data_root)
+
+
+def test_strategy_mutation_returns_retryable_error_when_backup_holds_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, document = _app(tmp_path)
+
+    def busy(_root: Path):
+        raise ProfileGateBusy("个人资料正在备份")
+
+    monkeypatch.setattr(strategy_api, "profile_write_gate", busy)
+    response = client.post(
+        "/api/strategy/definitions",
+        json={"displayName": "门被占用", "script": document},
+    )
+    assert response.status_code == 503
+    assert response.headers["Retry-After"] == "2"
+    assert not list((tmp_path / "data" / "strategies" / "definitions").glob("user_*.json"))
+
+
 def test_strategy_names_are_unique_case_insensitively_and_marks_are_allowlisted(tmp_path: Path) -> None:
     client, document = _app(tmp_path)
     first = client.post(
@@ -568,6 +622,92 @@ def test_builder_and_safe_python_conditions_normalize_to_compatible_formula_runt
     assert checked_safe.status_code == 200, checked_safe.text
     unsafe = client.post("/api/strategy/condition/validate", json={"conditionKind": "python_safe_v1", "script": {**safe, "source": "import os\nsignal = True"}})
     assert unsafe.status_code == 400
+
+
+def test_stock_screen_api_limits_batches_and_reports_source_failure(tmp_path: Path, monkeypatch) -> None:
+    from market_monitor import strategy_screener
+    from market_monitor.formula_engine import FormulaError
+
+    client, _ = _app(tmp_path)
+    monkeypatch.setattr(strategy_screener, "screen_batch", lambda _root, _source, _cap, offset, limit:
+                        {"offset": offset, "processed": limit, "matches": [], "unavailable": []})
+    body = {"source": "value = 1\nsignal = True", "minMarketCapYi": 200, "offset": 50, "limit": 25}
+    response = client.post("/api/strategy/stock-screen", json=body)
+    assert response.status_code == 200 and response.json()["offset"] == 50
+    assert client.post("/api/strategy/stock-screen", json={**body, "limit": 101}).status_code == 422
+
+    def unavailable(*_args):
+        raise FormulaError("LIMIT_POOL_UNAVAILABLE", "涨跌停池缺失")
+
+    monkeypatch.setattr(strategy_screener, "screen_batch", unavailable)
+    response = client.post("/api/strategy/stock-screen", json=body)
+    assert response.status_code == 400 and response.json()["detail"]["code"] == "LIMIT_POOL_UNAVAILABLE"
+
+
+def test_stock_screen_api_forwards_explicit_retry_ids(tmp_path: Path, monkeypatch) -> None:
+    from market_monitor import strategy_screener
+
+    client, _ = _app(tmp_path)
+    seen = []
+
+    def fake(_root, _source, _cap, _offset, _limit, **kwargs):
+        seen.append(kwargs.get("instrument_ids"))
+        return {"processed": 1, "matches": [], "unavailable": []}
+
+    monkeypatch.setattr(strategy_screener, "screen_batch", fake)
+    body = {"source": "value = 1\nsignal = True", "instrumentIds": ["CN.SSE.STOCK.600519"], "limit": 1}
+    assert client.post("/api/strategy/stock-screen", json=body).status_code == 200
+    assert seen == [["CN.SSE.STOCK.600519"]]
+    assert client.post("/api/strategy/stock-screen", json={**body, "instrumentIds": []}).status_code == 422
+
+
+def test_exchange_delisted_refresh_reports_each_source_independently(tmp_path: Path, monkeypatch) -> None:
+    import requests
+
+    from market_monitor import exchange_delisted
+
+    client, _ = _app(tmp_path)
+
+    def refresh(_root, exchange):
+        if exchange == "SZSE":
+            raise requests.ConnectionError("synthetic")
+        return {"exchange": exchange, "status": "PASS", "count": 1}
+
+    monkeypatch.setattr(exchange_delisted, "refresh_exchange", refresh)
+    response = client.post("/api/strategy/stock-screen/delisted-sources/refresh", json={})
+    assert response.status_code == 200
+    assert [(item["exchange"], item["status"]) for item in response.json()["items"]] == [("SSE", "PASS"), ("SZSE", "FAILED")]
+
+
+def test_screen_scripts_are_versioned_and_included_in_personal_backup_scope(tmp_path: Path) -> None:
+    from market_monitor.local_backup import _allowed, create_profile_backup, preview_profile_restore
+
+    client, _ = _app(tmp_path)
+    source = "value = up_days(close, 20)\nsignal = value > 10"
+    created = client.post("/api/strategy/stock-screen/scripts", json={"name": "我的选股", "source": source})
+    assert created.status_code == 201, created.text
+    script = created.json()
+    identifier = script["id"]
+    assert script["version"] == 1
+    assert _allowed(f"strategies/stock-screen-scripts/{identifier}.json")
+    assert client.get("/api/strategy/stock-screen/scripts").json()["items"][0]["source"] == source
+    updated = client.put(f"/api/strategy/stock-screen/scripts/{identifier}",
+                         json={"name": "我的选股", "source": source.replace("> 10", "> 12"), "expectedVersion": 1})
+    assert updated.status_code == 200 and updated.json()["version"] == 2
+    history = client.get(f"/api/strategy/stock-screen/scripts/{identifier}/versions")
+    assert [item["version"] for item in history.json()["items"]] == [2, 1]
+    assert history.json()["items"][1]["source"] == source
+    conflict = client.put(f"/api/strategy/stock-screen/scripts/{identifier}",
+                          json={"name": "旧编辑", "source": source, "expectedVersion": 1})
+    assert conflict.status_code == 409
+    record = json.loads((tmp_path / "data" / "strategies" / "stock-screen-scripts" / f"{identifier}.json").read_text(encoding="utf-8"))
+    assert [version["source"] for version in record["versions"]] == [source, source.replace("> 10", "> 12")]
+    password = "synthetic screen backup password 2026"
+    archive = create_profile_backup(tmp_path / "data", passphrase=password)
+    preview = preview_profile_restore(archive, tmp_path / "data", passphrase=password)
+    assert f"strategies/stock-screen-scripts/{identifier}.json" in {item["path"] for item in preview["paths"]}
+    invalid = client.post("/api/strategy/stock-screen/scripts", json={"name": "无效", "source": "import os\nsignal = True"})
+    assert invalid.status_code == 400
 
 
 def test_ohlc_formula_strategy_runs_against_local_high_and_low_series(tmp_path: Path) -> None:

@@ -35,5 +35,5 @@ export function formatMarketField(item: SortableMarketInstrument, field: string)
   const value = marketSortValue(item, field);
   if (field === "pctChange" || field === "amplitude" || field.startsWith("return")) return formatPercent(value);
   return formatQuote(value, field === "latestPrice" ? 4 : 2,
-    ["totalMarketCap", "floatMarketCap", "capitalDeposit", "volume", "amount", "openInterest"].includes(field));
+    ["totalMarketCap", "floatMarketCap", "notionalValue", "capitalDeposit", "volume", "amount", "openInterest"].includes(field));
 }

@@ -5,11 +5,12 @@ import { useTargetMarketStore } from "../src/stores/targetMarket";
 test("composite store rejects stale loads/errors and preserves scan filters", async () => {
   const originalFetch = globalThis.fetch;
   const windowDescriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
-  Object.defineProperty(globalThis, "window", { configurable: true, value: { location: { origin: "http://localhost" } } });
-  type Pending = { body: Record<string, unknown>; resolve: (response: Response) => void; reject: (reason: Error) => void };
+  Object.defineProperty(globalThis, "window", { configurable: true,
+    value: { location: { origin: "http://localhost", hash: "", pathname: "/", search: "" } } });
+  type Pending = { url: string; body: Record<string, unknown>; resolve: (response: Response) => void; reject: (reason: Error) => void };
   const pending: Pending[] = [];
   globalThis.fetch = ((_url, init) => new Promise<Response>((resolve, reject) => {
-    pending.push({ body: init?.body ? JSON.parse(String(init.body)) : {}, resolve, reject });
+    pending.push({ url: String(_url), body: init?.body ? JSON.parse(String(init.body)) : {}, resolve, reject });
   })) as typeof fetch;
   setActivePinia(createPinia());
   const store = useTargetMarketStore();
@@ -17,27 +18,31 @@ test("composite store rejects stale loads/errors and preserves scan filters", as
   try {
     const loading = store.load();
     const scan = store.scan();
-    expect(pending).toHaveLength(3);
-    pending[2].resolve(response("new")); await scan;
-    pending[0].resolve(Response.json({ items: [] })); pending[1].resolve(response("stale")); await loading;
+    await expect.poll(() => pending.length).toBe(1);
+    pending[0].resolve(Response.json({ audience: "product", csrfToken: "synthetic-csrf" }));
+    await expect.poll(() => pending.length).toBe(4);
+    pending[1].resolve(response("new")); await scan;
+    pending[2].resolve(Response.json({ items: [] })); pending[3].resolve(response("stale")); await loading;
     expect(store.monitored[0].instrumentId).toBe("new");
 
     const oldScan = store.scan(); store.stopScan();
     store.selectedStrategies = ["original"]; store.selectedMarkets = ["cn-future-main"];
     const newScan = store.scan();
-    pending[3].reject(new Error("obsolete failure")); await oldScan;
+    await expect.poll(() => pending.length).toBe(6);
+    pending[4].reject(new Error("obsolete failure")); await oldScan;
     expect(store.error).toBe(""); expect(store.loading).toBe(true);
     store.selectedStrategies = ["changed"]; store.selectedMarkets = ["hk-stock"];
-    pending[4].resolve(response("page1", { nextAfterId: "next" }));
-    await expect.poll(() => pending.length).toBe(6);
-    expect(pending[5].body.strategyIds).toEqual(["original"]);
-    expect(pending[5].body.categoryKeys).toEqual(["cn-future-main"]);
-    pending[5].resolve(response("page2")); await newScan;
+    pending[5].resolve(response("page1", { nextAfterId: "next" }));
+    await expect.poll(() => pending.length).toBe(7);
+    expect(pending[6].body.strategyIds).toEqual(["original"]);
+    expect(pending[6].body.categoryKeys).toEqual(["cn-future-main"]);
+    pending[6].resolve(response("page2")); await newScan;
     expect(store.monitored[0].instrumentId).toBe("page2"); expect(store.loading).toBe(false);
     const finalScan = store.scan();
     const concurrentLoad = store.load();
-    pending[6].resolve(response("final")); await finalScan;
-    pending[7].resolve(Response.json({ items: [] })); pending[8].resolve(response("older-load")); await concurrentLoad;
+    await expect.poll(() => pending.length).toBe(10);
+    pending[7].resolve(response("final")); await finalScan;
+    pending[8].resolve(Response.json({ items: [] })); pending[9].resolve(response("older-load")); await concurrentLoad;
     expect(store.monitored[0].instrumentId).toBe("final");
   } finally {
     store.$dispose(); globalThis.fetch = originalFetch;

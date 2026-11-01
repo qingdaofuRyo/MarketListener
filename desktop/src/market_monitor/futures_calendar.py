@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
+from functools import lru_cache
 import json
 import os
 from pathlib import Path
@@ -75,8 +76,17 @@ def load_futures_trading_calendar(data_root: Path) -> FuturesTradingCalendar | N
     """Load the persisted calendar; missing evidence stays explicitly absent."""
 
     path = Path(data_root) / CALENDAR_RELATIVE_PATH
-    if not path.exists():
+    try:
+        stamp = path.stat()
+    except FileNotFoundError:
         return None
+    return _cached_calendar(str(path.resolve()), stamp.st_mtime_ns, stamp.st_size)
+
+
+@lru_cache(maxsize=8)
+def _cached_calendar(path_text: str, _modified_ns: int, _size: int) -> FuturesTradingCalendar:
+    """The atomic calendar file only needs parsing when its version changes."""
+    path = Path(path_text)
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, TypeError, ValueError) as error:

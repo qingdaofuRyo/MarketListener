@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import * as echarts from "echarts";
-import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import type { FuturesStructureResponse } from "../../domain/futures";
 import { useThemeStore } from "../../stores/theme";
 
@@ -19,6 +19,7 @@ const theme = useThemeStore();
 const element = ref<HTMLElement>();
 let chart: echarts.ECharts | undefined;
 let resizeObserver: ResizeObserver | undefined;
+const hasAreaValues = computed(() => props.payload.series.some(item => item.values.some(value => typeof value === "number" && Number.isFinite(value))));
 const colors = [
   "#2563eb", "#d946ef", "#16a34a", "#ea580c", "#0891b2", "#7c3aed", "#dc2626", "#65a30d",
   "#0284c7", "#c026d3", "#ca8a04", "#0f766e", "#4f46e5", "#be123c", "#15803d", "#9333ea",
@@ -136,11 +137,20 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div ref="element" class="structure-chart" data-test="futures-structure-chart" role="img" :aria-label="ariaLabel" />
+  <div class="structure-chart-wrap">
+    <div ref="element" class="structure-chart" data-test="futures-structure-chart" role="img" :aria-label="ariaLabel" />
+    <div v-if="!hasAreaValues" class="structure-area-empty" data-test="structure-area-empty">
+      <strong>所选范围暂无完整输入可绘制面积图</strong>
+      <span>这是数据覆盖缺口，不是零值；请查看下方已计算品种折线和覆盖说明。</span>
+    </div>
+  </div>
 </template>
 
 <style scoped>
 .structure-chart { height: 430px; width: 100%; }
+.structure-chart-wrap { position: relative; }
+.structure-area-empty { position: absolute; inset: 100px 24px 75px 70px; display: grid; align-content: center; justify-items: center; gap: 10px; pointer-events: none; text-align: center; color: var(--ml-text-secondary); font-size: 12px; }
+.structure-area-empty strong { color: var(--ml-text-primary); }
 </style>
 
 <style>

@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import json
 import struct
 from pathlib import Path
 
+import duckdb
 from fastapi.testclient import TestClient
+import pytest
 
 from market_monitor.tdx_local import (
     _cn_classification,
     _load_tdx_names,
+    _normalized_rows,
     decode_minute_day,
     financial_ds_metadata,
     read_tdx_local_file,
@@ -70,7 +74,42 @@ def test_load_tdx_names_reads_fixed_width_tnf_records(tmp_path: Path) -> None:
 
     names = _load_tdx_names(root)
 
-    assert names == {"CN": {"899050": "北证50"}, "HK": {}}
+    assert names == {"CN": {}, "HK": {}, "CN.SSE": {"899050": "北证50"}}
+
+
+def test_tdx_name_tables_do_not_mix_identical_codes_across_exchanges(tmp_path: Path) -> None:
+    root = _root(tmp_path)
+    hq_cache = root / "T0002" / "hq_cache"
+    hq_cache.mkdir(parents=True)
+
+    def record(code: str, name: str) -> bytes:
+        row = bytearray(360)
+        row[:6] = code.encode("ascii")
+        encoded = name.encode("gbk")
+        row[31:31 + len(encoded)] = encoded
+        return bytes(row)
+
+    (hq_cache / "shs.tnf").write_bytes(b"\0" * 50 + record("000004", "工业指数"))
+    (hq_cache / "szs.tnf").write_bytes(b"\0" * 50 + record("000004", "深圳样本"))
+    names = _load_tdx_names(root)
+    assert names["CN.SSE"]["000004"] == "工业指数"
+    assert names["CN.SZSE"]["000004"] == "深圳样本"
+    assert "000004" not in names["CN"]
+
+    rows = read_tdx_local_file(root / "vipdoc" / "sh" / "lday" / "sh600000.day")
+    metadata = {"market": "CN", "exchange": "SZSE", "asset_type": "STOCK", "symbol": "000004",
+                "period": "1d", "series_kind": ""}
+    normalized, _ = _normalized_rows(rows, metadata, names)
+    assert normalized[0]["name"] == "深圳样本"
+
+    # A missing SZSE table must not fall back to the SSE index name.
+    (hq_cache / "szs.tnf").unlink()
+    names = _load_tdx_names(root)
+    assert names["CN.SSE"]["000004"] == "工业指数"
+    assert "000004" not in names.get("CN.SZSE", {})
+    assert "000004" not in names["CN"]
+    normalized, _ = _normalized_rows(rows, metadata, names)
+    assert normalized[0]["name"] != "工业指数"
 
 
 def test_load_tdx_names_reads_prefix_aware_ds_and_board_names(tmp_path: Path) -> None:
@@ -318,6 +357,93 @@ def test_unverifiable_nonzero_row_is_quarantined_without_rejecting_valid_rows(tm
     assert summary["隔离文件"] == 1
     assert summary["隔离K线"] == 1
     assert list((tmp_path / "data" / "quarantine" / "tdx-cn-v2").glob("*.json"))
+
+
+def test_hk_single_zero_day_uses_recent_direct_silver_multiplier_with_evidence(tmp_path: Path) -> None:
+    root = _root(tmp_path)
+    data_root = tmp_path / "data"
+    run_tdx_local_import(data_root, tdx_root=root, batch_rows=1_000)
+    path = root / "vipdoc" / "ds" / "lday" / "31#00700.day"
+    # The vendor replaces this local file with only the new no-trade day.
+    path.write_bytes(struct.pack("<IfffffII", 20260817, 440.0, 440.0,
+                                 440.0, 440.0, 0.0, 0, 0))
+
+    audit = run_tdx_local_import(data_root, tdx_root=root, batch_rows=1_000,
+                                 start_date="2026-08-17", end_date="2026-08-17",
+                                 audit_only=True, ds_prefixes=["31"])
+    assert audit["写入K线"] == 1
+    assert audit["拒绝文件"] == audit["隔离文件"] == 0
+    audited_file = json.loads(Path(audit["审计报告"]).read_text(encoding="utf-8"))["files"][0]
+    assert audited_file["status"] == "PASS"
+    assert audited_file["volumeMultiplier"] == 100.0
+    assert audited_file["normalizationMethod"] == "prior-silver-direct-vwap"
+    assert audited_file["normalizationEvidence"]["tradingDay"] == "2026-08-14"
+    assert len(audited_file["normalizationEvidence"]["barSha256"]) == 64
+
+    imported = run_tdx_local_import(data_root, tdx_root=root, batch_rows=1_000,
+                                    start_date="2026-08-17", end_date="2026-08-17",
+                                    ds_prefixes=["31"])
+    assert imported["写入K线"] == 1
+    client = TestClient(create_web_app(data_root), client=("127.0.0.1", 50000))
+    bars = client.get("/api/market/instruments/HK.HKEX.STOCK.00700/bars",
+                      params={"period": "1d"}).json()["bars"]
+    newest = next(bar for bar in bars if bar["tradingDate"] == "2026-08-17")
+    assert newest["volume"] == newest["amount"] == 0
+    assert newest["volumeMultiplier"] == 100.0
+    assert newest["normalizationMethod"] == "prior-silver-direct-vwap"
+
+
+def test_hk_prior_proof_read_failure_cannot_become_missing_evidence(tmp_path: Path) -> None:
+    from market_monitor.tdx_local import _recent_hk_direct_volume_proofs
+
+    silver = tmp_path / "silver/market=HK/asset_type=STOCK/period=1d/year=2026"
+    silver.mkdir(parents=True)
+    (silver / "synthetic.parquet").write_bytes(b"fixture")
+
+    class BrokenConnection:
+        def execute(self, *_args):
+            raise duckdb.IOException("synthetic source busy")
+
+        def close(self):
+            pytest.fail("the caller owns this connection")
+
+    with pytest.raises(RuntimeError, match="HK_PRIOR_SILVER_PROOF_UNAVAILABLE"):
+        _recent_hk_direct_volume_proofs(
+            tmp_path, "2026-08-17", connection=BrokenConnection(),
+        )
+
+
+def test_hk_zero_day_without_recent_direct_proof_stays_rejected(tmp_path: Path) -> None:
+    root = _root(tmp_path)
+    data_root = tmp_path / "data"
+    path = root / "vipdoc" / "ds" / "lday" / "31#00700.day"
+    path.write_bytes(struct.pack("<IfffffII", 20260817, 440.0, 440.0,
+                                 440.0, 440.0, 0.0, 0, 0))
+    audit = run_tdx_local_import(data_root, tdx_root=root, batch_rows=1_000,
+                                 start_date="2026-08-17", end_date="2026-08-17",
+                                 audit_only=True, ds_prefixes=["31"])
+    assert audit["写入K线"] == 0
+    assert audit["拒绝文件"] == 1
+
+
+def test_hk_zero_day_does_not_carry_conflicting_recent_multipliers(tmp_path: Path) -> None:
+    root = _root(tmp_path)
+    data_root = tmp_path / "data"
+    path = root / "vipdoc" / "ds" / "lday" / "31#00700.day"
+    path.write_bytes(
+        struct.pack("<IfffffII", 20260813, 440.0, 440.0, 440.0, 440.0,
+                    44_000.0, 100, 0)
+        + struct.pack("<IfffffII", 20260814, 440.0, 440.0, 440.0, 440.0,
+                      4_400_000.0, 100, 0)
+    )
+    first = run_tdx_local_import(data_root, tdx_root=root, batch_rows=1_000)
+    assert first["隔离文件"] == 0
+    path.write_bytes(struct.pack("<IfffffII", 20260817, 440.0, 440.0,
+                                 440.0, 440.0, 0.0, 0, 0))
+    audit = run_tdx_local_import(data_root, tdx_root=root, batch_rows=1_000,
+                                 start_date="2026-08-17", end_date="2026-08-17",
+                                 audit_only=True, ds_prefixes=["31"])
+    assert audit["拒绝文件"] == 1
 
 
 def test_replace_source_keeps_a_recoverable_backup_and_promotes_v2(tmp_path: Path) -> None:

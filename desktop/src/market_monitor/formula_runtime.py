@@ -34,7 +34,9 @@ from market_monitor.formula_engine import (
     range_high_low_ratio,
     range_low_high_ratio,
     standard_deviation,
+    sum_daily_returns,
     time_series_momentum,
+    up_days,
     up_count,
     up_down_ratio,
     validate_formula_document,
@@ -251,6 +253,10 @@ def _builder_function_value(
         values: list[Any]
         if function_id == "period_return" and len(args) == 1:
             values = period_return(closes, args[0])
+        elif function_id == "up_days" and len(args) == 1:
+            values = up_days(closes, args[0])
+        elif function_id == "sum_daily_returns" and len(args) == 1:
+            values = sum_daily_returns(closes, args[0])
         elif function_id == "no_limit_up" and len(args) == 1:
             flags = _daily_limit_by_day(data_root, item, str(item.get("name") or ""), bars if period == "1d" else None)
             values = no_limit_up([flags.get(str(bar.get("trading_date") or str(bar.get("bar_open_time") or "")[:10]), (None, None))[0] for bar in bars], args[0])
@@ -553,6 +559,7 @@ def run_formula_strategy(
              "bollinger_upper": bollinger_upper, "bollinger_lower": bollinger_lower,
              "gann_rising_rate": gann_rising_rate, "gann_falling_rate": gann_falling_rate,
              "period_return": period_return, "no_limit_up": no_limit_up, "no_limit_down": no_limit_down,
+             "up_days": up_days, "sum_daily_returns": sum_daily_returns,
              "limit_up_count": limit_up_count, "limit_down_count": limit_down_count,
              "close_new_high": close_new_high, "close_new_low": close_new_low,
              "up_count": up_count, "down_count": down_count,

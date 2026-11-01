@@ -9,6 +9,7 @@ from typing import Any, Mapping
 from uuid import uuid4
 
 from .market_package import PackageLedger, build_market_package
+from .profile_gate import profile_write_gate
 from .quality import QualityReport
 from .signing import sign_market_package
 from .storage import MarketStore
@@ -134,12 +135,15 @@ def build_android_package(
         extra_files=extra_files,
     )
     sign_market_package(package_path, private_key, ecdsa_private_key)
-    ledger = PackageLedger(ledger_path)
-    try:
-        ledger.register(package_id, "FULL")
-        ledger.activate(package_id)
-    finally:
-        ledger.close()
+    # The backup includes the ledger, so registration and activation must be
+    # one capture-visible logical operation even though SQLite commits twice.
+    with profile_write_gate(data_root):
+        ledger = PackageLedger(ledger_path)
+        try:
+            ledger.register(package_id, "FULL")
+            ledger.activate(package_id)
+        finally:
+            ledger.close()
     return {
         "package_id": package_id,
         "package_path": str(package_path),

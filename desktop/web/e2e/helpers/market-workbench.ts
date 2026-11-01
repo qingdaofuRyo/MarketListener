@@ -22,7 +22,7 @@ const catalog = [
   parameters: [{ name: 'lookback', default: 14, type: 'integer', minimum: 2, maximum: 500 }],
 }));
 
-export async function setupMarketWorkbench(page: Page, testBars = bars) {
+export async function setupMarketWorkbench(page: Page, testBars = bars, hasMoreHistory = false) {
   page.on('pageerror', (error) => {
     throw error;
   });
@@ -82,7 +82,7 @@ export async function setupMarketWorkbench(page: Page, testBars = bars) {
         start: 0,
         size: testBars.length,
         total: testBars.length,
-        hasMore: false,
+        hasMore: hasMoreHistory,
       };
     } else {
       result = {

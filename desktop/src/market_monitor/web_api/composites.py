@@ -156,7 +156,9 @@ def scan(request: Request, body: signals.ScanBody):
                 try:
                     period = definition["period"]
                     if period not in windows:
-                        windows[period] = signals._history_before(root, logical[identifier], period, None, 500)[0]
+                        windows[period] = signals._history_before(
+                            root, logical[identifier], period, None, 500, include_bounds=False,
+                        )[0]
                     advance_composite(state, definition, logical[identifier], windows[period], allow_attention=allow)
                 except (ValueError, TypeError, KeyError, OverflowError) as error:
                     issues.append({"instrumentId": identifier, "strategyId": definition["id"], "reason": str(error)})

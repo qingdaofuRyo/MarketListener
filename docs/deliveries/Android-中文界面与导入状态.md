@@ -10,7 +10,7 @@
 
 **接口变化**：`MarketPackageImportWorker` 在成功时返回 `package_id` 和 `data_cutoff`，失败时返回 `validation_error`；导入器持久化活动包的 `active_cutoff`，使 App 重启后仍可恢复已验证包的状态。行情包格式、签名规则、数据库边界和数据源架构未改变。
 
-**实际测试**：在 `C:\Users\qingd\Documents\MarketListener`，使用 JDK 20.0.2 执行：
+**实际测试**：在 `C:\Users\<user>\Documents\MarketListener`，使用 JDK 20.0.2 执行：
 
 ```powershell
 android\gradlew.bat -p android testDebugUnitTest assembleDebug --no-daemon

@@ -11,7 +11,7 @@ from market_monitor.signing import generate_development_key, sign_market_package
 
 def test_credential_scan_finds_synthetic_secrets_and_skips_excluded(tmp_path) -> None:
     (tmp_path / "config.env").write_text("JQDATA_PASSWORD=review-only-value\n", encoding="utf-8")
-    (tmp_path / "keys.txt").write_text("-----BEGIN PRIVATE KEY-----\nABCD\n-----END PRIVATE KEY-----\n", encoding="utf-8")
+    (tmp_path / "keys.txt").write_text("-----BEGIN PRIVATE KEY-----\nABCD\n-----END PRIVATE KEY-----\n", encoding="utf-8")  # Synthetic test credential or marker.
     (tmp_path / "token.txt").write_text("Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9synthetic", encoding="utf-8")
     (tmp_path / ".git").mkdir()
     (tmp_path / ".git" / "secret.txt").write_text("JQDATA_PASSWORD=inside-git\n", encoding="utf-8")

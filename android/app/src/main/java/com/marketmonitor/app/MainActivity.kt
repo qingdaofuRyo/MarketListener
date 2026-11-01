@@ -3,6 +3,7 @@ package com.marketmonitor.app
 import android.net.Uri
 import android.os.Bundle
 import android.os.StatFs
+import android.content.pm.ApplicationInfo
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -14,10 +15,15 @@ import androidx.work.Data
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
+import androidx.work.ExistingWorkPolicy
+import com.marketmonitor.app.data.BoundedPackageIO
 import com.marketmonitor.app.data.DatabaseBoundary
 import com.marketmonitor.app.data.ImportedMarketData
 import com.marketmonitor.app.data.ImportedMarketDataReader
 import com.marketmonitor.app.data.MarketPackageImportWorker
+import com.marketmonitor.app.data.MarketPackageLimits
+import com.marketmonitor.app.data.PackageDownloader
+import com.marketmonitor.app.data.PackageDownloadPolicy
 import com.marketmonitor.app.graph.GraphRepository
 import com.marketmonitor.app.graph.GraphSearchState
 import com.marketmonitor.app.graph.applyQuery
@@ -30,8 +36,9 @@ import com.marketmonitor.app.ui.market.MarketImportUiState
 import com.marketmonitor.app.ui.market.stateForWork
 import com.marketmonitor.app.ui.theme.ThemeRepository
 import java.io.File
-import java.net.HttpURLConnection
-import java.net.URL
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
+import java.util.concurrent.atomic.AtomicLong
 
 class MainActivity : ComponentActivity() {
     private var importState by mutableStateOf(MarketImportUiState())
@@ -39,12 +46,14 @@ class MainActivity : ComponentActivity() {
     private var graphRepository by mutableStateOf<GraphRepository?>(null)
     private var graphState by mutableStateOf(GraphSearchState())
     private var industryAtlasFile by mutableStateOf<File?>(null)
+    private val importRequestSequence = AtomicLong()
 
     private val themeRepository: ThemeRepository by lazy { ThemeRepository(applicationContext) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         installSplashScreen()
+        cleanupAbandonedPackageInputs()
         importState = restoredImportState()
         refreshMarketData()
         refreshGraphSnapshot()
@@ -87,48 +96,47 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun enqueueImport(uri: Uri) {
+        val sequence = importRequestSequence.incrementAndGet()
         importState = MarketImportUiState(dataStatus = "正在读取所选行情包")
         Thread {
+            var target: File? = null
             try {
-                val target = File(cacheDir, "selected-market-package.zip")
+                val partial = newPackageInput("selected-")
+                target = partial
+                val limits = MarketPackageLimits()
+                val budget = BoundedPackageIO.archiveCopyBudget(StatFs(partial.parentFile?.absolutePath ?: error("缺少暂存目录")).availableBytes, limits)
+                require(budget > 0L) { "设备可用空间不足" }
                 contentResolver.openInputStream(uri)?.use { input ->
-                    target.outputStream().use(input::copyTo)
+                    partial.outputStream().use { output -> BoundedPackageIO.copyAndHash(input, output, budget) }
                 } ?: throw IllegalArgumentException("无法读取所选文件")
-                runOnUiThread { enqueuePackageFile(target) }
+                val complete = sealPackageInput(partial)
+                target = null
+                runOnUiThread { enqueuePackageFile(complete, sequence) }
             } catch (_: Exception) {
-                runOnUiThread { importState = MarketImportUiState(dataStatus = "读取行情包失败") }
+                target?.delete()
+                runOnUiThread { if (sequence == importRequestSequence.get()) importState = MarketImportUiState(dataStatus = "读取行情包失败或超过大小限额") }
             }
         }.start()
     }
 
     private fun enqueueSyncFromServer(rawUrl: String) {
-        val baseUrl = rawUrl.trim().trimEnd('/')
-        if (!baseUrl.startsWith("http://") && !baseUrl.startsWith("https://")) {
-            importState = MarketImportUiState(dataStatus = "服务器地址需以 http:// 或 https:// 开头")
-            return
-        }
-        importState = MarketImportUiState(dataStatus = "正在从电脑下载同步包：$baseUrl")
+        val sequence = importRequestSequence.incrementAndGet()
+        val url = try { PackageDownloadPolicy.packageUrl(rawUrl, applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0) }
+        catch (error: Exception) { importState = MarketImportUiState(dataStatus = error.message ?: "服务器地址无效"); return }
+        importState = MarketImportUiState(dataStatus = "正在从电脑下载同步包")
         Thread {
+            var target: File? = null
             try {
-                val target = File(cacheDir, "synced-market-package.zip")
-                val connection = URL("$baseUrl/api/android-package").openConnection() as HttpURLConnection
-                connection.connectTimeout = 10_000
-                connection.readTimeout = 120_000
-                connection.instanceFollowRedirects = true
-                connection.setRequestProperty("Accept", "application/zip")
-                val status = connection.responseCode
-                if (status != 200) {
-                    val detail = connection.errorStream?.bufferedReader()?.use { it.readText() }
-                    throw IllegalStateException("同步包下载失败：HTTP $status${detail?.let { " $it" } ?: ""}")
-                }
-                connection.inputStream.use { input ->
-                    target.outputStream().use(input::copyTo)
-                }
-                if (target.length() == 0L) throw IllegalStateException("下载的同步包为空")
-                runOnUiThread { enqueuePackageFile(target) }
+                val partial = newPackageInput("synced-")
+                target = partial
+                PackageDownloader().download(url, partial)
+                val complete = sealPackageInput(partial)
+                target = null
+                runOnUiThread { enqueuePackageFile(complete, sequence) }
             } catch (error: Exception) {
+                target?.delete()
                 runOnUiThread {
-                    importState = MarketImportUiState(
+                    if (sequence == importRequestSequence.get()) importState = MarketImportUiState(
                         dataStatus = "从电脑同步失败：${error.message ?: "未知错误"}",
                     )
                 }
@@ -136,15 +144,40 @@ class MainActivity : ComponentActivity() {
         }.start()
     }
 
-    private fun enqueuePackageFile(target: File) {
+    private fun newPackageInput(prefix: String): File {
+        val root = File(cacheDir, "market-package-inputs").apply { mkdirs() }
+        return File.createTempFile(prefix, ".part", root)
+    }
+
+    private fun sealPackageInput(partial: File): File {
+        val complete = File(partial.parentFile, partial.name.removeSuffix(".part") + ".zip")
+        Files.move(partial.toPath(), complete.toPath(), StandardCopyOption.ATOMIC_MOVE)
+        return complete
+    }
+
+    private fun cleanupAbandonedPackageInputs() {
+        val cutoff = System.currentTimeMillis() - 24L * 60L * 60L * 1000L
+        File(cacheDir, "market-package-inputs").listFiles()?.forEach { file ->
+            if (file.isFile && file.extension == "part" && file.lastModified() < cutoff) file.delete()
+        }
+    }
+
+    private fun enqueuePackageFile(target: File, sequence: Long) {
+        if (sequence != importRequestSequence.get()) { target.delete(); return }
         importState = MarketImportUiState(dataStatus = "行情包已加入队列，正在验证")
         val request = OneTimeWorkRequestBuilder<MarketPackageImportWorker>()
             .setInputData(Data.Builder().putString("package_path", target.path).build())
             .build()
         val workManager = WorkManager.getInstance(this)
-        workManager.enqueue(request)
+        try {
+            workManager.enqueueUniqueWork("market-package-import", ExistingWorkPolicy.APPEND_OR_REPLACE, request)
+        } catch (_: Exception) {
+            target.delete()
+            importState = MarketImportUiState(dataStatus = "行情包暂时无法加入验证队列")
+            return
+        }
         workManager.getWorkInfoByIdLiveData(request.id).observe(this) { info ->
-            if (info != null) {
+            if (info != null && sequence == importRequestSequence.get()) {
                 importState = stateForWork(info)
                 if (info.state == WorkInfo.State.SUCCEEDED) {
                     refreshMarketData()

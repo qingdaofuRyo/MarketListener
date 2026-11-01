@@ -228,6 +228,13 @@ def test_data_source_browser_uses_manifest_metadata_without_reopening_silver_row
     assert {field["name"]: field["type"] for field in silver_table["fields"]}["close"] == "DOUBLE"
     assert provider_response.status_code == 200
     assert any(item["providerId"] == "tdx_local" for item in provider_response.json()["items"])
+    providers = {item["providerId"]: item for item in provider_response.json()["items"]}
+    assert providers["cn_exchanges_official_daily"]["enabled"] is True
+    assert providers["cn_exchange_delisted_lists"]["implemented"] is True
+    assert providers["eastmoney_a_limit_pools"]["implemented"] is True
+    assert providers["ths_cpi_monthly"]["enabled"] is True
+    assert providers["hkex_market_cap_archive"]["enabled"] is False
+    assert providers["hkex_market_cap_archive"]["status"] == "BLOCKED_SOURCE_PERMISSION"
 
 
 def test_market_instruments_paginate_search_and_filter(tmp_path: Path) -> None:
@@ -481,6 +488,31 @@ def test_month_contract_list_hides_expired_but_keeps_direct_history(
     direct = client.get("/api/market/instruments/CN.DCE.FUTURE.JM2505.CONTRACT/bars", params={"period": "1d"})
     assert direct.status_code == 200
     assert direct.json()["bars"][0]["close"] is not None
+
+
+def test_future_daily_cursor_keeps_predecessor_and_next_page(tmp_path: Path) -> None:
+    root = tmp_path / "daily-cursor"
+    canonical = "CN.DCE.FUTURE.A2611.CONTRACT"
+    physical = canonical + ".TDX"
+    rows = []
+    for day, price in (("2026-08-06", 4400), ("2026-08-07", 4410), ("2026-08-10", 4420)):
+        bar = silver_row(physical, day, asset_type="FUTURE", period="1d", close=price)
+        bar.update(canonical_instrument_id=canonical, symbol="A2611", series_kind="CONTRACT",
+                   product_code="A", exchange="DCE", settlement=price)
+        rows.append(bar)
+    write_silver(root, rows)
+    client = TestClient(create_web_app(root), client=("127.0.0.1", 50000))
+
+    latest = client.get(f"/api/market/instruments/{canonical}/bars", params={"period": "1d", "limit": 2})
+    assert latest.status_code == 200, latest.text
+    assert [item["close"] for item in latest.json()["bars"]] == [4410, 4420]
+    assert latest.json()["hasMore"] is True
+    cursor = latest.json()["before"]
+    older = client.get(f"/api/market/instruments/{canonical}/bars/history",
+                       params={"period": "1d", "before": cursor, "size": 2})
+    assert older.status_code == 200, older.text
+    assert [item["close"] for item in older.json()["bars"]] == [4400]
+    assert older.json()["hasMore"] is False
 
 
 def test_period_routes_to_the_physical_source_that_has_local_data(tmp_path: Path) -> None:
@@ -956,6 +988,31 @@ def test_drawings_index_and_batch_delete(tmp_path: Path) -> None:
     assert [item["instrumentId"] for item in remaining["items"]] == ["HK.HKEX.STOCK.00700"]
 
 
+def test_drawings_writes_wait_for_profile_backup_gate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from contextlib import contextmanager
+    from market_monitor.profile_gate import ProfileGateBusy
+    from market_monitor.web_api import market
+
+    _application, client = _app(tmp_path)
+
+    @contextmanager
+    def unavailable(_root: Path):
+        raise ProfileGateBusy("synthetic backup in progress")
+        yield
+
+    monkeypatch.setattr(market, "profile_write_gate", unavailable)
+    saved = client.put(
+        "/api/market/instruments/CN.SSE.STOCK.600519/drawings",
+        json={"items": []},
+    )
+    assert saved.status_code == 503
+    assert saved.headers["Retry-After"] == "2"
+    assert not list((tmp_path / "data" / "personal" / "chart_drawings").glob("*.json"))
+    deleted = client.request("DELETE", "/api/market/drawings", json={"instrumentIds": ["CN.SSE.STOCK.600519"]})
+    assert deleted.status_code == 503
+    assert deleted.headers["Retry-After"] == "2"
+
+
 def test_silver_write_updates_ready_query_cache_incrementally(tmp_path: Path) -> None:
     data_root = _data_root(tmp_path)
     cache = get_kline_query_store(data_root)
@@ -1026,3 +1083,21 @@ def test_watchlist_rejects_unknown_instrument_and_extra_fields(tmp_path: Path) -
         ).status_code
         == 422
     )
+def test_local_stock_five_minute_time_warning_is_source_scoped(tmp_path, monkeypatch):
+    from market_monitor.web_api import market
+
+    monkeypatch.setattr(market, "enrich_official_bars", lambda _root, bars, _instrument, _period: bars)
+    instrument = {"market": "CN", "assetType": "STOCK"}
+    rows = [
+        {"source": "通达信金融终端（本地）", "period": "5m", "close": 1},
+        {"source": "通达信金融终端（本地）", "period": "30m", "source_period": "5m", "close": 2},
+        {"source": "通达信金融终端（本地）", "period": "1d", "close": 3},
+        {"source": "other", "period": "5m", "close": 4},
+    ]
+    result = market._enrich_market_bars(tmp_path, rows, instrument, "30m")
+    assert [row.get("time_basis_warning") for row in result] == [
+        "TDX_CN_STOCK_5M_TIME_UNVERIFIED", "TDX_CN_STOCK_5M_TIME_UNVERIFIED", None, None
+    ]
+    assert not any("time_basis_warning" in row for row in rows)
+    assert "time_basis_warning" not in market._enrich_market_bars(
+        tmp_path, rows[:1], {"market": "HK", "assetType": "STOCK"}, "5m")[0]

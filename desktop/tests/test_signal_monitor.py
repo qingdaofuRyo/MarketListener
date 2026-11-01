@@ -1,4 +1,6 @@
 from copy import deepcopy
+from contextlib import contextmanager
+import threading
 
 import pytest
 from fastapi.testclient import TestClient
@@ -85,7 +87,7 @@ def test_monitor_persistence_new_bars_and_market_filter(tmp_path, monkeypatch):
     instrument = {'instrumentId': 'CN.SSE.STOCK.600000', 'storageInstrumentId': 'storage', 'name': '测试', 'market': 'CN', 'assetType': 'STOCK', 'exchange': 'SSE', 'symbol': '600000'}
     monkeypatch.setattr(signals, '_logical_instruments', lambda root: {instrument['instrumentId']: instrument})
     bars = [{'bar_open_time': '2026-01-01T00:00:00+00:00', 'close': 12}, {'bar_open_time': '2026-01-02T00:00:00+00:00', 'close': 13}]
-    monkeypatch.setattr(signals, '_history_before', lambda *args: (deepcopy(bars), 2, None, False, None, None))
+    monkeypatch.setattr(signals, '_history_before', lambda *args, **kwargs: (deepcopy(bars), 2, None, False, None, None))
     api.post('/api/signals/definitions', json=body())
     assert api.post('/api/signals/scan', json={'categoryKeys': ['hk-stock']}).json()['scanned'] == 0
     opened = api.post('/api/signals/scan', json={}).json()
@@ -112,10 +114,98 @@ def test_scan_gap_is_reported_without_advancing_cursor(tmp_path, monkeypatch):
     created = api.post('/api/signals/definitions', json=body()).json()
     from datetime import datetime, timedelta, timezone
     bars = [{'bar_open_time': (datetime(2024, 1, 1, tzinfo=timezone.utc) + timedelta(days=index)).isoformat(), 'close': 13} for index in range(500)]
-    monkeypatch.setattr(signals, '_history_before', lambda *args: (bars, 500, None, True, None, None))
+    monkeypatch.setattr(signals, '_history_before', lambda *args, **kwargs: (bars, 500, None, True, None, None))
     cursor_key = instrument['instrumentId'] + '|' + created['id'] + '@1'
     state_path = tmp_path / 'strategies' / 'signals' / 'monitor.json'
     signals.write(state_path, {'cursors': {cursor_key: '2023-01-01T00:00:00+00:00'}})
     result = api.post('/api/signals/scan', json={}).json()
     assert '500' in result['issues'][0]['reason']
     assert signals.read(state_path, {})['cursors'][cursor_key] == '2023-01-01T00:00:00+00:00'
+
+
+def test_scan_rejects_definition_change_before_monitor_commit(tmp_path, monkeypatch):
+    api = client(tmp_path)
+    instrument = {'instrumentId': 'CN.SSE.STOCK.600000', 'storageInstrumentId': 'storage',
+                  'market': 'CN', 'assetType': 'STOCK', 'exchange': 'SSE', 'symbol': '600000'}
+    monkeypatch.setattr(signals, '_logical_instruments', lambda _root: {instrument['instrumentId']: instrument})
+    api.post('/api/signals/definitions', json=body())
+    definitions_path = tmp_path / 'strategies' / 'signals' / 'definitions.json'
+    old = signals.read(definitions_path, {})
+
+    def changed_during_scan(*_args, **_kwargs):
+        newer = deepcopy(old)
+        next(iter(newer.values()))['displayName'] = '并发修改'
+        signals.write(definitions_path, newer)
+        return ([{'bar_open_time': '2026-01-01T00:00:00+00:00', 'close': 12}], 1, None, False, None, None)
+
+    monkeypatch.setattr(signals, '_history_before', changed_during_scan)
+    response = api.post('/api/signals/scan', json={})
+    assert response.status_code == 409
+    assert '重新扫描' in response.json()['detail']
+    assert not (tmp_path / 'strategies' / 'signals' / 'monitor.json').exists()
+
+
+def test_signal_definition_write_retries_when_profile_backup_is_busy(tmp_path, monkeypatch):
+    from market_monitor.profile_gate import ProfileGateBusy
+
+    @contextmanager
+    def unavailable(_root):
+        raise ProfileGateBusy('synthetic backup in progress')
+        yield
+
+    monkeypatch.setattr(signals, 'profile_write_gate', unavailable)
+    response = client(tmp_path).post('/api/signals/definitions', json=body())
+    assert response.status_code == 503
+    assert response.headers['Retry-After'] == '2'
+    assert not (tmp_path / 'strategies' / 'signals' / 'definitions.json').exists()
+
+
+def test_profile_capture_can_run_while_signal_scan_calculates(tmp_path, monkeypatch):
+    from market_monitor.profile_gate import profile_read_gate
+
+    api = client(tmp_path)
+    instrument = {'instrumentId': 'CN.SSE.STOCK.600000', 'storageInstrumentId': 'storage',
+                  'market': 'CN', 'assetType': 'STOCK', 'exchange': 'SSE', 'symbol': '600000'}
+    monkeypatch.setattr(signals, '_logical_instruments', lambda _root: {instrument['instrumentId']: instrument})
+    api.post('/api/signals/definitions', json=body())
+    calculating = threading.Event()
+    resume = threading.Event()
+    response = []
+
+    def slow_history(*_args, **_kwargs):
+        calculating.set()
+        assert resume.wait(3)
+        return ([{'bar_open_time': '2026-01-01T00:00:00+00:00', 'close': 12}], 1, None, False, None, None)
+
+    monkeypatch.setattr(signals, '_history_before', slow_history)
+    worker = threading.Thread(target=lambda: response.append(api.post('/api/signals/scan', json={})))
+    worker.start()
+    try:
+        assert calculating.wait(3)
+        with profile_read_gate(tmp_path, timeout=0.1):
+            assert not (tmp_path / 'strategies' / 'signals' / 'monitor.json').exists()
+    finally:
+        resume.set()
+        worker.join(timeout=3)
+    assert not worker.is_alive()
+    assert response and response[0].status_code == 200
+
+
+def test_signal_scan_rejects_silver_revision_change(tmp_path, monkeypatch):
+    from market_monitor.market_data_version import advance_market_data_version
+
+    api = client(tmp_path)
+    instrument = {'instrumentId': 'CN.SSE.STOCK.600000', 'storageInstrumentId': 'storage',
+                  'market': 'CN', 'assetType': 'STOCK', 'exchange': 'SSE', 'symbol': '600000'}
+    monkeypatch.setattr(signals, '_logical_instruments', lambda _root: {instrument['instrumentId']: instrument})
+    api.post('/api/signals/definitions', json=body())
+
+    def changed_during_scan(*_args, **_kwargs):
+        advance_market_data_version(tmp_path)
+        return ([{'bar_open_time': '2026-01-01T00:00:00+00:00', 'close': 12}], 1, None, False, None, None)
+
+    monkeypatch.setattr(signals, '_history_before', changed_during_scan)
+    response = api.post('/api/signals/scan', json={})
+    assert response.status_code == 409
+    assert '行情已更新' in response.json()['detail']
+    assert not (tmp_path / 'strategies' / 'signals' / 'monitor.json').exists()
